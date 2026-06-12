@@ -1,0 +1,580 @@
+// A protobuf-based API for communication between
+// the Warp client and the remote server binary.
+//
+// Messages are length-prefixed: [4-byte little-endian length][protobuf bytes].
+
+syntax = "proto3";
+
+package remote_server;
+
+import "diff_state.proto";
+
+// ── Top-level envelopes ───────────────────────────────────────────
+
+// Top-level envelope for all client → server messages.
+message ClientMessage {
+  string request_id = 1;
+  oneof message {
+    Initialize initialize = 2;
+    Abort abort = 3;
+    NavigatedToDirectory navigated_to_directory = 4;
+    LoadRepoMetadataDirectory load_repo_metadata_directory = 5;
+    SessionBootstrapped session_bootstrapped = 6;
+    WriteFile write_file = 7;
+    DeleteFile delete_file = 8;
+    RunCommandRequest run_command = 9;
+    ReadFileContextRequest read_file_context = 10;
+    Authenticate authenticate = 11;
+    UpdatePreferences update_preferences = 12;
+    OpenBuffer open_buffer = 13;
+    BufferEdit buffer_edit = 14;
+    CloseBuffer close_buffer = 15;
+    SaveBuffer save_buffer = 16;
+    ResolveConflict resolve_conflict = 17;
+    GetDiffState get_diff_state = 18;
+    UnsubscribeDiffState unsubscribe_diff_state = 19;
+    DiscardFilesRequest discard_files = 20;
+    IndexCodebase index_codebase = 21;
+    DropCodebaseIndex drop_codebase_index = 22;
+    GetFragmentMetadataFromHash get_fragment_metadata_from_hash = 23;
+    GetBranches get_branches = 24;
+    ResyncCodebase resync_codebase = 25;
+    UploadHandoffSnapshot upload_handoff_snapshot = 26;
+  }
+}
+// Top-level envelope for all server → client messages.
+// Push messages use an empty request_id to distinguish them from
+// request/response pairs.
+message ServerMessage {
+  string request_id = 1;
+  oneof message {
+    InitializeResponse initialize_response = 2;
+    ErrorResponse error = 3;
+    NavigatedToDirectoryResponse navigated_to_directory_response = 4;
+    RepoMetadataSnapshot repo_metadata_snapshot = 5;
+    RepoMetadataUpdatePush repo_metadata_update = 6;
+    LoadRepoMetadataDirectoryResponse load_repo_metadata_directory_response = 7;
+    WriteFileResponse write_file_response = 8;
+    DeleteFileResponse delete_file_response = 9;
+    RunCommandResponse run_command_response = 10;
+    ReadFileContextResponse read_file_context_response = 11;
+    CodebaseIndexStatusesSnapshot codebase_index_statuses_snapshot = 12;
+    CodebaseIndexStatusUpdated codebase_index_status_updated = 13;
+    OpenBufferResponse open_buffer_response = 14;
+    BufferUpdatedPush buffer_updated = 15;
+    SaveBufferResponse save_buffer_response = 16;
+    ResolveConflictResponse resolve_conflict_response = 17;
+    GetDiffStateResponse get_diff_state_response = 18;
+    DiffStateSnapshot diff_state_snapshot = 19;
+    DiffStateMetadataUpdate diff_state_metadata_update = 20;
+    DiffStateFileDelta diff_state_file_delta = 21;
+    DiscardFilesResponse discard_files_response = 22;
+    BufferConflictDetected buffer_conflict_detected = 23;
+    GetFragmentMetadataFromHashResponse get_fragment_metadata_from_hash_response = 24;
+    GetBranchesResponse get_branches_response = 25;
+    UploadHandoffSnapshotResponse upload_handoff_snapshot_response = 26;
+  }
+}
+
+// ── Initialize handshake
+// Sent by the client immediately after connecting to negotiate the protocol.
+message Initialize {
+  // Optional bearer token used by the daemon for Warp-server requests.
+  // Empty means no credential was available and does not clear an existing
+  // daemon credential.
+  string auth_token = 1;
+  // User identity for Sentry crash reports. Empty when not logged in.
+  string user_id = 2;
+  string user_email = 3;
+  // Whether the user has enabled crash reporting in their privacy settings.
+  bool crash_reporting_enabled = 4;
+  // Client-resolved codebase index limits for parity with local indexing.
+  optional CodebaseIndexLimits codebase_index_limits = 5;
+}
+
+// Sent by the client when its bearer credential rotates after initialization.
+// This is a notification (fire-and-forget) — the server does not send a response.
+message Authenticate {
+  // Optional bearer token used by the daemon for Warp-server requests.
+  // Empty means no credential was available and does not clear an existing
+  // daemon credential.
+  string auth_token = 1;
+}
+
+// Sent by the client when the user's privacy preferences change.
+// This is a notification (fire-and-forget) — the server does not send a response.
+message UpdatePreferences {
+  bool crash_reporting_enabled = 1;
+  optional CodebaseIndexLimits codebase_index_limits = 2;
+}
+
+message CodebaseIndexLimits {
+  // Empty means unlimited.
+  optional uint64 max_indices_allowed = 1;
+  uint64 max_files_per_repo = 2;
+  uint64 embedding_generation_batch_size = 3;
+}
+
+// Sent by the client to cancel an in-progress request.
+// This is a notification (fire-and-forget) — the server does not send a response.
+message Abort {
+  string request_id_to_abort = 1;
+}
+
+// Returned by the server in response to Initialize.
+message InitializeResponse {
+  string server_version = 1;
+  string host_id = 2;
+}
+
+// Sent by the client after the SSH session has been bootstrapped.
+// This is a notification (fire-and-forget) — the server does not send a
+// response. The server uses this to create a per-session
+// LocalCommandExecutor matching the bootstrapped shell.
+message SessionBootstrapped {
+  uint64 session_id = 1;
+  string shell_type = 2;
+  // The full path to the shell binary (e.g. "/usr/bin/zsh").
+  // When present, the server uses this directly instead of doing a PATH lookup.
+  optional string shell_path = 3;
+}
+
+// Sent by the client to execute a shell command on the remote host.
+message RunCommandRequest {
+  string command = 1;
+  // Working directory for the command. If empty, uses the server's default.
+  optional string working_directory = 2;
+  // Environment variables to set for the command.
+  map<string, string> environment_variables = 3;
+  // The session whose shell executor should run this command.
+  uint64 session_id = 4;
+}
+
+// Specific error codes for RunCommandRequest failures.
+enum RunCommandErrorCode {
+  RUN_COMMAND_ERROR_CODE_UNSPECIFIED = 0;
+  // The session ID has no associated executor (session was never bootstrapped).
+  SESSION_NOT_FOUND = 1;
+  // The command could not be executed (e.g. the shell process failed to spawn).
+  EXECUTION_FAILED = 2;
+}
+
+message RunCommandError {
+  RunCommandErrorCode code = 1;
+  string message = 2;
+}
+
+message RunCommandSuccess {
+  bytes stdout = 1;
+  bytes stderr = 2;
+  // Absent when the process was killed by a signal (Unix).
+  optional int32 exit_code = 3;
+}
+
+// Returned by the server with the result of a RunCommandRequest.
+message RunCommandResponse {
+  oneof result {
+    RunCommandSuccess success = 1;
+    RunCommandError error = 2;
+  }
+}
+
+// ── Shared error response ─────────────────────────────────────────
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  // The request was malformed (e.g. missing oneof variant).
+  INVALID_REQUEST = 1;
+  // An unexpected server-side failure.
+  INTERNAL = 2;
+}
+
+message ErrorResponse {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+// ── Shared repo metadata sub-messages ─────────────────────────────
+// Mirror the Rust types in repo_metadata/src/file_tree_update.rs.
+
+// Mirrors RepoNodeMetadata in Rust.
+message RepoNodeMetadata {
+  oneof node {
+    DirectoryNodeMetadata directory = 1;
+    FileNodeMetadata file = 2;
+  }
+}
+
+// Mirrors DirectoryNodeMetadata in Rust.
+message DirectoryNodeMetadata {
+  string path = 1;
+  bool ignored = 2;
+  bool loaded = 3;
+}
+
+// Mirrors FileNodeMetadata in Rust.
+message FileNodeMetadata {
+  string path = 1;
+  optional string extension = 2;
+  bool ignored = 3;
+}
+
+// Mirrors FileTreeEntryUpdate in Rust. Describes a subtree patch rooted
+// at a parent directory.
+message RepoMetadataEntryUpdate {
+  string parent_path_to_replace = 1;
+  repeated RepoNodeMetadata subtree_metadata = 2;
+}
+
+// ── NavigatedToDirectory ──────────────────────────────────────────
+
+// Client → server: "I navigated to this directory, please index it."
+message NavigatedToDirectory {
+  string path = 1;
+}
+
+// Response after the server has run git detection on the requested path.
+// When is_git is true, indexed_path is the git repo root and full indexing
+// runs in the background. A RepoMetadataSnapshot push will follow.
+// When is_git is false, the directory was lazily indexed at first level.
+// A RepoMetadataSnapshot push with the lazy tree data will follow.
+message NavigatedToDirectoryResponse {
+  string indexed_path = 1;
+  bool is_git = 2;
+}
+
+// ── LoadRepoMetadataDirectory ─────────────────────────────────────
+
+// Client → server: load the next level of a subdirectory within an
+// already-tracked repo (lazy expand).
+message LoadRepoMetadataDirectory {
+  string repo_path = 1;
+  string dir_path = 2;
+}
+
+// Response with the loaded subtree entries for the requested directory.
+message LoadRepoMetadataDirectoryResponse {
+  string repo_path = 1;
+  string dir_path = 2;
+  repeated RepoMetadataEntryUpdate entries = 3;
+}
+
+// ── File write/delete operations ──────────────────────────────────
+
+// Shared error type for file operations (read/write/delete).
+message FileOperationError {
+  string message = 1;
+}
+
+// Client → server: write content to a file, creating parent dirs if needed.
+message WriteFile {
+  string path = 1;
+  string content = 2;
+}
+
+// Server → client: result of a WriteFile request.
+message WriteFileResponse {
+  oneof result {
+    WriteFileSuccess success = 1;
+    FileOperationError error = 2;
+  }
+}
+
+message WriteFileSuccess {}
+
+// Client → server: delete a file.
+message DeleteFile {
+  string path = 1;
+}
+
+// Server → client: result of a DeleteFile request.
+message DeleteFileResponse {
+  oneof result {
+    DeleteFileSuccess success = 1;
+    FileOperationError error = 2;
+  }
+}
+
+message DeleteFileSuccess {}
+
+// ── Read file context (batch) ─────────────────────────────────────
+
+// A single file to read, with optional line ranges.
+message ReadFileContextFile {
+  string path = 1;
+  // 1-indexed line ranges (start..end). Empty = read entire file.
+  repeated LineRange line_ranges = 2;
+}
+
+message LineRange {
+  uint32 start = 1;
+  uint32 end = 2;
+}
+
+// Client → server: batch read multiple files with full context.
+message ReadFileContextRequest {
+  repeated ReadFileContextFile files = 1;
+  // Per-file byte limit. Absent = use server default.
+  optional uint32 max_file_bytes = 2;
+  // Cumulative byte budget across all files. Absent = no batch limit.
+  optional uint32 max_batch_bytes = 3;
+}
+
+// Server → client: result of a ReadFileContextRequest.
+// Per-file failures are reported in `failed_files`, not as a top-level error.
+// Catastrophic server errors (malformed request, etc.) use the generic ErrorResponse.
+message ReadFileContextResponse {
+  repeated FileContextProto file_contexts = 1;
+  repeated FailedFileRead failed_files = 2;
+}
+
+message FailedFileRead {
+  string path = 1;
+  FileOperationError error = 2;
+}
+
+message FileContextProto {
+  string file_name = 1;
+  oneof content {
+    string text_content = 2;
+    bytes binary_content = 3;
+  }
+  // Optional 1-indexed line range this segment covers.
+  optional uint32 line_range_start = 4;
+  optional uint32 line_range_end = 5;
+  optional uint64 last_modified_epoch_millis = 6;
+  uint32 line_count = 7;
+}
+
+// ── Remote codebase indexing status ───────────────────────────────
+
+message IndexCodebase {
+  string repo_path = 1;
+  string auth_token = 2;
+}
+message ResyncCodebase {
+  string repo_path = 1;
+  string auth_token = 2;
+  CodebaseResyncMode mode = 3;
+}
+enum CodebaseResyncMode {
+  CODEBASE_RESYNC_MODE_FULL = 0;
+  CODEBASE_RESYNC_MODE_INCREMENTAL = 1;
+}
+
+message DropCodebaseIndex {
+  string repo_path = 1;
+  string auth_token = 2;
+}
+message GetFragmentMetadataFromHash {
+  string repo_path = 1;
+  string root_hash = 2;
+  repeated string content_hashes = 3;
+}
+
+message FragmentMetadata {
+  string content_hash = 1;
+  string path = 2;
+  uint32 start_line = 3;
+  uint32 end_line = 4;
+  uint64 byte_start = 5;
+  uint64 byte_end = 6;
+}
+
+message MissingFragmentMetadata {
+  string content_hash = 1;
+  FileOperationError error = 2;
+}
+enum FragmentMetadataLookupErrorCode {
+  FRAGMENT_METADATA_LOOKUP_ERROR_CODE_UNSPECIFIED = 0;
+  REMOTE_CODEBASE_INDEXING_NOT_ENABLED = 1;
+  INVALID_REPO_PATH = 2;
+  INVALID_ROOT_HASH = 3;
+  INDEX_NOT_FOUND = 4;
+  INDEX_NOT_SYNCED = 5;
+  ROOT_HASH_MISMATCH = 6;
+}
+
+message FragmentMetadataLookupError {
+  FragmentMetadataLookupErrorCode code = 1;
+  string message = 2;
+  optional string current_root_hash = 3;
+}
+message GetFragmentMetadataFromHashSuccess {
+  repeated FragmentMetadata fragments = 1;
+  repeated MissingFragmentMetadata missing_hashes = 2;
+}
+
+message GetFragmentMetadataFromHashResponse {
+  oneof result {
+    GetFragmentMetadataFromHashSuccess success = 1;
+    FragmentMetadataLookupError error = 2;
+  }
+}
+
+enum CodebaseIndexStatusState {
+  CODEBASE_INDEX_STATUS_STATE_UNSPECIFIED = 0;
+  CODEBASE_INDEX_STATUS_STATE_NOT_ENABLED = 1;
+  CODEBASE_INDEX_STATUS_STATE_UNAVAILABLE = 2;
+  CODEBASE_INDEX_STATUS_STATE_DISABLED = 3;
+  CODEBASE_INDEX_STATUS_STATE_QUEUED = 4;
+  CODEBASE_INDEX_STATUS_STATE_INDEXING = 5;
+  CODEBASE_INDEX_STATUS_STATE_READY = 6;
+  CODEBASE_INDEX_STATUS_STATE_STALE = 7;
+  CODEBASE_INDEX_STATUS_STATE_FAILED = 8;
+}
+message CodebaseIndexStatus {
+  string repo_path = 1;
+  CodebaseIndexStatusState state = 2;
+  optional uint64 last_updated_epoch_millis = 3;
+  optional uint64 progress_completed = 4;
+  optional uint64 progress_total = 5;
+  optional string failure_message = 6;
+  optional string root_hash = 7;
+}
+
+message CodebaseIndexStatusesSnapshot {
+  repeated CodebaseIndexStatus statuses = 1;
+}
+
+message CodebaseIndexStatusUpdated {
+  CodebaseIndexStatus status = 1;
+}
+
+// ── Server → client push messages ─────────────────────────────────
+
+// Full or lazy-loaded repo metadata snapshot. Pushed by the server after
+// NavigatedToDirectory completes indexing (either lazy or full git).
+message RepoMetadataSnapshot {
+  string repo_path = 1;
+  repeated RepoMetadataEntryUpdate entries = 2;
+  bool sync_complete = 3;
+}
+
+// Incremental repo metadata update. Mirrors RepoMetadataUpdate in Rust.
+message RepoMetadataUpdatePush {
+  string repo_path = 1;
+  repeated string remove_entries = 2;
+  repeated RepoMetadataEntryUpdate update_entries = 3;
+}
+
+// ── Buffer syncing ────────────────────────────────────────────────
+
+// Client → server: open a buffer for bidirectional syncing.
+// The server reads the file, starts watching it, and returns the content.
+message OpenBuffer {
+  string path = 1;
+  // When true, the server discards any in-memory buffer state and re-reads
+  // the file from disk. Used by the client to resolve conflicts ("accept
+  // server" / discard local edits). Other connections that have the buffer
+  // open receive a BufferUpdatedPush with the fresh content.
+  bool force_reload = 2;
+}
+
+// Server → client: response to OpenBuffer with the initial file content.
+message OpenBufferResponse {
+  oneof result {
+    OpenBufferSuccess success = 1;
+    FileOperationError error = 2;
+  }
+}
+
+message OpenBufferSuccess {
+  string content = 1;
+  uint64 server_version = 2;
+}
+
+// Client → server: push an incremental edit (fire-and-forget notification).
+// If the server accepts (expected_server_version matches its local version),
+// it applies the edit silently — no response needed since the client already
+// has the edit applied locally.
+// If the server rejects (version mismatch), it pushes a BufferUpdatedPush
+// with its current state.
+message BufferEdit {
+  string path = 1;
+  uint64 expected_server_version = 2;
+  uint64 new_client_version = 3;
+  repeated TextEdit edits = 4;
+}
+
+// A single text edit within a buffer, using 1-indexed character offsets (matching CharOffset).
+message TextEdit {
+  uint64 start_offset = 1;
+  uint64 end_offset = 2;
+  string text = 3;
+}
+
+// Server → client push: file changed on disk.
+// The client uses expected_client_version to detect conflicts.
+// Carries only incremental edits — full content is served by OpenBufferResponse.
+message BufferUpdatedPush {
+  string path = 1;
+  uint64 new_server_version = 2;
+  uint64 expected_client_version = 3;
+  repeated TextEdit edits = 4;
+}
+
+// Client → server: request the daemon gather a handoff snapshot and upload it.
+// All paths must be absolute paths on the remote host's filesystem.
+message UploadHandoffSnapshot {
+  // Absolute paths the agent touched (file edits, working directories).
+  // Non-absolute or empty entries are rejected by the daemon.
+  repeated string paths = 1;
+}
+
+// Daemon → client: result of the handoff snapshot upload.
+message UploadHandoffSnapshotResponse {
+  optional string initial_snapshot_token = 1;
+  bool success = 2;
+  optional string error = 3;
+}
+
+// Client → server: close a buffer (stop watching).
+message CloseBuffer {
+  string path = 1;
+}
+
+// Client → server: persist the current in-memory buffer to disk.
+message SaveBuffer {
+  string path = 1;
+}
+
+// Server → client: result of a SaveBuffer request.
+message SaveBufferResponse {
+  oneof result {
+    SaveBufferSuccess success = 1;
+    FileOperationError error = 2;
+  }
+}
+
+message SaveBufferSuccess {}
+
+// Client → server: resolve a conflict by accepting the client's content.
+// The server replaces its in-memory buffer with client_content,
+// updates the clock to {acknowledged_server_version, current_client_version},
+// and persists to disk (updates base_content_version to avoid re-triggering).
+// For "accept server", the client simply re-sends OpenBuffer instead.
+message ResolveConflict {
+  string path = 1;
+  uint64 acknowledged_server_version = 2;
+  string client_content = 3;
+  uint64 current_client_version = 4;
+}
+
+// Server → client: result of a ResolveConflict request.
+message ResolveConflictResponse {
+  oneof result {
+    ResolveConflictSuccess success = 1;
+    FileOperationError error = 2;
+  }
+}
+
+message ResolveConflictSuccess {}
+
+// Server → client push: the file changed on disk while the client had
+// unsaved edits. The server does NOT apply the disk change to its buffer;
+// the client should show a conflict resolution banner.
+message BufferConflictDetected {
+  string path = 1;
+}
+

@@ -1,0 +1,1 @@
+ALTER TABLE ssh_hosts ADD COLUMN label TEXT NOT NULL DEFAULT '';
