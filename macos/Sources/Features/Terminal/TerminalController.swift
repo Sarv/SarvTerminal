@@ -409,6 +409,24 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         from parent: NSWindow? = nil,
         withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil
     ) -> TerminalController? {
+        // If the parent is a non-terminal window (e.g. our Vaults window)
+        // we still want the new terminal to attach as a sibling tab in
+        // that window's tab group — that's how SarvTerminal puts the
+        // first SSH session beside the Vaults dashboard.
+        if let parent,
+           !(parent.windowController is TerminalController),
+           parent.tabbingMode != .disallowed {
+            let controller = TerminalController.init(ghostty, withBaseConfig: baseConfig)
+            guard let window = controller.window else { return controller }
+            parent.addTabbedWindowSafely(window, ordered: .above)
+            controller.scheduleInitialPresentation {
+                controller.showWindow(self)
+                window.makeKeyAndOrderFront(self)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            return controller
+        }
+
         // Making sure that we're dealing with a TerminalController. If not,
         // then we just create a new window.
         guard let parent,
@@ -1156,11 +1174,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         super.showWindow(sender)
     }
 
-    // Shows the "+" button in the tab bar, responds to that click.
+    /// SarvTerminal: native "+" tab button → host search palette.
+    /// ⌘T (newTab:) still creates a local terminal tab.
     override func newWindowForTab(_ sender: Any?) {
-        // Trigger the ghostty core event logic for a new tab.
-        guard let surface = self.focusedSurface?.surface else { return }
-        ghostty.newTab(surface: surface)
+        (NSApp.delegate as? AppDelegate)?.showHostSearch(sender)
     }
 
     // MARK: NSWindowDelegate
