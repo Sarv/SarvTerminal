@@ -1133,7 +1133,9 @@ extension Ghostty {
                     guard let surfaceView = self.surfaceView(from: surface) else { return false }
 
                     // See gotoTab for notes on this check.
-                    guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1 else { return false }
+                    guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1
+                        || !(surfaceView.window?.windowController is BaseTerminalController)
+                    else { return false }
 
                     NotificationCenter.default.post(
                         name: .ghosttyMoveTab,
@@ -1163,9 +1165,12 @@ extension Ghostty {
                     guard let surface = target.target.surface else { return false }
                     guard let surfaceView = self.surfaceView(from: surface) else { return false }
 
-                    // Similar to goto_split (see comment there) about our performability,
-                    // we should make this more accurate later.
-                    guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1 else { return false }
+                    // Performable for native multi-tab windows. The embedded
+                    // single-window app (not a BaseTerminalController) manages its
+                    // own tabs via an observer, so always post there too.
+                    guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1
+                        || !(surfaceView.window?.windowController is BaseTerminalController)
+                    else { return false }
 
                     NotificationCenter.default.post(
                         name: Notification.ghosttyGotoTab,
@@ -1194,26 +1199,22 @@ extension Ghostty {
                 case GHOSTTY_TARGET_SURFACE:
                     guard let surface = target.target.surface else { return false }
                     guard let surfaceView = self.surfaceView(from: surface) else { return false }
-                    guard let controller = surfaceView.window?.windowController as? BaseTerminalController else { return false }
-
-                    // If the window has no splits, the action is not performable
-                    guard controller.surfaceTree.isSplit else { return false }
 
                     // Convert the C API direction to our Swift type
                     guard let splitDirection = SplitFocusDirection.from(direction: direction) else { return false }
 
-                    // Find the current node in the tree
-                    guard let targetNode = controller.surfaceTree.root?.node(view: surfaceView) else { return false }
-
-                    // Check if a split actually exists in the target direction before
-                    // returning true. This ensures performable keybinds only consume
-                    // the key event when we actually perform navigation.
-                    let focusDirection: SplitTree<Ghostty.SurfaceView>.FocusDirection = splitDirection.toSplitTreeFocusDirection()
-                    guard controller.surfaceTree.focusTarget(for: focusDirection, from: targetNode) != nil else {
-                        return false
+                    // Standard windows: only performable (and key-consuming) when a
+                    // split actually exists in that direction. The embedded Vaults
+                    // window isn't a BaseTerminalController — its observer decides
+                    // performability and no-ops if there's no target.
+                    if let controller = surfaceView.window?.windowController as? BaseTerminalController {
+                        guard controller.surfaceTree.isSplit,
+                              let targetNode = controller.surfaceTree.root?.node(view: surfaceView),
+                              controller.surfaceTree.focusTarget(
+                                for: splitDirection.toSplitTreeFocusDirection(), from: targetNode) != nil
+                        else { return false }
                     }
 
-                    // We have a valid target, post the notification to perform the navigation
                     NotificationCenter.default.post(
                         name: Notification.ghosttyFocusSplit,
                         object: surfaceView,
@@ -1300,10 +1301,12 @@ extension Ghostty {
                 case GHOSTTY_TARGET_SURFACE:
                     guard let surface = target.target.surface else { return false }
                     guard let surfaceView = self.surfaceView(from: surface) else { return false }
-                    guard let controller = surfaceView.window?.windowController as? BaseTerminalController else { return false }
 
-                    // If the window has no splits, the action is not performable
-                    guard controller.surfaceTree.isSplit else { return false }
+                    // Standard windows: only performable with a split. The embedded
+                    // window isn't a BaseTerminalController; its observer resizes.
+                    if let controller = surfaceView.window?.windowController as? BaseTerminalController {
+                        guard controller.surfaceTree.isSplit else { return false }
+                    }
 
                     guard let resizeDirection = SplitResizeDirection.from(direction: resize.direction) else { return false }
                     NotificationCenter.default.post(
@@ -1354,10 +1357,12 @@ extension Ghostty {
             case GHOSTTY_TARGET_SURFACE:
                 guard let surface = target.target.surface else { return false }
                 guard let surfaceView = self.surfaceView(from: surface) else { return false }
-                guard let controller = surfaceView.window?.windowController as? BaseTerminalController else { return false }
 
-                // If the window has no splits, the action is not performable
-                guard controller.surfaceTree.isSplit else { return false }
+                // Standard windows: only performable with a split. The embedded
+                // window isn't a BaseTerminalController; its observer toggles zoom.
+                if let controller = surfaceView.window?.windowController as? BaseTerminalController {
+                    guard controller.surfaceTree.isSplit else { return false }
+                }
 
                 NotificationCenter.default.post(
                     name: Notification.didToggleSplitZoom,

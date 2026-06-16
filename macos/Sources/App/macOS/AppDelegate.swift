@@ -22,6 +22,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuServices: NSMenu?
     @IBOutlet private var menuCheckForUpdates: NSMenuItem?
     @IBOutlet private var menuOpenConfig: NSMenuItem?
+    @IBOutlet private var menuSettings: NSMenuItem?
     @IBOutlet private var menuReloadConfig: NSMenuItem?
     @IBOutlet private var menuSecureInput: NSMenuItem?
     @IBOutlet private var menuQuit: NSMenuItem?
@@ -87,6 +88,12 @@ class AppDelegate: NSObject,
 
     /// This is only true before application has become active.
     private var applicationHasBecomeActive: Bool = false
+
+    /// SarvTerminal opens to the Vaults dashboard with no terminal. libghostty
+    /// posts an app-level new-window request on launch; we swallow that first
+    /// one so we don't auto-open a terminal. Subsequent requests (e.g. a
+    /// `new_window` keybind) open an embedded terminal tab.
+    private var pendingInitialCoreWindowSuppression: Bool = true
 
     /// This is set in applicationDidFinishLaunching with the system uptime so we can determine the
     /// seconds since the process was launched.
@@ -350,9 +357,13 @@ class AppDelegate: NSObject,
             // is possible to have other windows in a few scenarios:
             //   - if we're opening a URL since `application(_:openFile:)` is called before this.
             //   - if we're restoring from persisted state
-            if TerminalController.all.isEmpty && derivedConfig.initialWindow {
+            if derivedConfig.initialWindow {
+                // SarvTerminal launches into the Vaults dashboard, not a
+                // shell. We always surface Vaults on first activate even if
+                // macOS restored a terminal window from prior session state —
+                // Vaults is the home of the app.
                 undoManager.disableUndoRegistration()
-                _ = TerminalController.newWindow(ghostty)
+                HostManagerController.shared.show()
                 undoManager.enableUndoRegistration()
             }
         }
@@ -555,6 +566,101 @@ class AppDelegate: NSObject,
     }
 
     private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
+        // SarvTerminal app shortcuts (rebindable via Settings → Keybinds, see
+        // AppKeybindStore) that must win even when a terminal surface is
+        // focused — a focused surface would otherwise consume the combo before
+        // the menu. Only act when the Vaults window is key so we don't hijack
+        // Settings/About/etc.
+        if NSApp.keyWindow === HostManagerController.shared.window,
+           let action = AppKeybindStore.shared.action(matching: event) {
+            switch action {
+            case .commandPalette:
+                HostSearchController.shared.show()
+            case .newLocalTerminal:
+                VaultsTabsModel.shared.newTerminal()
+            case .splitRight, .splitDown:
+                // Only meaningful when a terminal tab is active. Otherwise let
+                // the key fall through.
+                guard VaultsTabsModel.shared.activeTerminal != nil else { return event }
+                // Open a blank split pane with an inline chooser (SSH / local).
+                VaultsTabsModel.shared.splitAwaitingChoice(direction: action == .splitRight ? .right : .down)
+            }
+            return nil
+        }
+
+        // Ghostty default navigation keybinds for the embedded single-window
+        // terminal. libghostty posts these to a BaseTerminalController / native
+        // tab group — neither of which our custom Vaults window is — so the core
+        // handlers no-op and we wire the macOS defaults here. (In-core actions
+        // like copy/paste/scroll/font-size/clear still work via the surface;
+        // user rebinding can layer on later.)
+        if NSApp.keyWindow === HostManagerController.shared.window,
+           VaultsTabsModel.shared.activeTerminal != nil {
+            let model = VaultsTabsModel.shared
+            let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
+            switch (mods, event.keyCode) {
+            case ([.command, .shift], 30): model.cycleTab(1); return nil            // ⌘⇧]  next_tab
+            case ([.command, .shift], 33): model.cycleTab(-1); return nil           // ⌘⇧[  previous_tab
+            case ([.control], 48):         model.cycleTab(1); return nil            // ⌃Tab  next_tab
+            case ([.control, .shift], 48): model.cycleTab(-1); return nil           // ⌃⇧Tab previous_tab
+            case ([.command], 30):         model.focusSplit(.next); return nil      // ⌘]   goto_split next
+            case ([.command], 33):         model.focusSplit(.previous); return nil  // ⌘[   goto_split previous
+            case ([.command, .option], 123): model.focusSplit(.left); return nil    // ⌘⌥←
+            case ([.command, .option], 124): model.focusSplit(.right); return nil   // ⌘⌥→
+            case ([.command, .option], 125): model.focusSplit(.down); return nil    // ⌘⌥↓
+            case ([.command, .option], 126): model.focusSplit(.up); return nil      // ⌘⌥↑
+            case ([.command, .shift], 36): model.toggleZoomActive(); return nil     // ⌘⇧⏎  toggle_split_zoom
+            case ([.command], 36): NSApp.keyWindow?.toggleFullScreen(nil); return nil // ⌘⏎ toggle_fullscreen
+            case ([.command, .control], 123): model.resizeSplit(.left, amount: 10); return nil  // ⌘⌃←
+            case ([.command, .control], 124): model.resizeSplit(.right, amount: 10); return nil // ⌘⌃→
+            case ([.command, .control], 125): model.resizeSplit(.down, amount: 10); return nil  // ⌘⌃↓
+            case ([.command, .control], 126): model.resizeSplit(.up, amount: 10); return nil    // ⌘⌃↑
+            default: break
+            }
+            // close_surface (⌘W) / close_tab:this (⌘⌥W)
+            if event.charactersIgnoringModifiers?.lowercased() == "w" {
+                if mods == [.command] { model.closeFocusedPane(); return nil }
+                if mods == [.command, .option] { model.closeActiveTab(); return nil }
+            }
+        }
+
+        // ⌘1…⌘8 → select the Nth terminal tab; ⌘9 → last tab (Ghostty default).
+        if NSApp.keyWindow === HostManagerController.shared.window,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           let chars = event.charactersIgnoringModifiers,
+           let digit = Int(chars), (1...9).contains(digit) {
+            if digit == 9 {
+                VaultsTabsModel.shared.selectLastTab()
+            } else {
+                VaultsTabsModel.shared.selectTab(index: digit - 1)
+            }
+            return nil
+        }
+
+        // ⌘⇧M → toggle focus mode (sidebar) for the active terminal tab.
+        if NSApp.keyWindow === HostManagerController.shared.window,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
+           event.charactersIgnoringModifiers?.lowercased() == "m" {
+            VaultsTabsModel.shared.toggleFocusMode()
+            return nil
+        }
+
+        // Esc closes the "Show All Tabs" overview.
+        if NSApp.keyWindow === HostManagerController.shared.window,
+           event.keyCode == 53, // Escape
+           VaultsTabsModel.shared.showAllTabs {
+            VaultsTabsModel.shared.showAllTabs = false
+            return nil
+        }
+
+        // Broadcast: when the active tab is broadcasting, send the event to the
+        // tab's OTHER panes (the focused pane still handles it natively, so we
+        // don't consume it — keeps backspace/IME/⌘K correct in the focused
+        // pane and avoids the doubled input).
+        if NSApp.keyWindow === HostManagerController.shared.window {
+            VaultsTabsModel.shared.broadcastKeyEvent(event)
+        }
+
         // If the tab overview is visible and escape is pressed, close it.
         // This can't POSSIBLY be right and is probably a FirstResponder problem
         // that we should handle elsewhere in our program. But this works and it
@@ -708,9 +814,19 @@ class AppDelegate: NSObject,
     }
 
     @objc private func ghosttyNewWindow(_ notification: Notification) {
-        let configAny = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey]
-        let config = configAny as? Ghostty.SurfaceConfiguration
-        _ = TerminalController.newWindow(ghostty, withBaseConfig: config)
+        // SarvTerminal is a single window: the Vaults window hosts the
+        // dashboard and all terminals as embedded tabs (see VaultsTabsModel).
+        // There are no separate terminal windows.
+        HostManagerController.shared.show()
+
+        // Swallow the launch-time new-window request so we open to the
+        // dashboard with no terminal.
+        if pendingInitialCoreWindowSuppression {
+            pendingInitialCoreWindowSuppression = false
+            return
+        }
+
+        VaultsTabsModel.shared.newTerminal()
     }
 
     @objc private func ghosttyNewTab(_ notification: Notification) {
@@ -933,20 +1049,37 @@ class AppDelegate: NSObject,
         ghostty.reloadConfig()
     }
 
+    @IBAction func showSettings(_ sender: Any?) {
+        SettingsController.shared.show()
+    }
+
+    @IBAction func showHostManager(_ sender: Any?) {
+        HostManagerController.shared.show()
+    }
+
+    @IBAction func showHostSearch(_ sender: Any?) {
+        HostSearchController.shared.show()
+    }
+
     @IBAction func checkForUpdates(_ sender: Any?) {
         updateController.checkForUpdates()
         // UpdateSimulator.happyPath.simulate(with: updateViewModel)
     }
 
     @IBAction func newWindow(_ sender: Any?) {
-        _ = TerminalController.newWindow(ghostty)
+        // Single-window model: "New Window" opens the command palette (new
+        // tab / connection) rather than a separate window.
+        HostSearchController.shared.show()
     }
 
     @IBAction func newTab(_ sender: Any?) {
-        _ = TerminalController.newTab(
-            ghostty,
-            from: TerminalController.preferredParent?.window
-        )
+        // ⌘T → command palette (quick connect / Local Terminal / Serial).
+        HostSearchController.shared.show()
+    }
+
+    /// ⌘L → open a local terminal tab directly, skipping the palette.
+    @IBAction func newLocalTerminal(_ sender: Any?) {
+        VaultsTabsModel.shared.newTerminal()
     }
 
     @IBAction func closeAllWindows(_ sender: Any?) {
@@ -1090,7 +1223,8 @@ extension AppDelegate {
         // modify this stuff as code.
         self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
         self.menuCheckForUpdates?.setImageIfDesired(systemSymbolName: "square.and.arrow.down")
-        self.menuOpenConfig?.setImageIfDesired(systemSymbolName: "gear")
+        self.menuSettings?.setImageIfDesired(systemSymbolName: "gear")
+        self.menuOpenConfig?.setImageIfDesired(systemSymbolName: "square.and.pencil")
         self.menuReloadConfig?.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90")
         self.menuSecureInput?.setImageIfDesired(systemSymbolName: "lock.display")
         self.menuNewWindow?.setImageIfDesired(systemSymbolName: "macwindow.badge.plus")
@@ -1140,14 +1274,16 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "quit", menuItem: self.menuQuit)
 
         syncMenuShortcut(config, action: "new_window", menuItem: self.menuNewWindow)
-        syncMenuShortcut(config, action: "new_tab", menuItem: self.menuNewTab)
+        // New Tab uses a fixed ⌘T (set in the xib) → command palette. Don't
+        // sync it from the `new_tab` keybind, which would clear it.
         syncMenuShortcut(config, action: "close_surface", menuItem: self.menuClose)
         syncMenuShortcut(config, action: "close_tab", menuItem: self.menuCloseTab)
         syncMenuShortcut(config, action: "close_window", menuItem: self.menuCloseWindow)
         syncMenuShortcut(config, action: "close_all_windows", menuItem: self.menuCloseAllWindows)
-        syncMenuShortcut(config, action: "new_split:right", menuItem: self.menuSplitRight)
+        // Split right/down shortcuts (⌘D / ⌘⇧D) are app-level now and open the
+        // inline split chooser (see AppKeybindStore) — don't let the native
+        // new_split keybinds claim them on the menu items.
         syncMenuShortcut(config, action: "new_split:left", menuItem: self.menuSplitLeft)
-        syncMenuShortcut(config, action: "new_split:down", menuItem: self.menuSplitDown)
         syncMenuShortcut(config, action: "new_split:up", menuItem: self.menuSplitUp)
 
         syncMenuShortcut(config, action: "undo", menuItem: self.menuUndo)
