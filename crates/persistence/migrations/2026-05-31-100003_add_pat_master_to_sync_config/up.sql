@@ -1,2 +1,0 @@
-ALTER TABLE sync_config ADD COLUMN pat_enc TEXT NOT NULL DEFAULT '';
-ALTER TABLE sync_config ADD COLUMN master_pass_enc TEXT NOT NULL DEFAULT '';
