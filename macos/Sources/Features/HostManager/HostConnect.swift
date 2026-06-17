@@ -5,7 +5,12 @@ import AppKit
 /// command in it (typically an `ssh …` invocation). The terminal lives inside
 /// the single Vaults window — see `VaultsTabsModel`.
 enum HostConnect {
-    static func run(command: String, name: String = "Terminal") {
-        VaultsTabsModel.shared.newTerminal(command: command, name: name)
+    static func run(
+        command: String,
+        name: String = "Terminal",
+        host: SavedHost? = nil,
+        staged: Bool = false
+    ) {
+        VaultsTabsModel.shared.newTerminal(command: command, name: name, host: host, staged: staged)
     }
 }

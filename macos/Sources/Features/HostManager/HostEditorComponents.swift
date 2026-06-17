@@ -184,8 +184,10 @@ struct EditorSecureRow: View {
                         TextField(placeholder, text: $text)
                             .textFieldStyle(.plain)
                     } else {
-                        SecureField(placeholder, text: $text)
-                            .textFieldStyle(.plain)
+                        // NOTE: SwiftUI's `SecureField` + `.textFieldStyle(.plain)`
+                        // is not editable on macOS (you can't focus or type into
+                        // it), so back it with an AppKit NSSecureTextField.
+                        BorderlessSecureField(placeholder: placeholder, text: $text)
                     }
                 }
                 Button { revealed.toggle() } label: {
@@ -194,6 +196,46 @@ struct EditorSecureRow: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+}
+
+// MARK: - Borderless secure field (AppKit-backed)
+
+/// A plain, borderless secure text field. Wraps `NSSecureTextField` because
+/// SwiftUI's `SecureField().textFieldStyle(.plain)` is not editable on macOS.
+struct BorderlessSecureField: NSViewRepresentable {
+    let placeholder: String
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> NSSecureTextField {
+        let field = NSSecureTextField()
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.placeholderString = placeholder
+        field.delegate = context.coordinator
+        field.usesSingleLineMode = true
+        field.lineBreakMode = .byClipping
+        field.font = .systemFont(ofSize: NSFont.systemFontSize)
+        field.stringValue = text
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return field
+    }
+
+    func updateNSView(_ field: NSSecureTextField, context: Context) {
+        if field.stringValue != text { field.stringValue = text }
+        field.placeholderString = placeholder
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        private let text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+        func controlTextDidChange(_ note: Notification) {
+            guard let field = note.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
         }
     }
 }

@@ -121,6 +121,18 @@ struct VaultsFocusModeView: View {
                         )
                     }
                 }
+                // Staged SSH connection popup over the focused pane (mirrors the
+                // split-grid behavior).
+                .overlay {
+                    if let conn = tabs.connections[surface.id] {
+                        SSHConnectionView(
+                            model: conn.model,
+                            controller: conn.controller,
+                            onCancel: { tabs.closePane(surface: surface) }
+                        )
+                        .clipped()
+                    }
+                }
         } else {
             Color(NSColor.windowBackgroundColor)
         }

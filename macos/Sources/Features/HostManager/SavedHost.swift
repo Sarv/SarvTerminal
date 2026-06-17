@@ -146,7 +146,13 @@ struct SavedHost: Codable, Identifiable, Hashable {
     /// Builds the shell command we run when the user opens a session.
     /// All knobs become explicit `-o Key=Value` so the host doesn't
     /// have to be present in `~/.ssh/config`.
-    var sshCommand: String {
+    var sshCommand: String { sshCommand(staged: false) }
+
+    /// Build the `ssh …` command line. When `staged` is true (the guided
+    /// connection popup), add `NumberOfPasswordPrompts=1` so a wrong password
+    /// makes ssh exit immediately — giving the popup a clean failure + Reconnect
+    /// instead of leaving ssh re-prompting in the background.
+    func sshCommand(staged: Bool = false) -> String {
         var args: [String] = ["ssh"]
         if port != 22 { args.append("-p \(port)") }
         if !identityFile.isEmpty {
@@ -162,8 +168,20 @@ struct SavedHost: Codable, Identifiable, Hashable {
         }
         if serverAliveIntervalSeconds > 0 {
             args.append("-o ServerAliveInterval=\(serverAliveIntervalSeconds)")
+            args.append("-o ServerAliveCountMax=3")
+        } else if staged {
+            // No explicit keepalive configured: for a staged (popup) connect add
+            // a default so a session killed by sleep / network loss is DETECTED
+            // (ssh exits within ~ServerAliveInterval × ServerAliveCountMax) and
+            // the popup can auto-reconnect, instead of hanging on a dead socket.
+            args.append("-o ServerAliveInterval=15")
+            args.append("-o ServerAliveCountMax=3")
         }
-        args.append("-o StrictHostKeyChecking=\(strictHostKeyChecking.rawValue)")
+        // For a staged (popup) connect, auto-accept new host keys so there's no
+        // TTY host-key prompt, and fail fast on a wrong password (one attempt).
+        let hostKeyChecking = staged ? "accept-new" : strictHostKeyChecking.rawValue
+        args.append("-o StrictHostKeyChecking=\(hostKeyChecking)")
+        if staged { args.append("-o NumberOfPasswordPrompts=1") }
         for f in localForwards   where !f.isEmpty { args.append("-L \(shellQuote(f))") }
         for f in remoteForwards  where !f.isEmpty { args.append("-R \(shellQuote(f))") }
         if dynamicForwardPort > 0 { args.append("-D \(dynamicForwardPort)") }
@@ -260,6 +278,16 @@ extension SavedHost {
     var canConnect: Bool {
         !hostname.trimmingCharacters(in: .whitespaces).isEmpty
     }
+
+    /// "Password" auth requires a stored password — it's mandatory, because the
+    /// connection popup never prompts for a password method (it connects with the
+    /// saved one). If you don't want to store a password, use "Ask" instead.
+    var passwordRequirementMet: Bool {
+        authMethod != .password || !password.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Enough info to save: connectable AND the password rule is satisfied.
+    var canSave: Bool { canConnect && passwordRequirementMet }
 }
 
 // MARK: - Helpers

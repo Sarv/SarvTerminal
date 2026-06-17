@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Network
 import SwiftUI
 import GhosttyKit
 import UniformTypeIdentifiers
@@ -59,6 +60,11 @@ final class VaultsTabsModel: ObservableObject {
         /// anchor when splitting from the palette.
         weak var focusedSurface: Ghostty.SurfaceView?
 
+        /// The saved host this tab connected to, if any — carried so a
+        /// reconnect or "Duplicate Tab" can re-run the guided connect (and
+        /// prefill the password).
+        var connectHost: SavedHost?
+
         /// The label shown on the chip (custom name wins).
         var displayName: String {
             if let customName, !customName.isEmpty { return customName }
@@ -68,6 +74,22 @@ final class VaultsTabsModel: ObservableObject {
         init(surface: Ghostty.SurfaceView, name: String) {
             self.surfaceTree = .init(view: surface)
             self.title = name
+        }
+    }
+
+    /// A staged SSH connection bound to a single surface (pane). Stored in
+    /// `connections` keyed by the CURRENT surface's id — not the tab — so the
+    /// popup follows the surface when it's dragged into another tab's split.
+    /// `command` is carried here (not on the tab) because the owning tab can
+    /// change as the surface moves between tabs.
+    final class ActiveConnection {
+        let model: SSHConnectionModel
+        var controller: SSHConnectionController
+        let command: String
+        init(model: SSHConnectionModel, controller: SSHConnectionController, command: String) {
+            self.model = model
+            self.controller = controller
+            self.command = command
         }
     }
 
@@ -97,6 +119,9 @@ final class VaultsTabsModel: ObservableObject {
     }
 
     @Published private(set) var terminals: [TerminalTab] = []
+    /// Staged SSH connections, keyed by the current surface id of each. A pane
+    /// shows the connection popup when its surface id has an entry here.
+    @Published private(set) var connections: [UUID: ActiveConnection] = [:]
     @Published var selection: Selection = .dashboard
     /// Surface IDs of freshly-split panes that are showing the inline chooser
     /// (blank pane) and waiting for the user to pick what to run.
@@ -110,14 +135,68 @@ final class VaultsTabsModel: ObservableObject {
     /// Show the "all tabs" overview grid.
     @Published var showAllTabs: Bool = false
 
+    /// Recently closed tabs (oldest first), retained so they can be reopened
+    /// with full state — local shell, SSH session, or a pending chooser — via
+    /// the reopen-closed-tab shortcut (⌘⇧T). Retaining the `TerminalTab` keeps
+    /// its live surface tree (and child processes) alive until the tab is
+    /// reopened or evicted past `maxClosedTabs`.
+    private var closedTabs: [(tab: TerminalTab, index: Int)] = []
+    private let maxClosedTabs = 25
+
     private var observers: [NSObjectProtocol] = []
+    /// Observers on the NSWorkspace center (sleep/wake) — removed in deinit.
+    private var workspaceObservers: [NSObjectProtocol] = []
+
+    /// Watches overall network reachability so a waiting connection can retry the
+    /// instant connectivity returns (instead of sitting out the back-off timer).
+    private let pathMonitor = NWPathMonitor()
+    private var networkSatisfied = true
 
     private init() {
         installObservers()
+        installReachabilityAndWakeObservers()
     }
 
     deinit {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        pathMonitor.cancel()
+    }
+
+    // MARK: - Reachability & wake → instant reconnect
+
+    /// Trigger an immediate reconnect (skipping the countdown) for every
+    /// connection currently in the auto-reconnect loop. Used when the network
+    /// comes back or the machine wakes from sleep — the events that most often
+    /// follow a dropped SSH session.
+    private func retryReconnectingNow(reason: String) {
+        // Snapshot: retryNow() re-keys `connections` as it relaunches.
+        for conn in Array(connections.values) where conn.model.autoReconnecting {
+            conn.model.addLog("bolt.horizontal.circle", .secondary, reason)
+            conn.controller.retryNow()
+        }
+    }
+
+    private func installReachabilityAndWakeObservers() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let satisfied = path.status == .satisfied
+                let cameBack = satisfied && !self.networkSatisfied
+                self.networkSatisfied = satisfied
+                if cameBack { self.retryReconnectingNow(reason: "Network is back — reconnecting") }
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue.global(qos: .utility))
+
+        // Waking the machine (e.g. opening the lid) resumes the poll timers, which
+        // detect the dropped session; nudge any waiting connection to retry now.
+        let wake = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.retryReconnectingNow(reason: "Woke from sleep — reconnecting")
+        }
+        workspaceObservers.append(wake)
     }
 
     // MARK: - Queries
@@ -131,6 +210,32 @@ final class VaultsTabsModel: ObservableObject {
         terminals.first { $0.surfaceTree.contains(surface) }
     }
 
+    // MARK: - Connection registry (per surface)
+
+    /// The surface id currently bound to `model`, if any.
+    private func surfaceID(for model: SSHConnectionModel) -> UUID? {
+        connections.first { $0.value.model === model }?.key
+    }
+
+    /// Find a live surface by id across every tab's split tree.
+    private func surface(withID id: UUID) -> Ghostty.SurfaceView? {
+        for tab in terminals {
+            if let match = tab.surfaceTree.root?.leaves().first(where: { $0.id == id }) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    /// Stop and forget the connection bound to `surfaceID` (if any), cleaning up
+    /// its poll timer and password temp file.
+    private func teardownConnection(surfaceID: UUID) {
+        guard let conn = connections[surfaceID] else { return }
+        conn.controller.stop()
+        deleteTempFile(conn.model.passwordFilePath)
+        connections[surfaceID] = nil
+    }
+
     // MARK: - Tab mutations
 
     /// Create a new embedded terminal tab, select it, and bring the Vaults
@@ -138,22 +243,190 @@ final class VaultsTabsModel: ObservableObject {
     /// shell, the host label for SSH) — deduped with "(1)", "(2)", … suffixes.
     /// Optionally inject a command once the shell is ready.
     @discardableResult
-    func newTerminal(command: String? = nil, name: String = "Terminal") -> TerminalTab? {
+    func newTerminal(
+        command: String? = nil,
+        name: String = "Terminal",
+        host: SavedHost? = nil,
+        staged: Bool = false
+    ) -> TerminalTab? {
         guard let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return nil }
+
+        // Staged SSH connect: run ssh directly with the password fed via askpass
+        // (no TTY prompt, no shell echo), driven by the connection popup.
+        if staged, let command, command.hasPrefix("ssh ") {
+            return startSSHConnection(app: app, command: command, name: name, host: host)
+        }
+
+        // Plain local terminal / non-staged command typed into a shell.
         let surface = Ghostty.SurfaceView(app)
         let tab = TerminalTab(surface: surface, name: uniqueTabName(base: name))
         tab.launchCommand = command
+        tab.connectHost = host
         terminals.append(tab)
         selection = .terminal(tab.id)
         HostManagerController.shared.show()
         Ghostty.moveFocus(to: surface)
-
         if let command {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 surface.surfaceModel?.sendText("\(command)\n")
             }
         }
         return tab
+    }
+
+    // MARK: - Staged SSH connection
+
+    /// Whether the connection popup should collect a password in a field. Only
+    /// "Ask" does — it has no stored password and prompts on every connect.
+    /// "Password" hosts always carry a (mandatory) saved password, so they
+    /// connect silently and, on failure, show the error card to fix via Edit
+    /// host — they never show an inline prompt. Key/agent auth needs no password.
+    private func sshNeedsPassword(_ host: SavedHost?) -> Bool {
+        host?.authMethod == .ask
+    }
+
+    /// A surface that runs `command` (ssh) directly. The password is fed via the
+    /// askpass helper, with the env baked into the command string (the command
+    /// runs through `/bin/sh -c`, so this reliably reaches ssh regardless of the
+    /// surface env plumbing). ssh's verbose stderr is redirected to `logFile` so
+    /// the terminal shows only the clean remote session. Returns the surface and
+    /// the temp password-file path (if any) so the caller can clean it up.
+    private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?)
+        -> (surface: Ghostty.SurfaceView, passwordFile: String?) {
+        var full = command
+        var passwordFile: String?
+        if let pw = password, !pw.isEmpty {
+            let env = SSHAskpass.env(forPassword: pw)
+            passwordFile = env["SARV_ASKPASS_FILE"]
+            // Use the `env` command (not bare VAR=val) so the assignments
+            // survive macOS's `bash -c "exec -l <command>"` wrapper, where
+            // `exec -l VAR=val ssh` would treat "VAR=val" as the program name.
+            let prefix = env.map { "\($0.key)='\($0.value)'" }.joined(separator: " ")
+            if !prefix.isEmpty { full = "env \(prefix) \(full)" }
+        }
+        var cfg = Ghostty.SurfaceConfiguration()
+        cfg.command = full
+        return (Ghostty.SurfaceView(app, baseConfig: cfg), passwordFile)
+    }
+
+    /// Remove the askpass password temp file (no-op if nil/absent) so we never
+    /// leave orphans. The connection log is kept entirely in memory.
+    private func deleteTempFile(_ path: String?) {
+        guard let path else { return }
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
+    private func startSSHConnection(app: ghostty_app_t, command: String, name: String, host: SavedHost?) -> TerminalTab? {
+        let needsPassword = sshNeedsPassword(host)
+        let knownPassword = (host?.password.isEmpty == false) ? host?.password : nil
+        // If we still need a password, the popup collects it first over a blank
+        // placeholder surface; otherwise spawn ssh immediately.
+        let surface: Ghostty.SurfaceView
+        var passwordFile: String?
+        if needsPassword {
+            surface = Ghostty.SurfaceView(app)
+        } else {
+            let made = makeSSHSurface(app: app, command: command, password: knownPassword)
+            surface = made.surface
+            passwordFile = made.passwordFile
+        }
+
+        let tab = TerminalTab(surface: surface, name: uniqueTabName(base: host?.label ?? name))
+        tab.launchCommand = command
+        tab.connectHost = host
+        terminals.append(tab)
+        selection = .terminal(tab.id)
+        HostManagerController.shared.show()
+
+        let model = SSHConnectionModel(title: host?.label ?? name, host: host, needsPassword: needsPassword)
+        if !needsPassword { model.passwordFilePath = passwordFile }
+        let controller = SSHConnectionController(model: model, surfaceView: surface, tabsModel: self)
+        connections[surface.id] = ActiveConnection(model: model, controller: controller, command: command)
+        if !needsPassword { controller.start() }   // else: starts on password submit
+        return tab
+    }
+
+    /// (Re)launch ssh for `model` with `password` — spawns a fresh ssh surface
+    /// with the askpass env, replaces JUST this connection's pane in its tab's
+    /// split tree (so splits survive), restarts the controller, and re-keys the
+    /// connection to the new surface. Backs password submit and Reconnect.
+    func launchSSHConnection(for model: SSHConnectionModel, password: String) {
+        guard let oldID = surfaceID(for: model),
+              let conn = connections[oldID],
+              let oldSurface = surface(withID: oldID),
+              let tab = tab(containing: oldSurface),
+              let node = tab.surfaceTree.root?.node(view: oldSurface),
+              let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+        deleteTempFile(model.passwordFilePath)   // discard the previous attempt's password file
+        let made = makeSSHSurface(app: app, command: conn.command, password: password)
+        // Replace only this pane's node — works whether it's the whole tab or one
+        // pane of a split.
+        if let newTree = try? tab.surfaceTree.replacing(node: node, with: .leaf(view: made.surface)) {
+            tab.surfaceTree = newTree
+        } else {
+            tab.surfaceTree = .init(view: made.surface)
+        }
+        model.passwordFilePath = made.passwordFile
+        model.silent = true            // attempting with a known password — no field while connecting
+        model.stage = .connecting
+        conn.controller.stop()
+        let controller = SSHConnectionController(model: model, surfaceView: made.surface, tabsModel: self)
+        // Re-key the connection to the new surface.
+        connections[oldID] = nil
+        connections[made.surface.id] = ActiveConnection(model: model, controller: controller, command: conn.command)
+        controller.start()
+    }
+
+    /// Open the host editor for this connection's host (popup "Edit host").
+    func editHost(for model: SSHConnectionModel) {
+        guard let host = model.host else { return }
+        HostManagerSelection.shared.pendingEditHostID = host.id
+        selectDashboard(section: .vaults)
+    }
+
+    /// Reconnect / "Start over" (popup button): reset the attempt count. After an
+    /// auth failure on a password host, re-prompt for the password (don't retry
+    /// the known-wrong one); otherwise relaunch the connection.
+    func reconnect(for model: SSHConnectionModel) {
+        model.passwordAttempts = 0
+        model.autoReconnecting = false
+        model.reconnectAttempts = 0
+        model.reconnectSecondsRemaining = 0
+        // Pick up a password the user may have just corrected via "Edit host" —
+        // this is what makes Start over work after fixing a wrong saved password.
+        if let host = model.host, let latest = SavedHostsStore.shared.host(withID: host.id) {
+            model.passwordField = latest.password
+        }
+        // Only "Ask" hosts re-prompt for a password; "Password" hosts relaunch
+        // with the (corrected) saved password — no inline prompt.
+        if case .failed(.permissionDenied) = model.stage, model.host?.authMethod == .ask {
+            model.logEntries = []
+            model.silent = false
+            model.stage = .needsPassword
+        } else {
+            launchSSHConnection(for: model, password: model.passwordField)
+        }
+    }
+
+    /// The session authenticated: hide the popup (show the live terminal) and
+    /// save the working password to the host so future connects are silent.
+    func connectionDidConnect(for model: SSHConnectionModel) {
+        // Persist a working password only for "Password" hosts. "Ask" hosts must
+        // prompt every connect, so we never store what was typed for them.
+        if let host = model.host, host.authMethod != .ask,
+           !model.passwordField.isEmpty, host.password != model.passwordField {
+            var updated = host
+            updated.password = model.passwordField
+            SavedHostsStore.shared.upsert(updated)
+        }
+        model.stage = .connected
+        // Logged in: drop the askpass password file. ssh keeps its now-unlinked
+        // fd; the file is freed when ssh exits.
+        deleteTempFile(model.passwordFilePath)
+        model.passwordFilePath = nil
+        if let id = surfaceID(for: model), let surface = surface(withID: id) {
+            Ghostty.moveFocus(to: surface)
+        }
     }
 
     /// A tab label unique among open tabs: `base`, else `base (1)`, `base (2)`…
@@ -224,6 +497,9 @@ final class VaultsTabsModel: ObservableObject {
         guard let newTree = try? destTab.surfaceTree.replacing(
             node: awaitingNode, with: .leaf(view: draggedSurface)) else { return }
         awaitingChoice.remove(awaiting.id)
+        // The surface moves into the split. Its SSH connection (popup) follows
+        // automatically — it's keyed by surface id, not by tab — so an in-flight
+        // password prompt / connecting state keeps showing over the new pane.
         terminals.remove(at: srcIdx)
         destTab.surfaceTree = newTree
         Ghostty.moveFocus(to: draggedSurface)
@@ -235,6 +511,7 @@ final class VaultsTabsModel: ObservableObject {
         guard let tab = tab(containing: surface),
               let node = tab.surfaceTree.root?.node(view: surface) else { return }
         awaitingChoice.remove(surface.id)
+        teardownConnection(surfaceID: surface.id)   // drop this pane's SSH popup, if any
         let remaining = tab.surfaceTree.removing(node)
         if remaining.isEmpty {
             closeTerminal(tab.id)
@@ -275,7 +552,10 @@ final class VaultsTabsModel: ObservableObject {
             return
         }
         Ghostty.moveFocus(to: newView)
-        if let command = tab.launchCommand {
+        // Prefer the source pane's own SSH command (it travels with the surface,
+        // so a migrated SSH pane still duplicates correctly); fall back to the
+        // tab's launch command, then to cd-ing a local shell to the source cwd.
+        if let command = connections[surface.id]?.command ?? tab.launchCommand {
             send(command, to: newView)
         } else if let cwd = surface.pwd, !cwd.isEmpty {
             send("cd \"\(cwd)\"", to: newView)
@@ -333,8 +613,10 @@ final class VaultsTabsModel: ObservableObject {
         case .right: .right
         }
         guard let newTree = try? destTab.surfaceTree.inserting(view: surface, at: destinationSurface, direction: direction) else { return }
-        // Remove the source tab WITHOUT freeing the surface — it now lives in
-        // the destination tab's tree.
+        // Remove the source tab WITHOUT freeing the surface — it now lives in the
+        // destination tab's tree. Its SSH connection (popup) follows the surface
+        // automatically (keyed by surface id), so an in-flight password prompt or
+        // connecting/failed state keeps showing over the new pane in the split.
         terminals.remove(at: sourceIdx)
         destTab.surfaceTree = newTree
         selection = .terminal(destTab.id)
@@ -369,10 +651,22 @@ final class VaultsTabsModel: ObservableObject {
             return responder === pane || responder.isDescendant(of: pane)
         }
 
-        for pane in panes where pane !== source {
+        for pane in panes where pane !== source && paneAcceptsBroadcast(pane) {
             guard let surface = pane.surface else { continue }
             sendKeyToCore(event, surface: surface)
         }
+    }
+
+    /// Whether a pane is a live, working terminal that should receive broadcast
+    /// input. Panes still showing the SSH connection popup (needs-password /
+    /// connecting / failed / disconnected) or the blank "open in this split"
+    /// chooser have no usable shell behind them — sending keys there does nothing
+    /// useful and can dismiss the pane, so they're excluded. A `connected` SSH
+    /// pane (popup hidden) and plain local shells DO receive input.
+    private func paneAcceptsBroadcast(_ pane: Ghostty.SurfaceView) -> Bool {
+        if awaitingChoice.contains(pane.id) { return false }
+        if let conn = connections[pane.id], conn.model.showsCard { return false }
+        return true
     }
 
     /// Send a key event straight to a surface's core, mirroring the encode
@@ -505,12 +799,59 @@ final class VaultsTabsModel: ObservableObject {
     /// Close a terminal tab, selecting a sensible neighbor afterward.
     func closeTerminal(_ id: UUID) {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        // Tear down any SSH connection popups bound to this tab's panes.
+        for surface in terminals[idx].surfaceTree.root?.leaves() ?? [] {
+            teardownConnection(surfaceID: surface.id)
+        }
+        recordClosed(terminals[idx], at: idx)
         terminals.remove(at: idx)
         guard case let .terminal(selected) = selection, selected == id else { return }
         if terminals.isEmpty {
             selection = .dashboard
+            // The closed surface was the window's first responder. Once it's
+            // gone the responder chain dangles and the dashboard's SwiftUI
+            // controls stop receiving mouse/keyboard events. Reset the window's
+            // first responder so the dashboard is interactive again.
+            resetWindowFirstResponder()
         } else {
             selection = .terminal(terminals[min(idx, terminals.count - 1)].id)
+        }
+    }
+
+    /// Record a closed tab (retaining it) so it can be reopened later. Newest
+    /// entries are kept; the oldest are evicted past `maxClosedTabs`, which
+    /// releases their surface trees and terminates the child processes.
+    private func recordClosed(_ tab: TerminalTab, at index: Int) {
+        closedTabs.append((tab, index))
+        if closedTabs.count > maxClosedTabs {
+            closedTabs.removeFirst(closedTabs.count - maxClosedTabs)
+        }
+    }
+
+    /// Reopen the most recently closed tab at (close to) its original position,
+    /// restoring its exact session. Returns the reopened tab, or nil if there's
+    /// nothing to reopen. Backs the reopen-closed-tab shortcut and the
+    /// "Reopen Closed Tab" command-palette entry.
+    @discardableResult
+    func reopenLastClosedTab() -> TerminalTab? {
+        guard let entry = closedTabs.popLast() else { return nil }
+        let tab = entry.tab
+        let insertIndex = min(max(0, entry.index), terminals.count)
+        terminals.insert(tab, at: insertIndex)
+        selection = .terminal(tab.id)
+        HostManagerController.shared.show()
+        if let surface = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf() {
+            Ghostty.moveFocus(to: surface)
+        }
+        return tab
+    }
+
+    /// Reset the Vaults window's first responder to its content view. Used when
+    /// the active terminal closes so the dashboard regains event handling.
+    private func resetWindowFirstResponder() {
+        DispatchQueue.main.async {
+            guard let window = HostManagerController.shared.window else { return }
+            window.makeFirstResponder(window.contentView)
         }
     }
 
@@ -520,7 +861,11 @@ final class VaultsTabsModel: ObservableObject {
     func duplicateTab(_ id: UUID) {
         guard let tab = terminals.first(where: { $0.id == id }) else { return }
         if let command = tab.launchCommand {
-            newTerminal(command: command, name: tab.displayName)
+            // An SSH tab is a fresh connection, so run it through the staged
+            // connection popup just like connecting from the hosts list — it's
+            // not a local shell we can clone in place.
+            let staged = command.hasPrefix("ssh ")
+            newTerminal(command: command, name: tab.displayName, host: tab.connectHost, staged: staged)
             return
         }
         // Local shell: reopen at the focused pane's cwd.
@@ -547,6 +892,7 @@ final class VaultsTabsModel: ObservableObject {
     /// Close every terminal tab except `id` (right-click → Close Other Tabs).
     func closeOtherTabs(keep id: UUID) {
         guard terminals.contains(where: { $0.id == id }) else { return }
+        for (i, t) in terminals.enumerated() where t.id != id { recordClosed(t, at: i) }
         terminals.removeAll { $0.id != id }
         selection = .terminal(id)
     }
@@ -556,6 +902,7 @@ final class VaultsTabsModel: ObservableObject {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
         let removed = Set(terminals[(idx + 1)...].map(\.id))
         guard !removed.isEmpty else { return }
+        for (i, t) in terminals.enumerated() where removed.contains(t.id) { recordClosed(t, at: i) }
         terminals.removeAll { removed.contains($0.id) }
         if case let .terminal(selected) = selection, removed.contains(selected) {
             selection = .terminal(id)

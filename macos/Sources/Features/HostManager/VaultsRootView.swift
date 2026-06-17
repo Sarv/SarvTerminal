@@ -20,7 +20,12 @@ struct VaultsRootView: View {
                 // The tab bar is always opaque so it stays readable and the
                 // window-level shared image never shows behind it.
                 .background(Color(NSColor.windowBackgroundColor))
+                // Keep the strip on top: the content below is drawn after it in
+                // the VStack, so without this an opaque content overlay (the SSH
+                // connection popup) can paint over the strip.
+                .zIndex(1)
             Divider()
+                .zIndex(1)
             Group {
                 if let ghostty {
                     content(ghostty).environmentObject(ghostty)
@@ -36,6 +41,10 @@ struct VaultsRootView: View {
             .background(background.useShared
                         ? Color.clear
                         : Color(NSColor.windowBackgroundColor))
+            // Confine the content (and any overlay it hosts, e.g. the SSH
+            // connection popup) so it can't bleed up over the tab strip.
+            .clipped()
+            .zIndex(0)
         }
         .frame(minWidth: 900, minHeight: 560)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -108,7 +117,10 @@ private struct VaultsTerminalPane: View {
         .focused($focused)
         .onAppear {
             focused = true
-            if let surface = tab.surfaceTree.root?.leftmostLeaf() {
+            // During a staged SSH connect the popup owns focus (its password
+            // field); don't pull it into a connecting terminal underneath.
+            if let surface = tab.surfaceTree.root?.leftmostLeaf(),
+               tabs.connections[surface.id]?.model.showsCard != true {
                 Ghostty.moveFocus(to: surface)
             }
         }

@@ -14,6 +14,7 @@ import AppKit
 struct HostsSectionView: View {
     @ObservedObject private var hostsStore  = SavedHostsStore.shared
     @ObservedObject private var groupsStore = HostGroupsStore.shared
+    @ObservedObject private var hostSelection = HostManagerSelection.shared
 
     /// Single input that doubles as filter (live, as you type) and as an
     /// ssh-command runner (press Enter / click Connect). Matches the
@@ -65,26 +66,40 @@ struct HostsSectionView: View {
     }
 
     var body: some View {
-        if hostDraft != nil {
-            HostEditorView(
-                draft: Binding(get: { hostDraft ?? .blank() }, set: { hostDraft = $0 }),
-                isNew: isNew,
-                onSave:   { saveHostDraft() },
-                onCancel: { cancel() },
-                onDelete: isNew ? nil : { confirmDeleteHost(hostDraft!, fromEditor: true) },
-                onConnect: isNew ? nil : { connectHostDraft() }
-            )
-        } else if groupDraft != nil {
-            GroupEditorView(
-                draft: Binding(get: { groupDraft ?? .blank() }, set: { groupDraft = $0 }),
-                isNew: isNew,
-                onSave:   { saveGroupDraft() },
-                onCancel: { cancel() },
-                onDelete: isNew ? nil : { confirmDeleteGroup(groupDraft!, fromEditor: true) }
-            )
-        } else {
-            listMode
+        Group {
+            if hostDraft != nil {
+                HostEditorView(
+                    draft: Binding(get: { hostDraft ?? .blank() }, set: { hostDraft = $0 }),
+                    isNew: isNew,
+                    onSave:   { saveHostDraft() },
+                    onCancel: { cancel() },
+                    onDelete: isNew ? nil : { confirmDeleteHost(hostDraft!, fromEditor: true) },
+                    onConnect: isNew ? nil : { connectHostDraft() }
+                )
+            } else if groupDraft != nil {
+                GroupEditorView(
+                    draft: Binding(get: { groupDraft ?? .blank() }, set: { groupDraft = $0 }),
+                    isNew: isNew,
+                    onSave:   { saveGroupDraft() },
+                    onCancel: { cancel() },
+                    onDelete: isNew ? nil : { confirmDeleteGroup(groupDraft!, fromEditor: true) }
+                )
+            } else {
+                listMode
+            }
         }
+        // "Edit host" from the SSH connection popup sets a pending host id;
+        // open its editor when we appear / when it changes (using the freshest
+        // host from the store so a just-saved password shows).
+        .onAppear { openPendingEditHostIfNeeded() }
+        .onChange(of: hostSelection.pendingEditHostID) { _ in openPendingEditHostIfNeeded() }
+    }
+
+    private func openPendingEditHostIfNeeded() {
+        guard let id = hostSelection.pendingEditHostID,
+              let host = hostsStore.hosts.first(where: { $0.id == id }) else { return }
+        hostSelection.pendingEditHostID = nil
+        editExistingHost(host)
     }
 
     // MARK: - List mode (the dashboard)
@@ -812,7 +827,13 @@ struct HostsSectionView: View {
 
     private func connect(_ host: SavedHost) {
         guard host.canConnect else { return }
-        HostConnect.run(command: host.sshCommand, name: host.label)
+        // Guided staged connect: the popup walks handshake → host key →
+        // password → connected over the real ssh session in the new tab.
+        HostConnect.run(
+            command: host.sshCommand(staged: true),
+            name: host.label,
+            host: host,
+            staged: true)
     }
 
     private func quickConnectGo() {

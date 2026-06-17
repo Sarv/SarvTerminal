@@ -170,6 +170,16 @@ struct HostEditorView: View {
             EditorSecureRow(icon: "lock",
                             placeholder: "Password",
                             text: $draft.password)
+            if draft.password.trimmingCharacters(in: .whitespaces).isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(.red)
+                    Text("A password is required for Password auth. To be prompted at connect time instead, choose “Ask”.")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
+                .padding(.leading, 4)
+            }
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.shield")
                     .foregroundStyle(.orange)
@@ -354,18 +364,18 @@ struct HostEditorView: View {
                     .padding(.horizontal, 14).padding(.vertical, 6)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(draft.canConnect ? Color.accentColor : Color.accentColor.opacity(0.4))
+                            .fill(draft.canSave ? Color.accentColor : Color.accentColor.opacity(0.4))
                     )
                     .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
-                .disabled(!draft.canConnect)
+                .disabled(!draft.canSave)
             }
             Spacer()
             Button("Cancel", action: onCancel)
             Button("Save", action: onSave)
                 .keyboardShortcut(.defaultAction)
-                .disabled(!draft.canConnect)
+                .disabled(!draft.canSave)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

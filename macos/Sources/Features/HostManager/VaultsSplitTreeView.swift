@@ -94,6 +94,7 @@ private struct VaultsSplitSubtreeView: View {
 
 private struct VaultsSplitLeaf: View {
     @ObservedObject var surfaceView: Ghostty.SurfaceView
+    @ObservedObject private var tabs: VaultsTabsModel = .shared
     let isSplit: Bool
     /// Show the per-pane header (only when the tab has more than one pane).
     let showHeader: Bool
@@ -169,6 +170,22 @@ private struct VaultsSplitLeaf: View {
                                 VaultsTabsModel.shared.injectTabIntoAwaiting(awaiting: surfaceView, draggedTabID: draggedID)
                             }
                         )
+                    }
+                }
+                // Staged SSH connection popup for this pane. The connection is
+                // keyed by surface id, so it shows over whichever pane the surface
+                // currently lives in — including after being dragged into a split.
+                // Close cancels just this pane (collapsing the split / closing the
+                // tab if it's the last pane). SSHConnectionView hides itself once
+                // connected, revealing the live terminal.
+                .overlay {
+                    if let conn = tabs.connections[surfaceView.id] {
+                        SSHConnectionView(
+                            model: conn.model,
+                            controller: conn.controller,
+                            onCancel: { VaultsTabsModel.shared.closePane(surface: surfaceView) }
+                        )
+                        .clipped()
                     }
                 }
                 .onPreferenceChange(Ghostty.DraggingSurfaceKey.self) { value in

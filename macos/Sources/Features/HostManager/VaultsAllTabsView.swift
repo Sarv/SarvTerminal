@@ -54,7 +54,11 @@ struct VaultsAllTabsView: View {
                 if number <= 9 {
                     Text("⌘\(number)").font(.system(size: 10)).foregroundStyle(.tertiary)
                 }
-                Button { tabs.closeTerminal(tab.id) } label: {
+                Button {
+                    tabs.closeTerminal(tab.id)
+                    // Don't leave the user staring at an empty overview.
+                    if tabs.terminals.isEmpty { tabs.showAllTabs = false }
+                } label: {
                     Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
                 }
                 .buttonStyle(.plain)

@@ -72,6 +72,12 @@ final class SavedHostsStore: ObservableObject {
         hosts.contains { $0.id == id }
     }
 
+    /// The current saved host for `id`, if any (e.g. to re-read a password the
+    /// user just changed via the editor).
+    func host(withID id: UUID) -> SavedHost? {
+        hosts.first { $0.id == id }
+    }
+
     // MARK: - Group queries
 
     /// Hosts directly inside a group (not its descendants).
