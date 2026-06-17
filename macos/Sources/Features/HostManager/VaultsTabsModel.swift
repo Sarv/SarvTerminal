@@ -1,0 +1,1110 @@
+import AppKit
+import Combine
+import Network
+import SwiftUI
+import GhosttyKit
+import UniformTypeIdentifiers
+import CoreTransferable
+
+extension UTType {
+    /// Drag payload content type for a Vaults terminal tab.
+    static let vaultsTabID = UTType(exportedAs: "com.sarvterminal.vaultsTabID")
+}
+
+/// Transferable drag payload for a terminal tab (modern SwiftUI
+/// `.draggable`/`.dropDestination` API). Used to reorder tab chips and to
+/// inject a single-terminal tab into a split pane.
+struct TabDragID: Codable, Transferable {
+    let id: UUID
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .vaultsTabID)
+    }
+}
+
+/// Single-window tab model for the Vaults window.
+///
+/// The window shows EITHER the Vaults dashboard OR one embedded terminal tab
+/// at a time. Each terminal tab owns a `SplitTree` of `Ghostty.SurfaceView`s
+/// (one or more split panes) created directly — there are no separate terminal
+/// windows and no native macOS window tabbing. See the `vaults-window-tabbing`
+/// memory for the history.
+///
+/// Split handling (⌘D / ⌘⇧D etc.) is ported from `BaseTerminalController`:
+/// libghostty posts notifications targeting the focused surface and we mutate
+/// the owning tab's split tree.
+final class VaultsTabsModel: ObservableObject {
+    static let shared = VaultsTabsModel()
+
+    /// A single terminal tab: a split tree of surfaces + its live title.
+    final class TerminalTab: ObservableObject, Identifiable {
+        let id = UUID()
+        @Published var surfaceTree: SplitTree<Ghostty.SurfaceView>
+        /// Auto-assigned base label ("Terminal", host label, …).
+        @Published var title: String
+        /// User-set name from "Rename Tab…", overrides `title` when present.
+        @Published var customName: String?
+        /// Optional accent color set via the "Tab Color" menu.
+        @Published var color: Color?
+        /// The command this tab launched with (e.g. an `ssh …` invocation), so
+        /// "Duplicate Tab" can re-run it. nil for a plain local shell.
+        var launchCommand: String?
+        /// When true, input typed in the focused pane is mirrored to every
+        /// other pane in the tab.
+        @Published var broadcasting: Bool = false
+        /// Sidebar display-name overrides per pane. A duplicated pane gets the
+        /// source pane's name here so it doesn't show a bare "~" before its
+        /// shell sets a title.
+        @Published var paneTitleOverrides: [UUID: String] = [:]
+        /// The surface within this tab that currently has focus — used as the
+        /// anchor when splitting from the palette.
+        weak var focusedSurface: Ghostty.SurfaceView?
+
+        /// The saved host this tab connected to, if any — carried so a
+        /// reconnect or "Duplicate Tab" can re-run the guided connect (and
+        /// prefill the password).
+        var connectHost: SavedHost?
+
+        /// The label shown on the chip (custom name wins).
+        var displayName: String {
+            if let customName, !customName.isEmpty { return customName }
+            return title
+        }
+
+        init(surface: Ghostty.SurfaceView, name: String) {
+            self.surfaceTree = .init(view: surface)
+            self.title = name
+        }
+    }
+
+    /// A staged SSH connection bound to a single surface (pane). Stored in
+    /// `connections` keyed by the CURRENT surface's id — not the tab — so the
+    /// popup follows the surface when it's dragged into another tab's split.
+    /// `command` is carried here (not on the tab) because the owning tab can
+    /// change as the surface moves between tabs.
+    final class ActiveConnection {
+        let model: SSHConnectionModel
+        var controller: SSHConnectionController
+        let command: String
+        init(model: SSHConnectionModel, controller: SSHConnectionController, command: String) {
+            self.model = model
+            self.controller = controller
+            self.command = command
+        }
+    }
+
+    /// Preset tab colors (matches Ghostty's tab-color palette).
+    struct TabColorOption: Identifiable {
+        let id: String
+        let name: String
+        let color: Color
+    }
+
+    static let tabColorOptions: [TabColorOption] = [
+        .init(id: "blue", name: "Blue", color: .blue),
+        .init(id: "purple", name: "Purple", color: .purple),
+        .init(id: "pink", name: "Pink", color: .pink),
+        .init(id: "red", name: "Red", color: .red),
+        .init(id: "orange", name: "Orange", color: .orange),
+        .init(id: "yellow", name: "Yellow", color: .yellow),
+        .init(id: "green", name: "Green", color: .green),
+        .init(id: "teal", name: "Teal", color: .teal),
+        .init(id: "gray", name: "Gray", color: .gray),
+    ]
+
+    /// What the window's content area currently shows.
+    enum Selection: Equatable {
+        case dashboard
+        case terminal(UUID)
+    }
+
+    @Published private(set) var terminals: [TerminalTab] = []
+    /// Staged SSH connections, keyed by the current surface id of each. A pane
+    /// shows the connection popup when its surface id has an entry here.
+    @Published private(set) var connections: [UUID: ActiveConnection] = [:]
+    @Published var selection: Selection = .dashboard
+    /// Surface IDs of freshly-split panes that are showing the inline chooser
+    /// (blank pane) and waiting for the user to pick what to run.
+    @Published private(set) var awaitingChoice: Set<UUID> = []
+    /// Focus mode (⌘⇧M): show the active tab as a sidebar list of panes + one
+    /// main pane, instead of the split grid. It's just an alternate view of the
+    /// same split tree, so toggling back restores the grid.
+    @Published var focusMode: Bool = false
+    /// Which pane fills the main area in focus mode.
+    @Published var focusModeSurfaceID: UUID?
+    /// Show the "all tabs" overview grid.
+    @Published var showAllTabs: Bool = false
+
+    /// Recently closed tabs (oldest first), retained so they can be reopened
+    /// with full state — local shell, SSH session, or a pending chooser — via
+    /// the reopen-closed-tab shortcut (⌘⇧T). Retaining the `TerminalTab` keeps
+    /// its live surface tree (and child processes) alive until the tab is
+    /// reopened or evicted past `maxClosedTabs`.
+    private var closedTabs: [(tab: TerminalTab, index: Int)] = []
+    private let maxClosedTabs = 25
+
+    private var observers: [NSObjectProtocol] = []
+    /// Observers on the NSWorkspace center (sleep/wake) — removed in deinit.
+    private var workspaceObservers: [NSObjectProtocol] = []
+
+    /// Watches overall network reachability so a waiting connection can retry the
+    /// instant connectivity returns (instead of sitting out the back-off timer).
+    private let pathMonitor = NWPathMonitor()
+    private var networkSatisfied = true
+
+    private init() {
+        installObservers()
+        installReachabilityAndWakeObservers()
+    }
+
+    deinit {
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        pathMonitor.cancel()
+    }
+
+    // MARK: - Reachability & wake → instant reconnect
+
+    /// Trigger an immediate reconnect (skipping the countdown) for every
+    /// connection currently in the auto-reconnect loop. Used when the network
+    /// comes back or the machine wakes from sleep — the events that most often
+    /// follow a dropped SSH session.
+    private func retryReconnectingNow(reason: String) {
+        // Snapshot: retryNow() re-keys `connections` as it relaunches.
+        for conn in Array(connections.values) where conn.model.autoReconnecting {
+            conn.model.addLog("bolt.horizontal.circle", .secondary, reason)
+            conn.controller.retryNow()
+        }
+    }
+
+    private func installReachabilityAndWakeObservers() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let satisfied = path.status == .satisfied
+                let cameBack = satisfied && !self.networkSatisfied
+                self.networkSatisfied = satisfied
+                if cameBack { self.retryReconnectingNow(reason: "Network is back — reconnecting") }
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue.global(qos: .utility))
+
+        // Waking the machine (e.g. opening the lid) resumes the poll timers, which
+        // detect the dropped session; nudge any waiting connection to retry now.
+        let wake = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.retryReconnectingNow(reason: "Woke from sleep — reconnecting")
+        }
+        workspaceObservers.append(wake)
+    }
+
+    // MARK: - Queries
+
+    var activeTerminal: TerminalTab? {
+        guard case let .terminal(id) = selection else { return nil }
+        return terminals.first { $0.id == id }
+    }
+
+    private func tab(containing surface: Ghostty.SurfaceView) -> TerminalTab? {
+        terminals.first { $0.surfaceTree.contains(surface) }
+    }
+
+    // MARK: - Connection registry (per surface)
+
+    /// The surface id currently bound to `model`, if any.
+    private func surfaceID(for model: SSHConnectionModel) -> UUID? {
+        connections.first { $0.value.model === model }?.key
+    }
+
+    /// Find a live surface by id across every tab's split tree.
+    private func surface(withID id: UUID) -> Ghostty.SurfaceView? {
+        for tab in terminals {
+            if let match = tab.surfaceTree.root?.leaves().first(where: { $0.id == id }) {
+                return match
+            }
+        }
+        return nil
+    }
+
+    /// Stop and forget the connection bound to `surfaceID` (if any), cleaning up
+    /// its poll timer and password temp file.
+    private func teardownConnection(surfaceID: UUID) {
+        guard let conn = connections[surfaceID] else { return }
+        conn.controller.stop()
+        deleteTempFile(conn.model.passwordFilePath)
+        connections[surfaceID] = nil
+    }
+
+    // MARK: - Tab mutations
+
+    /// Create a new embedded terminal tab, select it, and bring the Vaults
+    /// window forward. `name` is the base tab label ("Terminal" for a local
+    /// shell, the host label for SSH) — deduped with "(1)", "(2)", … suffixes.
+    /// Optionally inject a command once the shell is ready.
+    @discardableResult
+    func newTerminal(
+        command: String? = nil,
+        name: String = "Terminal",
+        host: SavedHost? = nil,
+        staged: Bool = false
+    ) -> TerminalTab? {
+        guard let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return nil }
+
+        // Staged SSH connect: run ssh directly with the password fed via askpass
+        // (no TTY prompt, no shell echo), driven by the connection popup.
+        if staged, let command, command.hasPrefix("ssh ") {
+            return startSSHConnection(app: app, command: command, name: name, host: host)
+        }
+
+        // Plain local terminal / non-staged command typed into a shell.
+        let surface = Ghostty.SurfaceView(app)
+        let tab = TerminalTab(surface: surface, name: uniqueTabName(base: name))
+        tab.launchCommand = command
+        tab.connectHost = host
+        terminals.append(tab)
+        selection = .terminal(tab.id)
+        HostManagerController.shared.show()
+        Ghostty.moveFocus(to: surface)
+        if let command {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                surface.surfaceModel?.sendText("\(command)\n")
+            }
+        }
+        return tab
+    }
+
+    // MARK: - Staged SSH connection
+
+    /// Whether the connection popup should collect a password in a field. Only
+    /// "Ask" does — it has no stored password and prompts on every connect.
+    /// "Password" hosts always carry a (mandatory) saved password, so they
+    /// connect silently and, on failure, show the error card to fix via Edit
+    /// host — they never show an inline prompt. Key/agent auth needs no password.
+    private func sshNeedsPassword(_ host: SavedHost?) -> Bool {
+        host?.authMethod == .ask
+    }
+
+    /// A surface that runs `command` (ssh) directly. The password is fed via the
+    /// askpass helper, with the env baked into the command string (the command
+    /// runs through `/bin/sh -c`, so this reliably reaches ssh regardless of the
+    /// surface env plumbing). ssh's verbose stderr is redirected to `logFile` so
+    /// the terminal shows only the clean remote session. Returns the surface and
+    /// the temp password-file path (if any) so the caller can clean it up.
+    private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?)
+        -> (surface: Ghostty.SurfaceView, passwordFile: String?) {
+        var full = command
+        var passwordFile: String?
+        if let pw = password, !pw.isEmpty {
+            let env = SSHAskpass.env(forPassword: pw)
+            passwordFile = env["SARV_ASKPASS_FILE"]
+            // Use the `env` command (not bare VAR=val) so the assignments
+            // survive macOS's `bash -c "exec -l <command>"` wrapper, where
+            // `exec -l VAR=val ssh` would treat "VAR=val" as the program name.
+            let prefix = env.map { "\($0.key)='\($0.value)'" }.joined(separator: " ")
+            if !prefix.isEmpty { full = "env \(prefix) \(full)" }
+        }
+        var cfg = Ghostty.SurfaceConfiguration()
+        cfg.command = full
+        return (Ghostty.SurfaceView(app, baseConfig: cfg), passwordFile)
+    }
+
+    /// Remove the askpass password temp file (no-op if nil/absent) so we never
+    /// leave orphans. The connection log is kept entirely in memory.
+    private func deleteTempFile(_ path: String?) {
+        guard let path else { return }
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
+    private func startSSHConnection(app: ghostty_app_t, command: String, name: String, host: SavedHost?) -> TerminalTab? {
+        let needsPassword = sshNeedsPassword(host)
+        let knownPassword = (host?.password.isEmpty == false) ? host?.password : nil
+        // If we still need a password, the popup collects it first over a blank
+        // placeholder surface; otherwise spawn ssh immediately.
+        let surface: Ghostty.SurfaceView
+        var passwordFile: String?
+        if needsPassword {
+            surface = Ghostty.SurfaceView(app)
+        } else {
+            let made = makeSSHSurface(app: app, command: command, password: knownPassword)
+            surface = made.surface
+            passwordFile = made.passwordFile
+        }
+
+        let tab = TerminalTab(surface: surface, name: uniqueTabName(base: host?.label ?? name))
+        tab.launchCommand = command
+        tab.connectHost = host
+        terminals.append(tab)
+        selection = .terminal(tab.id)
+        HostManagerController.shared.show()
+
+        let model = SSHConnectionModel(title: host?.label ?? name, host: host, needsPassword: needsPassword)
+        if !needsPassword { model.passwordFilePath = passwordFile }
+        let controller = SSHConnectionController(model: model, surfaceView: surface, tabsModel: self)
+        connections[surface.id] = ActiveConnection(model: model, controller: controller, command: command)
+        if !needsPassword { controller.start() }   // else: starts on password submit
+        return tab
+    }
+
+    /// (Re)launch ssh for `model` with `password` — spawns a fresh ssh surface
+    /// with the askpass env, replaces JUST this connection's pane in its tab's
+    /// split tree (so splits survive), restarts the controller, and re-keys the
+    /// connection to the new surface. Backs password submit and Reconnect.
+    func launchSSHConnection(for model: SSHConnectionModel, password: String) {
+        guard let oldID = surfaceID(for: model),
+              let conn = connections[oldID],
+              let oldSurface = surface(withID: oldID),
+              let tab = tab(containing: oldSurface),
+              let node = tab.surfaceTree.root?.node(view: oldSurface),
+              let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+        deleteTempFile(model.passwordFilePath)   // discard the previous attempt's password file
+        let made = makeSSHSurface(app: app, command: conn.command, password: password)
+        // Replace only this pane's node — works whether it's the whole tab or one
+        // pane of a split.
+        if let newTree = try? tab.surfaceTree.replacing(node: node, with: .leaf(view: made.surface)) {
+            tab.surfaceTree = newTree
+        } else {
+            tab.surfaceTree = .init(view: made.surface)
+        }
+        model.passwordFilePath = made.passwordFile
+        model.silent = true            // attempting with a known password — no field while connecting
+        model.stage = .connecting
+        conn.controller.stop()
+        let controller = SSHConnectionController(model: model, surfaceView: made.surface, tabsModel: self)
+        // Re-key the connection to the new surface.
+        connections[oldID] = nil
+        connections[made.surface.id] = ActiveConnection(model: model, controller: controller, command: conn.command)
+        controller.start()
+    }
+
+    /// Open the host editor for this connection's host (popup "Edit host").
+    func editHost(for model: SSHConnectionModel) {
+        guard let host = model.host else { return }
+        HostManagerSelection.shared.pendingEditHostID = host.id
+        selectDashboard(section: .vaults)
+    }
+
+    /// Reconnect / "Start over" (popup button): reset the attempt count. After an
+    /// auth failure on a password host, re-prompt for the password (don't retry
+    /// the known-wrong one); otherwise relaunch the connection.
+    func reconnect(for model: SSHConnectionModel) {
+        model.passwordAttempts = 0
+        model.autoReconnecting = false
+        model.reconnectAttempts = 0
+        model.reconnectSecondsRemaining = 0
+        // Pick up a password the user may have just corrected via "Edit host" —
+        // this is what makes Start over work after fixing a wrong saved password.
+        if let host = model.host, let latest = SavedHostsStore.shared.host(withID: host.id) {
+            model.passwordField = latest.password
+        }
+        // Only "Ask" hosts re-prompt for a password; "Password" hosts relaunch
+        // with the (corrected) saved password — no inline prompt.
+        if case .failed(.permissionDenied) = model.stage, model.host?.authMethod == .ask {
+            model.logEntries = []
+            model.silent = false
+            model.stage = .needsPassword
+        } else {
+            launchSSHConnection(for: model, password: model.passwordField)
+        }
+    }
+
+    /// The session authenticated: hide the popup (show the live terminal) and
+    /// save the working password to the host so future connects are silent.
+    func connectionDidConnect(for model: SSHConnectionModel) {
+        // Persist a working password only for "Password" hosts. "Ask" hosts must
+        // prompt every connect, so we never store what was typed for them.
+        if let host = model.host, host.authMethod != .ask,
+           !model.passwordField.isEmpty, host.password != model.passwordField {
+            var updated = host
+            updated.password = model.passwordField
+            SavedHostsStore.shared.upsert(updated)
+        }
+        model.stage = .connected
+        // Logged in: drop the askpass password file. ssh keeps its now-unlinked
+        // fd; the file is freed when ssh exits.
+        deleteTempFile(model.passwordFilePath)
+        model.passwordFilePath = nil
+        if let id = surfaceID(for: model), let surface = surface(withID: id) {
+            Ghostty.moveFocus(to: surface)
+        }
+    }
+
+    /// A tab label unique among open tabs: `base`, else `base (1)`, `base (2)`…
+    private func uniqueTabName(base: String) -> String {
+        let trimmed = base.trimmingCharacters(in: .whitespaces)
+        let name = trimmed.isEmpty ? "Terminal" : trimmed
+        let existing = Set(terminals.map { $0.displayName })
+        if !existing.contains(name) { return name }
+        var n = 1
+        while existing.contains("\(name) (\(n))") { n += 1 }
+        return "\(name) (\(n))"
+    }
+
+    /// Split the active terminal tab in `direction` and present the inline
+    /// chooser ("blank pane") on the new pane. The new surface spawns a local
+    /// shell immediately (hidden behind the chooser); resolving the choice
+    /// either reveals it (Local Terminal) or runs an SSH command in it.
+    func splitAwaitingChoice(direction: SplitTree<Ghostty.SurfaceView>.NewDirection) {
+        guard let tab = activeTerminal,
+              let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+        let anchor = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf()
+        guard let anchor else { return }
+        let newView = Ghostty.SurfaceView(app)
+        guard let newTree = try? tab.surfaceTree.inserting(view: newView, at: anchor, direction: direction) else { return }
+        tab.surfaceTree = newTree
+        // Don't steal focus to the surface — the chooser overlay wants it.
+        awaitingChoice.insert(newView.id)
+    }
+
+    /// Resolve a pending split pane's chooser selection.
+    func resolveChoice(surface: Ghostty.SurfaceView, action: PaletteAction) {
+        switch action {
+        case .serial:
+            // Not supported in a split; leave the chooser up.
+            return
+        case .localTerminal:
+            dismissChoice(surface: surface)
+        case .host(let host):
+            send(host.sshCommand, to: surface)
+            dismissChoice(surface: surface)
+        case .quickConnect(let query):
+            let target = query.trimmingCharacters(in: .whitespaces)
+            guard !target.isEmpty else { return }
+            let command = target.hasPrefix("ssh ") ? target : "ssh \(target)"
+            send(command, to: surface)
+            dismissChoice(surface: surface)
+        }
+    }
+
+    /// Reveal the already-running local shell behind the chooser (Local
+    /// Terminal choice).
+    func dismissChoice(surface: Ghostty.SurfaceView) {
+        awaitingChoice.remove(surface.id)
+        Ghostty.moveFocus(to: surface)
+    }
+
+    /// Replace an awaiting (chooser) pane with a single-terminal tab dragged
+    /// from the strip — the empty split becomes that tab, and it's removed from
+    /// the strip.
+    func injectTabIntoAwaiting(awaiting: Ghostty.SurfaceView, draggedTabID: UUID) {
+        guard let destTab = tab(containing: awaiting),
+              let awaitingNode = destTab.surfaceTree.root?.node(view: awaiting),
+              let srcIdx = terminals.firstIndex(where: { $0.id == draggedTabID }),
+              terminals[srcIdx].id != destTab.id else { return }
+        let srcTab = terminals[srcIdx]
+        let leaves = srcTab.surfaceTree.root?.leaves() ?? []
+        guard leaves.count == 1, let draggedSurface = leaves.first else { return }
+        guard let newTree = try? destTab.surfaceTree.replacing(
+            node: awaitingNode, with: .leaf(view: draggedSurface)) else { return }
+        awaitingChoice.remove(awaiting.id)
+        // The surface moves into the split. Its SSH connection (popup) follows
+        // automatically — it's keyed by surface id, not by tab — so an in-flight
+        // password prompt / connecting state keeps showing over the new pane.
+        terminals.remove(at: srcIdx)
+        destTab.surfaceTree = newTree
+        Ghostty.moveFocus(to: draggedSurface)
+    }
+
+    /// Close a single split pane (from its header's × button). Collapses the
+    /// split, or closes the tab if it was the last pane.
+    func closePane(surface: Ghostty.SurfaceView) {
+        guard let tab = tab(containing: surface),
+              let node = tab.surfaceTree.root?.node(view: surface) else { return }
+        awaitingChoice.remove(surface.id)
+        teardownConnection(surfaceID: surface.id)   // drop this pane's SSH popup, if any
+        let remaining = tab.surfaceTree.removing(node)
+        if remaining.isEmpty {
+            closeTerminal(tab.id)
+        } else {
+            tab.surfaceTree = remaining
+            if let next = remaining.root?.leftmostLeaf() {
+                Ghostty.moveFocus(to: next)
+            }
+        }
+    }
+
+    /// Duplicate a single pane (focus-mode sidebar → Duplicate). Splits off a
+    /// new pane next to it. If the source is still an unresolved "blank" pane,
+    /// the duplicate is also blank (shows the chooser); otherwise it re-runs the
+    /// tab's launch command (SSH) or `cd`s a local shell to the source's cwd.
+    func duplicatePane(surface: Ghostty.SurfaceView) {
+        guard let tab = tab(containing: surface),
+              let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+        // Split along the pane's longer axis so the new pane gets usable space.
+        let direction: SplitTree<Ghostty.SurfaceView>.NewDirection =
+            surface.bounds.width >= surface.bounds.height ? .right : .down
+        let newView = Ghostty.SurfaceView(app)
+        let sourceAwaiting = awaitingChoice.contains(surface.id)
+        if !sourceAwaiting {
+            // Show the source pane's name in the sidebar immediately (the new
+            // shell's own title arrives later and can read as a bare "~").
+            let sourceName = tab.paneTitleOverrides[surface.id]
+                ?? (surface.title.isEmpty ? "Terminal" : surface.title)
+            tab.paneTitleOverrides[newView.id] = sourceName
+        }
+        guard let newTree = try? tab.surfaceTree.inserting(
+            view: newView, at: surface, direction: direction) else { return }
+        tab.surfaceTree = newTree
+        if sourceAwaiting {
+            // Mirror the blank/selection state — don't steal focus or run a
+            // shell command; the chooser overlay handles it.
+            awaitingChoice.insert(newView.id)
+            return
+        }
+        Ghostty.moveFocus(to: newView)
+        // Prefer the source pane's own SSH command (it travels with the surface,
+        // so a migrated SSH pane still duplicates correctly); fall back to the
+        // tab's launch command, then to cd-ing a local shell to the source cwd.
+        if let command = connections[surface.id]?.command ?? tab.launchCommand {
+            send(command, to: newView)
+        } else if let cwd = surface.pwd, !cwd.isEmpty {
+            send("cd \"\(cwd)\"", to: newView)
+        }
+    }
+
+    /// Toggle "focus mode" (zoom) on a pane — the pane fills the tab; toggle
+    /// again to restore the split layout.
+    func toggleZoom(surface: Ghostty.SurfaceView) {
+        guard let tab = tab(containing: surface),
+              let node = tab.surfaceTree.root?.node(view: surface) else { return }
+        if tab.surfaceTree.zoomed != nil {
+            tab.surfaceTree = SplitTree(root: tab.surfaceTree.root, zoomed: nil)
+        } else {
+            tab.surfaceTree = SplitTree(root: tab.surfaceTree.root, zoomed: node)
+        }
+    }
+
+    // MARK: - Tab drag & drop
+
+    /// Reorder: move the dragged tab onto `targetID`'s slot — works in both
+    /// directions (dragging right inserts after the target, dragging left
+    /// inserts before it, so the dropped tab lands where you dropped it).
+    /// Animated so chips slide into place instead of snapping.
+    func moveTab(_ draggedID: UUID, before targetID: UUID) {
+        guard draggedID != targetID,
+              let from = terminals.firstIndex(where: { $0.id == draggedID }),
+              let originalTo = terminals.firstIndex(where: { $0.id == targetID }) else { return }
+        withAnimation(.smooth(duration: 0.22)) {
+            let tab = terminals.remove(at: from)
+            guard let newTo = terminals.firstIndex(where: { $0.id == targetID }) else {
+                terminals.append(tab)
+                return
+            }
+            // Dragging rightward (from before the target) → land after it;
+            // dragging leftward → land before it.
+            let insertIndex = from < originalTo ? newTo + 1 : newTo
+            terminals.insert(tab, at: insertIndex)
+        }
+    }
+
+    /// Inject a single-terminal tab into another tab's split, at
+    /// `destinationSurface` in the drop `zone`'s direction. Multi-pane source
+    /// tabs are rejected (a tab that already has a split can't be dragged in).
+    func injectTab(_ sourceTabID: UUID, into destinationSurface: Ghostty.SurfaceView, zone: TerminalSplitDropZone) {
+        guard let sourceIdx = terminals.firstIndex(where: { $0.id == sourceTabID }) else { return }
+        let sourceTab = terminals[sourceIdx]
+        let leaves = sourceTab.surfaceTree.root?.leaves() ?? []
+        guard leaves.count == 1, let surface = leaves.first else { return }
+        guard let destTab = tab(containing: destinationSurface), destTab.id != sourceTabID else { return }
+        let direction: SplitTree<Ghostty.SurfaceView>.NewDirection = switch zone {
+        case .top: .up
+        case .bottom: .down
+        case .left: .left
+        case .right: .right
+        }
+        guard let newTree = try? destTab.surfaceTree.inserting(view: surface, at: destinationSurface, direction: direction) else { return }
+        // Remove the source tab WITHOUT freeing the surface — it now lives in the
+        // destination tab's tree. Its SSH connection (popup) follows the surface
+        // automatically (keyed by surface id), so an in-flight password prompt or
+        // connecting/failed state keeps showing over the new pane in the split.
+        terminals.remove(at: sourceIdx)
+        destTab.surfaceTree = newTree
+        selection = .terminal(destTab.id)
+        Ghostty.moveFocus(to: surface)
+    }
+
+    /// Toggle input broadcasting for the pane's tab.
+    func toggleBroadcast(surface: Ghostty.SurfaceView) {
+        tab(containing: surface)?.broadcasting.toggle()
+    }
+
+    func isBroadcasting(surface: Ghostty.SurfaceView) -> Bool {
+        tab(containing: surface)?.broadcasting ?? false
+    }
+
+    /// When the active tab is broadcasting, send `event` to every OTHER pane
+    /// (not the one that natively handles it). The focused pane keeps its
+    /// native key handling — including IME, backspace, and ⌘K — so we DON'T
+    /// consume the event. The other panes get the key via the core
+    /// (`ghostty_surface_key`), bypassing the NSView/IME pipeline that caused
+    /// the doubled input. No-op (and irrelevant) when not broadcasting or the
+    /// tab has a single pane.
+    func broadcastKeyEvent(_ event: NSEvent) {
+        guard let tab = activeTerminal, tab.broadcasting else { return }
+        let panes = tab.surfaceTree.root?.leaves() ?? []
+        guard panes.count > 1 else { return }
+
+        // The pane that will handle this event natively (the first responder).
+        let responder = event.window?.firstResponder as? NSView
+        let source = panes.first { pane in
+            guard let responder else { return false }
+            return responder === pane || responder.isDescendant(of: pane)
+        }
+
+        for pane in panes where pane !== source && paneAcceptsBroadcast(pane) {
+            guard let surface = pane.surface else { continue }
+            sendKeyToCore(event, surface: surface)
+        }
+    }
+
+    /// Whether a pane is a live, working terminal that should receive broadcast
+    /// input. Panes still showing the SSH connection popup (needs-password /
+    /// connecting / failed / disconnected) or the blank "open in this split"
+    /// chooser have no usable shell behind them — sending keys there does nothing
+    /// useful and can dismiss the pane, so they're excluded. A `connected` SSH
+    /// pane (popup hidden) and plain local shells DO receive input.
+    private func paneAcceptsBroadcast(_ pane: Ghostty.SurfaceView) -> Bool {
+        if awaitingChoice.contains(pane.id) { return false }
+        if let conn = connections[pane.id], conn.model.showsCard { return false }
+        return true
+    }
+
+    /// Send a key event straight to a surface's core, mirroring the encode
+    /// rules in `SurfaceView.keyAction`: pass `text` only for plain printable
+    /// characters; let Ghostty encode control keys (backspace, ctrl-c, ctrl-l,
+    /// arrows…) from the keycode + mods.
+    private func sendKeyToCore(_ event: NSEvent, surface: ghostty_surface_t) {
+        let action: ghostty_input_action_e = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+        var keyEvent = event.ghosttyKeyEvent(action)
+        let text = event.characters ?? ""
+        if let cp = text.utf8.first, cp >= 0x20, cp != 0x7f {
+            text.withCString { ptr in
+                keyEvent.text = ptr
+                _ = ghostty_surface_key(surface, keyEvent)
+            }
+        } else {
+            _ = ghostty_surface_key(surface, keyEvent)
+        }
+    }
+
+    private func send(_ command: String, to surface: Ghostty.SurfaceView) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            surface.surfaceModel?.sendText("\(command)\n")
+        }
+    }
+
+    /// Show the dashboard at the given section (Vaults / SFTP / SCP).
+    func selectDashboard(section: HostManagerSelection.Section) {
+        HostManagerSelection.shared.section = section
+        selection = .dashboard
+    }
+
+    func selectTerminal(_ id: UUID) {
+        selection = .terminal(id)
+    }
+
+    /// Select the Nth terminal tab (0-based) — backs ⌘1…⌘8.
+    func selectTab(index: Int) {
+        guard terminals.indices.contains(index) else { return }
+        selection = .terminal(terminals[index].id)
+    }
+
+    // MARK: - Keybind-driven navigation (Ghostty defaults; wired in AppDelegate)
+    //
+    // These mirror Ghostty's macOS default keybinds. libghostty normally posts
+    // these actions to a BaseTerminalController / native tab group — neither of
+    // which the embedded Vaults window is — so the core handlers no-op and we
+    // perform the equivalent here.
+
+    /// `next_tab` / `previous_tab` — cycle the selection with wraparound.
+    func cycleTab(_ delta: Int) {
+        guard !terminals.isEmpty else { return }
+        let current: Int = {
+            if case let .terminal(id) = selection,
+               let idx = terminals.firstIndex(where: { $0.id == id }) { return idx }
+            return 0
+        }()
+        let n = terminals.count
+        let next = ((current + delta) % n + n) % n
+        selection = .terminal(terminals[next].id)
+    }
+
+    /// `last_tab` — select the final tab.
+    func selectLastTab() {
+        guard let last = terminals.last else { return }
+        selection = .terminal(last.id)
+    }
+
+    /// `goto_split` — move keyboard focus to the adjacent split in the active tab.
+    func focusSplit(_ direction: Ghostty.SplitFocusDirection) {
+        guard let tab = activeTerminal,
+              let current = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf(),
+              let node = tab.surfaceTree.root?.node(view: current),
+              let next = tab.surfaceTree.focusTarget(
+                for: direction.toSplitTreeFocusDirection(), from: node)
+        else { return }
+        Ghostty.moveFocus(to: next, from: current)
+    }
+
+    /// `toggle_split_zoom` — on the active tab's focused pane.
+    func toggleZoomActive() {
+        guard let tab = activeTerminal,
+              let current = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf()
+        else { return }
+        toggleZoom(surface: current)
+    }
+
+    /// `close_surface` — close the active tab's focused pane (closes the tab if
+    /// it was the last pane).
+    func closeFocusedPane() {
+        guard let tab = activeTerminal,
+              let current = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf()
+        else { return }
+        closePane(surface: current)
+    }
+
+    /// `close_tab:this` — close the whole active tab.
+    func closeActiveTab() {
+        if case let .terminal(id) = selection { closeTerminal(id) }
+    }
+
+    /// `resize_split` — grow the active pane by `amount` points in `direction`.
+    func resizeSplit(_ direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction, amount: UInt16) {
+        guard let tab = activeTerminal,
+              let current = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf(),
+              let node = tab.surfaceTree.root?.node(view: current) else { return }
+        let bounds = CGRect(origin: .zero, size: tab.surfaceTree.viewBounds())
+        if let newTree = try? tab.surfaceTree.resizing(node: node, by: amount, in: direction, with: bounds) {
+            tab.surfaceTree = newTree
+        }
+    }
+
+    /// Toggle focus mode (⌘⇧M) for the active terminal tab.
+    func toggleFocusMode() {
+        guard let tab = activeTerminal else { return }
+        withAnimation(.smooth(duration: 0.2)) {
+            focusMode.toggle()
+        }
+        if focusMode {
+            focusModeSurfaceID = tab.focusedSurface?.id
+                ?? tab.surfaceTree.root?.leftmostLeaf().id
+        }
+    }
+
+    func selectFocusModePane(_ surface: Ghostty.SurfaceView) {
+        focusModeSurfaceID = surface.id
+        Ghostty.moveFocus(to: surface)
+    }
+
+    /// Close a terminal tab, selecting a sensible neighbor afterward.
+    func closeTerminal(_ id: UUID) {
+        guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        // Tear down any SSH connection popups bound to this tab's panes.
+        for surface in terminals[idx].surfaceTree.root?.leaves() ?? [] {
+            teardownConnection(surfaceID: surface.id)
+        }
+        recordClosed(terminals[idx], at: idx)
+        terminals.remove(at: idx)
+        guard case let .terminal(selected) = selection, selected == id else { return }
+        if terminals.isEmpty {
+            selection = .dashboard
+            // The closed surface was the window's first responder. Once it's
+            // gone the responder chain dangles and the dashboard's SwiftUI
+            // controls stop receiving mouse/keyboard events. Reset the window's
+            // first responder so the dashboard is interactive again.
+            resetWindowFirstResponder()
+        } else {
+            selection = .terminal(terminals[min(idx, terminals.count - 1)].id)
+        }
+    }
+
+    /// Record a closed tab (retaining it) so it can be reopened later. Newest
+    /// entries are kept; the oldest are evicted past `maxClosedTabs`, which
+    /// releases their surface trees and terminates the child processes.
+    private func recordClosed(_ tab: TerminalTab, at index: Int) {
+        closedTabs.append((tab, index))
+        if closedTabs.count > maxClosedTabs {
+            closedTabs.removeFirst(closedTabs.count - maxClosedTabs)
+        }
+    }
+
+    /// Reopen the most recently closed tab at (close to) its original position,
+    /// restoring its exact session. Returns the reopened tab, or nil if there's
+    /// nothing to reopen. Backs the reopen-closed-tab shortcut and the
+    /// "Reopen Closed Tab" command-palette entry.
+    @discardableResult
+    func reopenLastClosedTab() -> TerminalTab? {
+        guard let entry = closedTabs.popLast() else { return nil }
+        let tab = entry.tab
+        let insertIndex = min(max(0, entry.index), terminals.count)
+        terminals.insert(tab, at: insertIndex)
+        selection = .terminal(tab.id)
+        HostManagerController.shared.show()
+        if let surface = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf() {
+            Ghostty.moveFocus(to: surface)
+        }
+        return tab
+    }
+
+    /// Reset the Vaults window's first responder to its content view. Used when
+    /// the active terminal closes so the dashboard regains event handling.
+    private func resetWindowFirstResponder() {
+        DispatchQueue.main.async {
+            guard let window = HostManagerController.shared.window else { return }
+            window.makeFirstResponder(window.contentView)
+        }
+    }
+
+    /// Duplicate a tab (right-click → Duplicate Tab). An SSH/command tab
+    /// re-runs its launch command; a local tab opens a fresh shell at the
+    /// focused pane's current directory.
+    func duplicateTab(_ id: UUID) {
+        guard let tab = terminals.first(where: { $0.id == id }) else { return }
+        if let command = tab.launchCommand {
+            // An SSH tab is a fresh connection, so run it through the staged
+            // connection popup just like connecting from the hosts list — it's
+            // not a local shell we can clone in place.
+            let staged = command.hasPrefix("ssh ")
+            newTerminal(command: command, name: tab.displayName, host: tab.connectHost, staged: staged)
+            return
+        }
+        // Local shell: reopen at the focused pane's cwd.
+        let cwd = (tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf())?.pwd
+        let newTab = newTerminal(command: nil, name: tab.displayName)
+        if let cwd, !cwd.isEmpty, let surface = newTab?.surfaceTree.root?.leftmostLeaf() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                surface.surfaceModel?.sendText("cd \"\(cwd)\"\n")
+            }
+        }
+    }
+
+    /// Rename a tab (right-click → Rename Tab…). Empty clears the override.
+    func renameTab(_ id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        terminals.first { $0.id == id }?.customName = trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Set (or clear, with nil) a tab's accent color.
+    func setColor(_ color: Color?, for id: UUID) {
+        terminals.first { $0.id == id }?.color = color
+    }
+
+    /// Close every terminal tab except `id` (right-click → Close Other Tabs).
+    func closeOtherTabs(keep id: UUID) {
+        guard terminals.contains(where: { $0.id == id }) else { return }
+        for (i, t) in terminals.enumerated() where t.id != id { recordClosed(t, at: i) }
+        terminals.removeAll { $0.id != id }
+        selection = .terminal(id)
+    }
+
+    /// Close all tabs positioned after `id` (right-click → Close Tabs to the Right).
+    func closeTabsToRight(of id: UUID) {
+        guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        let removed = Set(terminals[(idx + 1)...].map(\.id))
+        guard !removed.isEmpty else { return }
+        for (i, t) in terminals.enumerated() where removed.contains(t.id) { recordClosed(t, at: i) }
+        terminals.removeAll { removed.contains($0.id) }
+        if case let .terminal(selected) = selection, removed.contains(selected) {
+            selection = .terminal(id)
+        }
+    }
+
+    /// Apply a resize/drop operation from the split-tree view to a tab.
+    func performSplitOperation(_ op: TerminalSplitOperation, in tab: TerminalTab) {
+        switch op {
+        case .resize(let resize):
+            let resized = resize.node.resizing(to: resize.ratio)
+            if let newTree = try? tab.surfaceTree.replacing(node: resize.node, with: resized) {
+                tab.surfaceTree = newTree
+            }
+        case .drop(let drop):
+            // Same-tab pane move only (single window).
+            guard let sourceNode = tab.surfaceTree.root?.node(view: drop.payload) else { return }
+            let direction: SplitTree<Ghostty.SurfaceView>.NewDirection = switch drop.zone {
+            case .top: .up
+            case .bottom: .down
+            case .left: .left
+            case .right: .right
+            }
+            let without = tab.surfaceTree.removing(sourceNode)
+            if let newTree = try? without.inserting(view: drop.payload, at: drop.destination, direction: direction) {
+                tab.surfaceTree = newTree
+                Ghostty.moveFocus(to: drop.payload)
+            }
+        }
+    }
+
+    // MARK: - libghostty notification handling
+
+    private func installObservers() {
+        let nc = NotificationCenter.default
+        func observe(_ name: Notification.Name, _ handler: @escaping (Notification) -> Void) {
+            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { note in
+                handler(note)
+            })
+        }
+
+        observe(Ghostty.Notification.ghosttyCloseSurface) { [weak self] in self?.handleClose($0) }
+        observe(Ghostty.Notification.ghosttyNewSplit) { [weak self] in self?.handleNewSplit($0) }
+        observe(Ghostty.Notification.ghosttyFocusSplit) { [weak self] in self?.handleFocusSplit($0) }
+        observe(Ghostty.Notification.didEqualizeSplits) { [weak self] in self?.handleEqualize($0) }
+        observe(Ghostty.Notification.didToggleSplitZoom) { [weak self] in self?.handleToggleZoom($0) }
+        // These fire only for CUSTOM keybinds (the default combos are consumed by
+        // AppDelegate's monitor before reaching the surface). libghostty matches
+        // the user's config and posts here; we perform the single-window action.
+        observe(Ghostty.Notification.ghosttyGotoTab) { [weak self] in self?.handleGotoTab($0) }
+        observe(.ghosttyMoveTab) { [weak self] in self?.handleMoveTab($0) }
+        observe(Ghostty.Notification.didResizeSplit) { [weak self] in self?.handleResizeSplitNote($0) }
+        observe(Ghostty.Notification.ghosttyToggleFullscreen) { [weak self] in self?.handleToggleFullscreen($0) }
+        observe(.ghosttyCloseTab) { [weak self] in self?.handleCloseTabNote($0, kind: .this) }
+        observe(.ghosttyCloseOtherTabs) { [weak self] in self?.handleCloseTabNote($0, kind: .other) }
+        observe(.ghosttyCloseTabsOnTheRight) { [weak self] in self?.handleCloseTabNote($0, kind: .right) }
+        // App-wide config change (Settings save / live reload). libghostty
+        // applies new config to NEW surfaces, but our existing embedded surfaces
+        // need an explicit push so live changes (cursor, colors, font, padding…)
+        // take effect without relaunching. Deferred so `ghostty.config` is the
+        // freshly-applied config by the time we read it.
+        observe(.ghosttyConfigDidChange) { [weak self] note in
+            guard note.object == nil else { return }
+            DispatchQueue.main.async { self?.applyConfigToExistingSurfaces() }
+        }
+    }
+
+    /// Push the current config to every live embedded surface so settings apply
+    /// immediately to existing terminals, not just newly-opened ones.
+    private func applyConfigToExistingSurfaces() {
+        guard let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { return }
+        for tab in terminals {
+            for pane in tab.surfaceTree.root?.leaves() ?? [] {
+                guard let surface = pane.surface else { continue }
+                ghostty.reloadConfig(surface: surface, soft: true)
+            }
+        }
+    }
+
+    private enum CloseTabKind { case this, other, right }
+
+    private func handleGotoTab(_ note: Notification) {
+        guard let surface = note.object as? Ghostty.SurfaceView, tab(containing: surface) != nil,
+              let tabEnum = note.userInfo?[Ghostty.Notification.GotoTabKey] as? ghostty_action_goto_tab_e
+        else { return }
+        let raw = tabEnum.rawValue
+        if raw == GHOSTTY_GOTO_TAB_PREVIOUS.rawValue { cycleTab(-1) }
+        else if raw == GHOSTTY_GOTO_TAB_NEXT.rawValue { cycleTab(1) }
+        else if raw == GHOSTTY_GOTO_TAB_LAST.rawValue { selectLastTab() }
+        else if raw >= 1 { selectTab(index: min(Int(raw) - 1, terminals.count - 1)) }
+    }
+
+    private func handleMoveTab(_ note: Notification) {
+        guard let surface = note.object as? Ghostty.SurfaceView,
+              let t = tab(containing: surface),
+              let action = note.userInfo?[Notification.Name.GhosttyMoveTabKey] as? Ghostty.Action.MoveTab,
+              action.amount != 0,
+              let from = terminals.firstIndex(where: { $0.id == t.id }) else { return }
+        let target = max(0, min(terminals.count - 1, from + action.amount))
+        guard target != from else { return }
+        withAnimation(.smooth(duration: 0.2)) {
+            let moved = terminals.remove(at: from)
+            terminals.insert(moved, at: target)
+        }
+    }
+
+    private func handleResizeSplitNote(_ note: Notification) {
+        guard let surface = note.object as? Ghostty.SurfaceView,
+              let t = tab(containing: surface),
+              let node = t.surfaceTree.root?.node(view: surface),
+              let dir = note.userInfo?[Ghostty.Notification.ResizeSplitDirectionKey] as? Ghostty.SplitResizeDirection,
+              let amount = note.userInfo?[Ghostty.Notification.ResizeSplitAmountKey] as? UInt16 else { return }
+        let spatial: SplitTree<Ghostty.SurfaceView>.Spatial.Direction
+        switch dir {
+        case .up: spatial = .up
+        case .down: spatial = .down
+        case .left: spatial = .left
+        case .right: spatial = .right
+        }
+        let bounds = CGRect(origin: .zero, size: t.surfaceTree.viewBounds())
+        if let newTree = try? t.surfaceTree.resizing(node: node, by: amount, in: spatial, with: bounds) {
+            t.surfaceTree = newTree
+        }
+    }
+
+    private func handleToggleFullscreen(_ note: Notification) {
+        guard let surface = note.object as? Ghostty.SurfaceView, tab(containing: surface) != nil else { return }
+        surface.window?.toggleFullScreen(nil)
+    }
+
+    private func handleCloseTabNote(_ note: Notification, kind: CloseTabKind) {
+        guard let surface = note.object as? Ghostty.SurfaceView,
+              let t = tab(containing: surface) else { return }
+        switch kind {
+        case .this: closeTerminal(t.id)
+        case .other: closeOtherTabs(keep: t.id)
+        case .right: closeTabsToRight(of: t.id)
+        }
+    }
+
+    private func handleNewSplit(_ note: Notification) {
+        guard let src = note.object as? Ghostty.SurfaceView,
+              let tab = tab(containing: src),
+              let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+        guard let dirAny = note.userInfo?["direction"],
+              let dir = dirAny as? ghostty_action_split_direction_e else { return }
+        let direction: SplitTree<Ghostty.SurfaceView>.NewDirection
+        switch dir {
+        case GHOSTTY_SPLIT_DIRECTION_RIGHT: direction = .right
+        case GHOSTTY_SPLIT_DIRECTION_LEFT:  direction = .left
+        case GHOSTTY_SPLIT_DIRECTION_DOWN:  direction = .down
+        case GHOSTTY_SPLIT_DIRECTION_UP:    direction = .up
+        default: return
+        }
+        let config = note.userInfo?[Ghostty.Notification.NewSurfaceConfigKey] as? Ghostty.SurfaceConfiguration
+        let newView = Ghostty.SurfaceView(app, baseConfig: config)
+        guard let newTree = try? tab.surfaceTree.inserting(view: newView, at: src, direction: direction) else { return }
+        tab.surfaceTree = newTree
+        Ghostty.moveFocus(to: newView, from: src)
+    }
+
+    private func handleClose(_ note: Notification) {
+        guard let surface = note.object as? Ghostty.SurfaceView,
+              let tab = tab(containing: surface),
+              let node = tab.surfaceTree.root?.node(view: surface) else { return }
+        awaitingChoice.remove(surface.id)
+        let remaining = tab.surfaceTree.removing(node)
+        if remaining.isEmpty {
+            closeTerminal(tab.id)
+        } else {
+            tab.surfaceTree = remaining
+            if let next = remaining.root?.leftmostLeaf() {
+                Ghostty.moveFocus(to: next)
+            }
+        }
+    }
+
+    private func handleFocusSplit(_ note: Notification) {
+        guard let target = note.object as? Ghostty.SurfaceView,
+              let tab = tab(containing: target),
+              let targetNode = tab.surfaceTree.root?.node(view: target),
+              let dirAny = note.userInfo?[Ghostty.Notification.SplitDirectionKey],
+              let direction = dirAny as? Ghostty.SplitFocusDirection,
+              let next = tab.surfaceTree.focusTarget(for: direction.toSplitTreeFocusDirection(), from: targetNode)
+        else { return }
+        Ghostty.moveFocus(to: next, from: target)
+    }
+
+    private func handleEqualize(_ note: Notification) {
+        guard let target = note.object as? Ghostty.SurfaceView,
+              let tab = tab(containing: target) else { return }
+        tab.surfaceTree = tab.surfaceTree.equalized()
+    }
+
+    private func handleToggleZoom(_ note: Notification) {
+        guard let target = note.object as? Ghostty.SurfaceView,
+              let tab = tab(containing: target),
+              let node = tab.surfaceTree.root?.node(view: target) else { return }
+        if tab.surfaceTree.zoomed != nil {
+            tab.surfaceTree = SplitTree(root: tab.surfaceTree.root, zoomed: nil)
+        } else {
+            tab.surfaceTree = SplitTree(root: tab.surfaceTree.root, zoomed: node)
+        }
+    }
+}

@@ -176,6 +176,41 @@ extension Ghostty {
         override var surface: ghostty_surface_t? {
             surfaceModel?.unsafeCValue
         }
+
+        /// Read the current visible viewport text WITHOUT the 500ms cache that
+        /// `cachedVisibleContents` uses. The SSH connection popup polls this
+        /// (~150ms) to detect host-key/password prompts and connection results,
+        /// so it must see fresh output on every tick.
+        func liveVisibleText() -> String {
+            guard let surface = self.surface else { return "" }
+            var text = ghostty_text_s()
+            let sel = ghostty_selection_s(
+                top_left: ghostty_point_s(
+                    tag: GHOSTTY_POINT_VIEWPORT,
+                    coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+                    x: 0,
+                    y: 0),
+                bottom_right: ghostty_point_s(
+                    tag: GHOSTTY_POINT_VIEWPORT,
+                    coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+                    x: 0,
+                    y: 0),
+                rectangle: false)
+            guard ghostty_surface_read_text(surface, sel, &text) else { return "" }
+            defer { ghostty_surface_free_text(surface, &text) }
+            guard let ptr = text.text else { return "" }
+            return String(cString: ptr)
+        }
+
+        /// Clear the terminal screen and scrollback (the `clear_screen` binding
+        /// action). The staged SSH connect uses this to wipe the connection
+        /// noise (command echo, host-key + password prompts) right before the
+        /// server's welcome banner renders, so the session starts clean.
+        func clearScreen() {
+            guard let surface = self.surface else { return }
+            let action = "clear_screen"
+            _ = ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8)))
+        }
         /// Current scrollbar state, cached here for persistence across rebuilds
         /// of the SwiftUI view hierarchy, for example when changing splits
         var scrollbar: Ghostty.Action.Scrollbar?

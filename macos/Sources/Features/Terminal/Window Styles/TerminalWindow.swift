@@ -24,6 +24,13 @@ class TerminalWindow: NSWindow {
     /// Update notification UI in titlebar
     private let updateAccessory = NSTitlebarAccessoryViewController()
 
+    /// Settings (gear) button in titlebar
+    private let settingsAccessory = NSTitlebarAccessoryViewController()
+
+    /// Leading-edge tray with the always-visible Hosts + Connect buttons,
+    /// matching Termius's Vaults/SFTP slot.
+    private let leadingTrayAccessory = NSTitlebarAccessoryViewController()
+
     /// Visual indicator that mirrors the selected tab color.
     private lazy var tabColorIndicator: NSHostingView<TabColorIndicatorView> = {
         let view = NSHostingView(rootView: TabColorIndicatorView(tabColor: tabColor))
@@ -102,6 +109,12 @@ class TerminalWindow: NSWindow {
             self.tabbingMode = .automatic
         }
 
+        // Hide just the title text — the title bar row itself stays as a
+        // slim strip holding the traffic lights + trailing gear. The
+        // `[Vaults][SFTP][SCP] | [+]` accessory lives one row down with
+        // the native tab bar.
+        titleVisibility = .hidden
+
         // All new windows are based on the app config at the time of creation.
         guard let appDelegate = NSApp.delegate as? AppDelegate else { return }
         let config = appDelegate.ghostty.config
@@ -153,6 +166,45 @@ class TerminalWindow: NSWindow {
                 addTitlebarAccessoryViewController(updateAccessory)
                 updateAccessory.view.translatesAutoresizingMaskIntoConstraints = false
             }
+
+            // Termius-style unified tab strip — pills, real terminal
+            // tabs, and the trailing "+" all in one row. Replaces the
+            // native macOS tab bar (hidden below) so the titlebar reads
+            // as a single calm strip across all windows in the Vaults
+            // tab group.
+            leadingTrayAccessory.layoutAttribute = .bottom
+            let leadingHost = NonDraggableHostingView(rootView: VaultsTabStrip(
+                newTabAction: { [weak self] in
+                    guard let self,
+                          let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { return }
+                    _ = TerminalController.newTab(ghostty, from: self)
+                }))
+            leadingHost.frame = NSRect(x: 0, y: 0, width: 1200, height: 32)
+            leadingHost.autoresizingMask = [.width]
+            leadingTrayAccessory.view = leadingHost
+            leadingTrayAccessory.identifier = NSUserInterfaceItemIdentifier("VaultsTabStrip")
+            addTitlebarAccessoryViewController(leadingTrayAccessory)
+            // Hide the native tab bar so our strip is the only row.
+            // Deferred to next runloop tick — `tabBarView` is created
+            // lazily and may be nil at this point in init.
+            DispatchQueue.main.async { [weak self] in
+                self?.tabBarView?.isHidden = true
+            }
+
+            // Create settings gear accessory. Added last so it appears at the
+            // trailing edge of the titlebar — tabs grow from the leading side
+            // and AppKit never lets them overlap right-aligned accessories.
+            settingsAccessory.layoutAttribute = .right
+            settingsAccessory.view = NonDraggableHostingView(rootView: SettingsAccessoryView(
+                viewModel: viewModel,
+                action: { [weak self] in
+                    (NSApp.delegate as? AppDelegate)?.showSettings(self)
+                },
+                connectAction: {
+                    (NSApp.delegate as? AppDelegate)?.showHostSearch(nil)
+                }))
+            addTitlebarAccessoryViewController(settingsAccessory)
+            settingsAccessory.view.translatesAutoresizingMaskIntoConstraints = false
         }
 
         // Setup the accessory view for tabs that shows our keyboard shortcuts,
@@ -317,6 +369,34 @@ class TerminalWindow: NSWindow {
 
         // We don't need to do this with the update accessory. I don't know why but
         // everything works fine.
+
+    }
+
+    private func hideNativeAddTabButton() {
+        // Search the entire titlebar — sometimes the "+" button is a sibling
+        // of NSTabBar, not a child.
+        let roots: [NSView] = [titlebarView, tabBarView].compactMap { $0 }
+        let newTabSelector = #selector(NSWindow.newWindowForTab(_:))
+        for root in roots {
+            Self.walkSubviews(root) { view in
+                guard let button = view as? NSButton, !button.isHidden else { return }
+                let actionStr = button.action.map(NSStringFromSelector) ?? ""
+                let imageName = button.image?.name() ?? ""
+                let className = String(describing: type(of: button))
+                if button.action == newTabSelector ||
+                   actionStr.contains("newWindowForTab") ||
+                   actionStr.contains("newTab") ||
+                   imageName == "NSAddTemplate" ||
+                   className.contains("Add") {
+                    button.isHidden = true
+                }
+            }
+        }
+    }
+
+    private static func walkSubviews(_ view: NSView, visit: (NSView) -> Void) {
+        visit(view)
+        for sub in view.subviews { walkSubviews(sub, visit: visit) }
     }
 
     private func tabBarDidDisappear() {
@@ -674,6 +754,89 @@ extension TerminalWindow {
             UpdatePill(model: model)
                 .padding(.top, viewModel.accessoryTopPadding)
                 .padding(.trailing, viewModel.accessoryTopPadding)
+        }
+    }
+
+    /// Trailing-edge gear icon (Settings). The "+ new tab" affordance
+    /// now lives in the unified leading bar (`VaultsTabStrip`).
+    struct SettingsAccessoryView: View {
+        @ObservedObject var viewModel: ViewModel
+        let action: () -> Void           // settings (gear)
+        let connectAction: () -> Void    // kept for API compat; unused
+
+        var body: some View {
+            VStack {
+                Button(action: action) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundColor(.white)
+                        .opacity(viewModel.isMainWindow ? 1.0 : 0.65)
+                }
+                .buttonStyle(.plain)
+                .help("Settings")
+                .frame(width: 20, height: 20)
+                Spacer()
+            }
+            .padding(.top, viewModel.accessoryTopPadding)
+            .padding(.trailing, 10)
+        }
+    }
+
+    /// Tab-bar tray with two flat tab-like buttons — Hosts (host manager)
+    /// and "+" (host search palette). Styling matches NSTabGroup's tabs as
+    /// closely as we can do without modifying private AppKit views.
+    struct TabBarTrayAccessoryView: View {
+        @ObservedObject var viewModel: ViewModel
+        let hostsAction: () -> Void
+        let connectAction: () -> Void
+
+        var body: some View {
+            HStack(spacing: 4) {
+                tabButton(
+                    systemImage: "server.rack",
+                    label: "Hosts",
+                    help: "Open host manager (⇧⌘H)",
+                    action: hostsAction
+                )
+                tabButton(
+                    systemImage: "plus",
+                    label: nil,
+                    help: "Connect to host (⇧⌘K)",
+                    action: connectAction
+                )
+            }
+            .padding(.top, viewModel.accessoryTopPadding)
+            .padding(.leading, 8)
+            .padding(.trailing, 4)
+        }
+
+        /// Flat tab-style button — matches the visual weight of NSTabBar
+        /// tabs (rounded rect, subtle hairline, no fill until hover).
+        private func tabButton(
+            systemImage: String,
+            label: String?,
+            help: String,
+            action: @escaping () -> Void
+        ) -> some View {
+            Button(action: action) {
+                HStack(spacing: 5) {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12, weight: .regular))
+                    if let label {
+                        Text(label)
+                            .font(.system(size: 12, weight: .regular))
+                    }
+                }
+                .padding(.horizontal, label == nil ? 8 : 10)
+                .padding(.vertical, 4)
+                .foregroundColor(viewModel.isMainWindow ? .primary : .secondary)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .help(help)
         }
     }
 

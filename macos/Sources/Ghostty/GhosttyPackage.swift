@@ -403,6 +403,10 @@ extension Ghostty.Notification {
     /// New tab. Has base surface config requested in userinfo.
     static let ghosttyNewTab = Notification.Name("com.mitchellh.ghostty.newTab")
 
+    /// Reopen the most recently closed tab. Object is the focused surface view
+    /// when available so the handler can prefer that window.
+    static let ghosttyReopenClosedTab = Notification.Name("com.mitchellh.ghostty.reopenClosedTab")
+
     /// New window. Has base surface config requested in userinfo.
     static let ghosttyNewWindow = Notification.Name("com.mitchellh.ghostty.newWindow")
 
