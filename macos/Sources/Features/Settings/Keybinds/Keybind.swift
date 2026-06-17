@@ -187,6 +187,7 @@ let kKeybindActions: [KeybindAction] = [
     // replace Ghostty's native `new_tab` (unused in the single-window model).
     .init(name: "app:command_palette", label: "New tab / command palette", category: "Tabs"),
     .init(name: "app:new_local_terminal", label: "New Local Terminal Tab", category: "Tabs"),
+    .init(name: "app:reopen_closed_tab", label: "Reopen Closed Tab", category: "Tabs"),
     .init(name: "previous_tab", label: "Previous tab", category: "Tabs"),
     .init(name: "next_tab", label: "Next tab", category: "Tabs"),
     .init(name: "last_tab", label: "Last tab", category: "Tabs"),

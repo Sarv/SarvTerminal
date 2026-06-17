@@ -500,6 +500,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_NEW_TAB:
                 newTab(app, target: target)
 
+            case GHOSTTY_ACTION_REOPEN_CLOSED_TAB:
+                reopenClosedTab(app, target: target)
+
             case GHOSTTY_ACTION_NEW_SPLIT:
                 newSplit(app, target: target, direction: action.action.new_split)
 
@@ -844,6 +847,32 @@ extension Ghostty {
                     userInfo: [
                         Notification.NewSurfaceConfigKey: SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_TAB)),
                     ]
+                )
+
+            default:
+                assertionFailure()
+            }
+        }
+
+        private static func reopenClosedTab(_ app: ghostty_app_t, target: ghostty_target_s) {
+            // Reopening a closed tab is an app-level operation: it pops from the
+            // global recently-closed-tab history regardless of which surface (if
+            // any) was focused when the keybind fired. The object is the focused
+            // surface view when available so the handler can prefer that window.
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                NotificationCenter.default.post(
+                    name: Notification.ghosttyReopenClosedTab,
+                    object: nil,
+                    userInfo: [:]
+                )
+
+            case GHOSTTY_TARGET_SURFACE:
+                let surfaceView = target.target.surface.flatMap { self.surfaceView(from: $0) }
+                NotificationCenter.default.post(
+                    name: Notification.ghosttyReopenClosedTab,
+                    object: surfaceView,
+                    userInfo: [:]
                 )
 
             default:

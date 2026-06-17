@@ -275,6 +275,11 @@ class AppDelegate: NSObject,
             selector: #selector(ghosttyNewTab(_:)),
             name: Ghostty.Notification.ghosttyNewTab,
             object: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(ghosttyReopenClosedTab(_:)),
+            name: Ghostty.Notification.ghosttyReopenClosedTab,
+            object: nil)
 
         // Configure user notifications
         let actions = [
@@ -584,6 +589,10 @@ class AppDelegate: NSObject,
                 guard VaultsTabsModel.shared.activeTerminal != nil else { return event }
                 // Open a blank split pane with an inline chooser (SSH / local).
                 VaultsTabsModel.shared.splitAwaitingChoice(direction: action == .splitRight ? .right : .down)
+            case .reopenClosedTab:
+                // Works even on the dashboard (no focused surface) — restores
+                // the most recently closed tab with its session intact.
+                VaultsTabsModel.shared.reopenLastClosedTab()
             }
             return nil
         }
@@ -841,6 +850,15 @@ class AppDelegate: NSObject,
         let config = configAny as? Ghostty.SurfaceConfiguration
 
         _ = TerminalController.newTab(ghostty, from: window, withBaseConfig: config)
+    }
+
+    @objc private func ghosttyReopenClosedTab(_ notification: Notification) {
+        // Terminals live in the single-window Vaults model (no native tab
+        // groups), so reopen there. This fires from the Ghostty keybind action
+        // (when a surface is focused) and the "Reopen Closed Tab" command-
+        // palette entry; the ⌘⇧T key press on the dashboard is handled directly
+        // by the local event monitor via AppKeybindStore.
+        VaultsTabsModel.shared.reopenLastClosedTab()
     }
 
     private func setDockBadge() {

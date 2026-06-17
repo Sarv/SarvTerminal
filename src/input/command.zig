@@ -419,6 +419,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = "Open a new tab.",
         }},
 
+        .reopen_closed_tab => comptime &.{.{
+            .action = .reopen_closed_tab,
+            .title = "Reopen Closed Tab",
+            .description = "Reopen the most recently closed tab.",
+        }},
+
         .move_tab => comptime &.{
             .{
                 .action = .{ .move_tab = -1 },
