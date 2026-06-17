@@ -238,18 +238,13 @@ extension Ghostty {
                 self.escapeMonitor = nil
             }
 
-            if operation == [] && !dragCancelledByEscape {
-                let endsInWindow = NSApplication.shared.windows.contains { window in
-                    window.isVisible && window.frame.contains(screenPoint)
-                }
-                if !endsInWindow {
-                    NotificationCenter.default.post(
-                        name: .ghosttySurfaceDragEndedNoTarget,
-                        object: surfaceView,
-                        userInfo: [Foundation.Notification.Name.ghosttySurfaceDragEndedNoTargetPointKey: screenPoint]
-                    )
-                }
-            }
+            // SarvTerminal is a single-window app: terminals live embedded in
+            // the Vaults window and must never tear off into a standalone native
+            // window (that window has no Vaults chrome, shared-image layer, or
+            // SSH connection popup, which breaks consistency). So we do NOT post
+            // `ghosttySurfaceDragEndedNoTarget` here — dropping a drag outside
+            // any window is a no-op and the surface stays put. Drag-reordering
+            // WITHIN the window (drop onto a split/strip target) is unaffected.
 
             isTracking = false
             onDragStateChanged?(false)
