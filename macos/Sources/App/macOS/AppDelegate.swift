@@ -571,6 +571,30 @@ class AppDelegate: NSObject,
     }
 
     private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
+        // Standard editing shortcuts (⌘V/⌘C/⌘X/⌘A/⌘Z) must act on a focused
+        // control — host editor fields, search fields, and the connection
+        // popup's password field. Simply passing the event through ISN'T enough:
+        // the Edit ▸ Paste menu item is bound to Ghostty's `paste_from_clipboard`
+        // with ⌘V, and menu key-equivalents are handled before the focused field.
+        // So we dispatch the AppKit editing selector straight to the responder
+        // chain and consume the event. Only a focused terminal surface should
+        // fall through to Ghostty's bindings.
+        if event.modifierFlags.contains(.command),
+           !(NSApp.keyWindow?.firstResponder is Ghostty.SurfaceView),
+           let key = event.charactersIgnoringModifiers?.lowercased() {
+            let selector: Selector? = switch key {
+            case "v": #selector(NSText.paste(_:))
+            case "c": #selector(NSText.copy(_:))
+            case "x": #selector(NSText.cut(_:))
+            case "a": #selector(NSText.selectAll(_:))
+            case "z": Selector(("undo:"))
+            default: nil
+            }
+            if let selector, NSApp.sendAction(selector, to: nil, from: nil) {
+                return nil
+            }
+        }
+
         // SarvTerminal app shortcuts (rebindable via Settings → Keybinds, see
         // AppKeybindStore) that must win even when a terminal surface is
         // focused — a focused surface would otherwise consume the combo before
