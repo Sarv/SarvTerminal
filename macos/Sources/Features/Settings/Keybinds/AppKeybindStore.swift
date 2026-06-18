@@ -26,13 +26,16 @@ enum AppShortcutAction: String, CaseIterable {
         }
     }
 
-    var defaultCombo: String {
+    /// Default combo(s) for this action. The command palette opens with both
+    /// ⌘T (new tab) and ⌘P (palette / Termius-style quick-connect search). We
+    /// deliberately avoid ⌘K — that's a Ghostty default (clear screen).
+    var defaultCombos: [String] {
         switch self {
-        case .commandPalette: return "cmd+t"
-        case .newLocalTerminal: return "cmd+l"
-        case .splitRight: return "cmd+d"
-        case .splitDown: return "cmd+shift+d"
-        case .reopenClosedTab: return "cmd+shift+t"
+        case .commandPalette: return ["cmd+t", "cmd+p"]
+        case .newLocalTerminal: return ["cmd+l"]
+        case .splitRight: return ["cmd+d"]
+        case .splitDown: return ["cmd+shift+d"]
+        case .reopenClosedTab: return ["cmd+shift+t"]
         }
     }
 }
@@ -52,10 +55,26 @@ final class AppKeybindStore: ObservableObject {
         // newly added action). Only fills gaps — never clobbers user choices.
         var didSeed = false
         for action in AppShortcutAction.allCases where (bindings[action.rawValue]?.isEmpty ?? true) {
-            bindings[action.rawValue] = [action.defaultCombo]
+            bindings[action.rawValue] = action.defaultCombos
             didSeed = true
         }
         if didSeed { persist() }
+        migrateCommandPalettePaletteKey()
+    }
+
+    /// One-time migration: an earlier build defaulted ⌘K → command palette,
+    /// which shadowed Ghostty's ⌘K (clear screen). Give ⌘K back to Ghostty and
+    /// use ⌘P (palette) instead — ⌘P is not a Ghostty default. The flag stops
+    /// this from re-adding a combo the user later removes on purpose.
+    private func migrateCommandPalettePaletteKey() {
+        let flag = "SarvAppKeybinds.paletteKey.v2"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        UserDefaults.standard.set(true, forKey: flag)
+        let id = AppShortcutAction.commandPalette.rawValue
+        removeCombo("cmd+k", for: id)   // restore ⌘K → Ghostty clear screen
+        let combos = bindings[id] ?? []
+        let hasCmdP = combos.contains { KeybindParser.splitModsAndKey($0) == KeybindParser.splitModsAndKey("cmd+p") }
+        if !hasCmdP { addCombo("cmd+p", for: id) }
     }
 
     /// Load + migrate from the old single-combo format if present.
