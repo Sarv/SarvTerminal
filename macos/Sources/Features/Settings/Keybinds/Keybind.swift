@@ -215,11 +215,80 @@ let kKeybindActions: [KeybindAction] = [
     .init(name: "reload_config", label: "Reload config", category: "Config"),
 
     // UI
+    // NOTE: only list shortcuts that actually work in the single-window Vaults
+    // app. Ghostty's `toggle_command_palette` (⌘⇧P) and `toggle_quick_terminal`
+    // are intentionally omitted — they're rendered by Ghostty's classic
+    // window controller, which Vaults doesn't use, so they'd be dead rows.
+    // Our own command palette is `app:command_palette` (⌘T / ⌘P) above.
     .init(name: "inspector:toggle", label: "Toggle inspector", category: "UI"),
-    .init(name: "toggle_command_palette", label: "Toggle command palette", category: "UI"),
-    .init(name: "toggle_quick_terminal", label: "Toggle Quick Terminal", category: "UI"),
 
     // System
     .init(name: "quit", label: "Quit", category: "System"),
     .init(name: "clear_screen", label: "Clear screen", category: "System"),
 ]
+
+// MARK: - Fixed (non-rebindable) shortcuts
+
+/// Actions whose shortcuts are handled by FIXED key combos in
+/// `AppDelegate.localEventKeyDown`, because the single-window Vaults model can't
+/// route them through the rebindable keybind system. They're shown in the
+/// editor for discoverability but the "+" is hidden and their chips can't be
+/// removed — and their combos are reserved (see `kReservedCombos`) so the user
+/// can't strand them on another action. Keep these in sync with AppDelegate.
+struct LockedShortcut {
+    let actionName: String
+    let combos: [String]
+}
+
+let kLockedShortcuts: [LockedShortcut] = [
+    .init(actionName: "next_tab",            combos: ["cmd+shift+]", "ctrl+tab"]),
+    .init(actionName: "previous_tab",        combos: ["cmd+shift+[", "ctrl+shift+tab"]),
+    .init(actionName: "last_tab",            combos: ["cmd+9"]),
+    .init(actionName: "goto_split:next",     combos: ["cmd+]"]),
+    .init(actionName: "goto_split:previous", combos: ["cmd+["]),
+    .init(actionName: "toggle_split_zoom",   combos: ["cmd+shift+enter"]),
+    .init(actionName: "toggle_fullscreen",   combos: ["cmd+enter"]),
+]
+
+/// Every fixed combo the app intercepts, with a human label — a superset of the
+/// locked catalog actions plus combos that have no editor row (tab numbers,
+/// split focus/resize, focus mode, close). Used to BLOCK assigning any of them
+/// to a different action (which would leave the fixed one un-restorable except
+/// via "Reset to defaults"). Keep in sync with `AppDelegate.localEventKeyDown`.
+let kReservedCombos: [(label: String, combos: [String])] = [
+    ("Next tab",          ["cmd+shift+]", "ctrl+tab"]),
+    ("Previous tab",      ["cmd+shift+[", "ctrl+shift+tab"]),
+    ("Last tab",          ["cmd+9"]),
+    ("Select tab",        (1...8).map { "cmd+\($0)" }),
+    ("Next split",        ["cmd+]"]),
+    ("Previous split",    ["cmd+["]),
+    ("Focus split",       ["cmd+opt+arrow_left", "cmd+opt+arrow_right", "cmd+opt+arrow_up", "cmd+opt+arrow_down"]),
+    ("Resize split",      ["cmd+ctrl+arrow_left", "cmd+ctrl+arrow_right", "cmd+ctrl+arrow_up", "cmd+ctrl+arrow_down"]),
+    ("Toggle split zoom", ["cmd+shift+enter"]),
+    ("Toggle fullscreen", ["cmd+enter"]),
+    ("Focus mode",        ["cmd+shift+m"]),
+    ("Close pane",        ["cmd+w"]),
+    ("Close tab",         ["cmd+opt+w"]),
+]
+
+extension KeybindAction {
+    /// False for fixed shortcuts — the editor hides the "+" and renders the
+    /// combos as non-removable chips.
+    var isRebindable: Bool { kLockedShortcuts.allSatisfy { $0.actionName != name } }
+
+    /// The fixed combos to render for a locked action (empty for rebindable ones).
+    var lockedCombos: [String] { kLockedShortcuts.first { $0.actionName == name }?.combos ?? [] }
+}
+
+/// The label of the reserved shortcut owning `combo` (normalized), if any — used
+/// to block reassigning a fixed combo to a different action.
+func reservedComboOwnerLabel(_ combo: String) -> String? {
+    let target = KeybindParser.splitModsAndKey(combo)
+    for reserved in kReservedCombos {
+        for c in reserved.combos {
+            let cur = KeybindParser.splitModsAndKey(c)
+            if cur.0 == target.0 && cur.1 == target.1 { return reserved.label }
+        }
+    }
+    return nil
+}
