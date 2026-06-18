@@ -15,6 +15,8 @@ enum AppShortcutAction: String, CaseIterable {
     case splitRight = "app:split_right"
     case splitDown = "app:split_down"
     case reopenClosedTab = "app:reopen_closed_tab"
+    case showVaults = "app:show_vaults"
+    case showSFTP = "app:show_sftp"
 
     var label: String {
         switch self {
@@ -23,6 +25,8 @@ enum AppShortcutAction: String, CaseIterable {
         case .splitRight: return "Split right (choose target)"
         case .splitDown: return "Split down (choose target)"
         case .reopenClosedTab: return "Reopen Closed Tab"
+        case .showVaults: return "Show Vaults"
+        case .showSFTP: return "Show SFTP"
         }
     }
 
@@ -36,6 +40,8 @@ enum AppShortcutAction: String, CaseIterable {
         case .splitRight: return ["cmd+d"]
         case .splitDown: return ["cmd+shift+d"]
         case .reopenClosedTab: return ["cmd+shift+t"]
+        case .showVaults: return ["cmd+shift+v"]
+        case .showSFTP: return ["cmd+shift+f"]
         }
     }
 }

@@ -617,6 +617,10 @@ class AppDelegate: NSObject,
                 // Works even on the dashboard (no focused surface) — restores
                 // the most recently closed tab with its session intact.
                 VaultsTabsModel.shared.reopenLastClosedTab()
+            case .showVaults:
+                VaultsTabsModel.shared.selectDashboard(section: .vaults)
+            case .showSFTP:
+                VaultsTabsModel.shared.selectDashboard(section: .sftp)
             }
             return nil
         }

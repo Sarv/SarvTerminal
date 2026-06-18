@@ -210,6 +210,10 @@ let kKeybindActions: [KeybindAction] = [
     // Search
     .init(name: "start_search", label: "Find", category: "Search"),
 
+    // Dashboard — SarvTerminal app-level, rebindable (see AppKeybindStore).
+    .init(name: "app:show_vaults", label: "Show Vaults", category: "Dashboard"),
+    .init(name: "app:show_sftp", label: "Show SFTP", category: "Dashboard"),
+
     // Config
     .init(name: "open_config", label: "Open config file", category: "Config"),
     .init(name: "reload_config", label: "Reload config", category: "Config"),
