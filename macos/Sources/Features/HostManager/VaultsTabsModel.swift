@@ -467,12 +467,56 @@ final class VaultsTabsModel: ObservableObject {
         case .host(let host):
             send(host.sshCommand, to: surface)
             dismissChoice(surface: surface)
+        case .savedHost(let host):
+            // Staged connect (popup + saved password) right in this pane.
+            connectSavedHostInPane(host: host, surface: surface)
         case .quickConnect(let query):
             let target = query.trimmingCharacters(in: .whitespaces)
             guard !target.isEmpty else { return }
             let command = target.hasPrefix("ssh ") ? target : "ssh \(target)"
             send(command, to: surface)
             dismissChoice(surface: surface)
+        }
+    }
+
+    /// Start a staged SSH connection to `host` IN an existing (awaiting) split
+    /// pane rather than a new tab — backs the split chooser's saved-host rows.
+    /// The popup shows over this pane; on connect the live terminal replaces it
+    /// in place, and the per-surface connection registry handles the rest.
+    func connectSavedHostInPane(host: SavedHost, surface: Ghostty.SurfaceView) {
+        guard let tab = tab(containing: surface),
+              let node = tab.surfaceTree.root?.node(view: surface),
+              let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+        let command = host.sshCommand(staged: true)
+        let needsPassword = sshNeedsPassword(host)
+        let knownPassword = host.password.isEmpty ? nil : host.password
+
+        awaitingChoice.remove(surface.id)
+
+        let boundSurface: Ghostty.SurfaceView
+        var passwordFile: String?
+        if needsPassword {
+            // Keep the placeholder surface; the popup collects the password.
+            boundSurface = surface
+        } else {
+            // Swap the placeholder pane for a live ssh surface.
+            let made = makeSSHSurface(app: app, command: command, password: knownPassword)
+            boundSurface = made.surface
+            passwordFile = made.passwordFile
+            if let newTree = try? tab.surfaceTree.replacing(node: node, with: .leaf(view: made.surface)) {
+                tab.surfaceTree = newTree
+            }
+        }
+
+        let model = SSHConnectionModel(title: host.displayLabel, host: host, needsPassword: needsPassword)
+        if !needsPassword { model.passwordFilePath = passwordFile }
+        let controller = SSHConnectionController(model: model, surfaceView: boundSurface, tabsModel: self)
+        connections[boundSurface.id] = ActiveConnection(model: model, controller: controller, command: command)
+        if needsPassword {
+            // Let the popup's password field take focus (don't pull it to the pane).
+        } else {
+            controller.start()
+            Ghostty.moveFocus(to: boundSurface)
         }
     }
 
