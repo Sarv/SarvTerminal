@@ -12,7 +12,6 @@ struct HostManagerView: View {
             switch selection.section {
             case .vaults: VaultsView()
             case .sftp:   SFTPView()
-            case .scp:    SCPView()
             }
         }
         .frame(minWidth: 900, minHeight: 560)
