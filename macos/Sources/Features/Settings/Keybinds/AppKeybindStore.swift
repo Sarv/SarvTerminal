@@ -41,7 +41,7 @@ enum AppShortcutAction: String, CaseIterable {
         case .splitDown: return ["cmd+shift+d"]
         case .reopenClosedTab: return ["cmd+shift+t"]
         case .showVaults: return ["cmd+shift+v"]
-        case .showSFTP: return ["cmd+shift+f"]
+        case .showSFTP: return ["cmd+shift+s"]
         }
     }
 }
@@ -66,6 +66,21 @@ final class AppKeybindStore: ObservableObject {
         }
         if didSeed { persist() }
         migrateCommandPalettePaletteKey()
+        migrateSFTPKey()
+    }
+
+    /// One-time migration: SFTP defaulted to ⌘⇧F in an earlier build; move it to
+    /// ⌘⇧S for existing installs. The flag prevents re-applying after the user
+    /// changes it themselves.
+    private func migrateSFTPKey() {
+        let flag = "SarvAppKeybinds.sftpKey.v1"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        UserDefaults.standard.set(true, forKey: flag)
+        let id = AppShortcutAction.showSFTP.rawValue
+        removeCombo("cmd+shift+f", for: id)
+        let combos = bindings[id] ?? []
+        let hasS = combos.contains { KeybindParser.splitModsAndKey($0) == KeybindParser.splitModsAndKey("cmd+shift+s") }
+        if !hasS { addCombo("cmd+shift+s", for: id) }
     }
 
     /// One-time migration: an earlier build defaulted ⌘K → command palette,
