@@ -28,7 +28,6 @@ struct VaultsTabStrip: View {
             // Section pills stay pinned on the left — always visible.
             vaultsPill
             sftpPill
-            scpPill
             divider
             // Only the terminal tabs scroll horizontally when they overflow.
             ScrollViewReader { proxy in
@@ -94,17 +93,6 @@ struct VaultsTabStrip: View {
             trailingChevron: false,
             comingSoon: false,
             help: "SFTP — local ⇄ remote file transfer"
-        )
-    }
-
-    private var scpPill: some View {
-        sectionPill(
-            section: .scp,
-            icon: "arrow.left.arrow.right",
-            label: "SCP",
-            trailingChevron: false,
-            comingSoon: true,
-            help: "SCP — remote ⇄ remote file transfer (Coming soon)"
         )
     }
 

@@ -209,8 +209,15 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
 
     // MARK: - NSWindowDelegate
 
-    // Vaults is the home window — closing it just hides it.
-    func windowShouldClose(_ sender: NSWindow) -> Bool { false }
+    // Vaults is the home window, so the red button doesn't destroy it (that
+    // would kill every running session). Instead it hides the app — the window
+    // disappears but sessions keep running; click the Dock icon to bring it
+    // back. Returning false keeps the window object alive behind the hide.
+    // (To fully quit, use ⌘Q.)
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        NSApp.hide(nil)
+        return false
+    }
 }
 
 /// A window that refuses to become non-opaque. Ghostty flips `isOpaque` to

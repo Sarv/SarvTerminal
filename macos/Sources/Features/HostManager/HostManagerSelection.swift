@@ -9,8 +9,7 @@ final class HostManagerSelection: ObservableObject {
 
     enum Section: String, Hashable {
         case vaults
-        case sftp   // local → remote file push
-        case scp    // remote → remote file transfer
+        case sftp   // dual-pane file manager (local ⇄ remote, server ⇄ server)
     }
 
     @Published var section: Section = .vaults

@@ -181,6 +181,68 @@ extension Ghostty {
             ghostty_surface_update_config(surface, newConfig.config!)
         }
 
+        /// Apply a per-surface theme override (used for per-host themes in
+        /// Vaults). Builds a config = the user's defaults + `theme = <name>` and
+        /// pushes it to JUST this surface. There's no string-load API, so the
+        /// theme is injected via a short-lived temp config file. No-op for an
+        /// empty name.
+        ///
+        /// Background-opacity ADAPTS to the theme so the Vaults background image
+        /// stays visible while text stays readable: dark themes (light text) keep
+        /// the app's translucency and show the image prominently; light themes
+        /// (dark text) firm up the background just enough that the dark image
+        /// doesn't swallow the text.
+        /// Push a theme to JUST this surface, with an explicit background-opacity
+        /// and (optionally) an explicit background color. The caller decides those
+        /// based on the background image (see `themeColors`) so the text stays
+        /// readable. `backgroundHex == nil` lets the theme's own background show
+        /// (translucent, image visible); a non-nil hex pins an opaque backing.
+        func applyTheme(_ themeName: String, to surface: ghostty_surface_t,
+                        backgroundHex: String?, opacity: Double) {
+            let trimmed = themeName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let cfg = ghostty_config_new() else { return }
+            defer { ghostty_config_free(cfg) }
+            ghostty_config_load_default_files(cfg)
+
+            var override = "theme = \(trimmed)\nbackground-opacity = \(opacity)\n"
+            if let backgroundHex {
+                override += "background = \(backgroundHex)\nbackground-blur = false\n"
+            }
+
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("sarv-theme-\(UUID().uuidString).conf")
+            guard (try? override.write(to: tmp, atomically: true, encoding: .utf8)) != nil else { return }
+            ghostty_config_load_file(cfg, tmp.path)
+            ghostty_config_finalize(cfg)
+            ghostty_surface_update_config(surface, cfg)
+            try? FileManager.default.removeItem(at: tmp)
+        }
+
+        /// A theme's resolved foreground and background colors (luminance 0…1 +
+        /// background hex), so the caller can judge whether the theme's text will
+        /// be readable over the background image. nil if unreadable.
+        func themeColors(_ themeName: String) -> (fgLum: Double, bgLum: Double, bgHex: String)? {
+            guard let cfg = ghostty_config_new() else { return nil }
+            defer { ghostty_config_free(cfg) }
+            ghostty_config_load_default_files(cfg)
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("sarv-theme-probe-\(UUID().uuidString).conf")
+            guard (try? "theme = \(themeName)\n".write(to: tmp, atomically: true, encoding: .utf8)) != nil else { return nil }
+            ghostty_config_load_file(cfg, tmp.path)
+            ghostty_config_finalize(cfg)
+            try? FileManager.default.removeItem(at: tmp)
+
+            func color(_ key: String) -> (lum: Double, hex: String)? {
+                var c = ghostty_config_color_s()
+                guard ghostty_config_get(cfg, &c, key, UInt(key.utf8.count)) else { return nil }
+                let r = Int(c.r), g = Int(c.g), b = Int(c.b)
+                let lum = (0.2126 * Double(r) + 0.7152 * Double(g) + 0.0722 * Double(b)) / 255
+                return (lum, String(format: "#%02X%02X%02X", r, g, b))
+            }
+            guard let fg = color("foreground"), let bg = color("background") else { return nil }
+            return (fg.lum, bg.lum, bg.hex)
+        }
+
         /// Request that the given surface is closed. This will trigger the full normal surface close event
         /// cycle which will call our close surface callback.
         func requestClose(surface: ghostty_surface_t) {

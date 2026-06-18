@@ -15,6 +15,8 @@ enum AppShortcutAction: String, CaseIterable {
     case splitRight = "app:split_right"
     case splitDown = "app:split_down"
     case reopenClosedTab = "app:reopen_closed_tab"
+    case showVaults = "app:show_vaults"
+    case showSFTP = "app:show_sftp"
 
     var label: String {
         switch self {
@@ -23,16 +25,23 @@ enum AppShortcutAction: String, CaseIterable {
         case .splitRight: return "Split right (choose target)"
         case .splitDown: return "Split down (choose target)"
         case .reopenClosedTab: return "Reopen Closed Tab"
+        case .showVaults: return "Show Vaults"
+        case .showSFTP: return "Show SFTP"
         }
     }
 
-    var defaultCombo: String {
+    /// Default combo(s) for this action. The command palette opens with both
+    /// ⌘T (new tab) and ⌘P (palette / Termius-style quick-connect search). We
+    /// deliberately avoid ⌘K — that's a Ghostty default (clear screen).
+    var defaultCombos: [String] {
         switch self {
-        case .commandPalette: return "cmd+t"
-        case .newLocalTerminal: return "cmd+l"
-        case .splitRight: return "cmd+d"
-        case .splitDown: return "cmd+shift+d"
-        case .reopenClosedTab: return "cmd+shift+t"
+        case .commandPalette: return ["cmd+t", "cmd+p"]
+        case .newLocalTerminal: return ["cmd+l"]
+        case .splitRight: return ["cmd+d"]
+        case .splitDown: return ["cmd+shift+d"]
+        case .reopenClosedTab: return ["cmd+shift+t"]
+        case .showVaults: return ["cmd+shift+v"]
+        case .showSFTP: return ["cmd+shift+s"]
         }
     }
 }
@@ -52,10 +61,41 @@ final class AppKeybindStore: ObservableObject {
         // newly added action). Only fills gaps — never clobbers user choices.
         var didSeed = false
         for action in AppShortcutAction.allCases where (bindings[action.rawValue]?.isEmpty ?? true) {
-            bindings[action.rawValue] = [action.defaultCombo]
+            bindings[action.rawValue] = action.defaultCombos
             didSeed = true
         }
         if didSeed { persist() }
+        migrateCommandPalettePaletteKey()
+        migrateSFTPKey()
+    }
+
+    /// One-time migration: SFTP defaulted to ⌘⇧F in an earlier build; move it to
+    /// ⌘⇧S for existing installs. The flag prevents re-applying after the user
+    /// changes it themselves.
+    private func migrateSFTPKey() {
+        let flag = "SarvAppKeybinds.sftpKey.v1"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        UserDefaults.standard.set(true, forKey: flag)
+        let id = AppShortcutAction.showSFTP.rawValue
+        removeCombo("cmd+shift+f", for: id)
+        let combos = bindings[id] ?? []
+        let hasS = combos.contains { KeybindParser.splitModsAndKey($0) == KeybindParser.splitModsAndKey("cmd+shift+s") }
+        if !hasS { addCombo("cmd+shift+s", for: id) }
+    }
+
+    /// One-time migration: an earlier build defaulted ⌘K → command palette,
+    /// which shadowed Ghostty's ⌘K (clear screen). Give ⌘K back to Ghostty and
+    /// use ⌘P (palette) instead — ⌘P is not a Ghostty default. The flag stops
+    /// this from re-adding a combo the user later removes on purpose.
+    private func migrateCommandPalettePaletteKey() {
+        let flag = "SarvAppKeybinds.paletteKey.v2"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        UserDefaults.standard.set(true, forKey: flag)
+        let id = AppShortcutAction.commandPalette.rawValue
+        removeCombo("cmd+k", for: id)   // restore ⌘K → Ghostty clear screen
+        let combos = bindings[id] ?? []
+        let hasCmdP = combos.contains { KeybindParser.splitModsAndKey($0) == KeybindParser.splitModsAndKey("cmd+p") }
+        if !hasCmdP { addCombo("cmd+p", for: id) }
     }
 
     /// Load + migrate from the old single-combo format if present.

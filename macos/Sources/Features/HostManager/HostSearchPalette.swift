@@ -3,8 +3,11 @@ import AppKit
 
 /// An action the command palette can run when a row is confirmed.
 enum PaletteAction: Equatable {
-    /// Connect to a saved/discovered host via its SSH command.
+    /// Connect to a host discovered in ~/.ssh/config via its SSH command.
     case host(DiscoveredHost)
+    /// Connect to one of the user's saved Vaults hosts via the staged popup
+    /// flow (askpass, saved password, auto-reconnect).
+    case savedHost(SavedHost)
     /// Ad-hoc SSH connect to whatever the user typed (`ssh <query>`).
     case quickConnect(String)
     /// Open a plain local shell tab — no command injection.
@@ -37,10 +40,13 @@ struct PaletteRow: Identifiable, Equatable {
 /// through SwiftUI view lifetime.
 final class HostSearchModel: ObservableObject {
     @Published var hosts: [DiscoveredHost] = []
+    /// The user's saved Vaults hosts (managed in the Hosts dashboard).
+    @Published var savedHosts: [SavedHost] = []
     @Published var search: String = ""
     @Published var highlightIndex: Int = 0
 
     func loadHosts() {
+        savedHosts = SavedHostsStore.shared.hosts
         hosts = SSHConfigDiscovery.loadAll()
     }
 
@@ -49,7 +55,19 @@ final class HostSearchModel: ObservableObject {
         highlightIndex = 0
     }
 
-    /// Hosts matching the current query.
+    /// Saved hosts matching the current query.
+    private var filteredSavedHosts: [SavedHost] {
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return savedHosts }
+        return savedHosts.filter { host in
+            if host.displayLabel.lowercased().contains(q) { return true }
+            if host.hostname.lowercased().contains(q) { return true }
+            if host.username.lowercased().contains(q) { return true }
+            return false
+        }
+    }
+
+    /// Discovered (~/.ssh/config) hosts matching the current query.
     private var filteredHosts: [DiscoveredHost] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return hosts }
@@ -98,7 +116,23 @@ final class HostSearchModel: ObservableObject {
             section: .quickConnect
         ))
 
-        for host in filteredHosts {
+        // The user's own saved hosts first — they're the curated Vaults list.
+        for host in filteredSavedHosts {
+            result.append(PaletteRow(
+                id: "saved-\(host.id)",
+                action: .savedHost(host),
+                title: host.displayLabel,
+                subtitle: host.subtitle.isEmpty ? nil : host.subtitle,
+                systemImage: "server.rack",
+                trailingText: "saved",
+                section: .hosts
+            ))
+        }
+
+        // Then anything discovered in ~/.ssh/config (skipping labels already
+        // covered by a saved host so we don't list the same name twice).
+        let savedLabels = Set(filteredSavedHosts.map { $0.displayLabel.lowercased() })
+        for host in filteredHosts where !savedLabels.contains(host.label.lowercased()) {
             result.append(PaletteRow(
                 id: "host-\(host.id)",
                 action: .host(host),

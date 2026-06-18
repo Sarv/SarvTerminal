@@ -191,7 +191,9 @@ struct HostsSectionView: View {
     private var actionRow: some View {
         HStack(spacing: 12) {
             newHostSplitButton
-            actionPill(label: "Terminal", systemImage: "terminal") { /* later */ }
+            actionPill(label: "Terminal", systemImage: "terminal") {
+                VaultsTabsModel.shared.newTerminal(command: nil, name: "Terminal")
+            }
             actionPill(label: "Serial",   systemImage: "cable.connector") { /* later */ }
             Spacer()
             rightActionIcons

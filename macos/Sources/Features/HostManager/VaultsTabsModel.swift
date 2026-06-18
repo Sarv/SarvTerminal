@@ -134,6 +134,9 @@ final class VaultsTabsModel: ObservableObject {
     @Published var focusModeSurfaceID: UUID?
     /// Show the "all tabs" overview grid.
     @Published var showAllTabs: Bool = false
+    /// When set, the host editor is shown as a side panel over the current
+    /// screen (driven by the SSH popup's "Edit host" — keeps the popup visible).
+    @Published var editingHost: SavedHost?
 
     /// Recently closed tabs (oldest first), retained so they can be reopened
     /// with full state — local shell, SSH session, or a pending chooser — via
@@ -225,6 +228,51 @@ final class VaultsTabsModel: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// Apply a saved host's per-host theme override to its terminal surface, so
+    /// each host can carry its own look (empty `themeName` inherits the global
+    /// theme). Deferred to the next runloop tick so the surface is initialized.
+    private func applyHostTheme(_ host: SavedHost?, to surface: Ghostty.SurfaceView) {
+        guard let host, !host.themeName.trimmingCharacters(in: .whitespaces).isEmpty,
+              let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { return }
+        let theme = host.themeName
+        DispatchQueue.main.async {
+            guard let s = surface.surface else { return }
+            // Decide on the fly whether the theme's TEXT will be readable over the
+            // background image. Keep the image (translucent) when the theme's
+            // foreground contrasts with the image; otherwise fall back to the
+            // theme's own solid background so text is never washed out. This
+            // handles every combo (light image + dark theme, dark image + dark
+            // theme, etc.), not just light-vs-dark themes.
+            guard let colors = ghostty.themeColors(theme) else {
+                ghostty.applyTheme(theme, to: s, backgroundHex: nil, opacity: ghostty.config.backgroundOpacity)
+                return
+            }
+            let store = BackgroundDisplayStore.shared
+            // What the text actually sits over if the image stays visible: the
+            // image blended toward the dark window backing by its visibility.
+            let windowBacking = 0.12
+            let backdrop: Double
+            if let imageLum = store.imageAverageLuminance {
+                backdrop = imageLum * store.imageVisibility + windowBacking * (1 - store.imageVisibility)
+            } else {
+                backdrop = windowBacking
+            }
+            if abs(colors.fgLum - backdrop) >= 0.4 {
+                // Readable over the image → keep it (image visible behind text).
+                ghostty.applyTheme(theme, to: s, backgroundHex: nil, opacity: ghostty.config.backgroundOpacity)
+            } else {
+                // Text would wash out over the image → use a solid backing. Use
+                // the theme's own background ONLY if it actually contrasts with
+                // the (possibly grey) text; otherwise force a contrasting backing
+                // so the text is never blank.
+                let solidHex = abs(colors.fgLum - colors.bgLum) >= 0.4
+                    ? colors.bgHex
+                    : (colors.fgLum < 0.5 ? "#FFFFFF" : "#1E1E1E")
+                ghostty.applyTheme(theme, to: s, backgroundHex: solidHex, opacity: 1)
+            }
+        }
     }
 
     /// Stop and forget the connection bound to `surfaceID` (if any), cleaning up
@@ -329,6 +377,7 @@ final class VaultsTabsModel: ObservableObject {
             let made = makeSSHSurface(app: app, command: command, password: knownPassword)
             surface = made.surface
             passwordFile = made.passwordFile
+            applyHostTheme(host, to: made.surface)
         }
 
         let tab = TerminalTab(surface: surface, name: uniqueTabName(base: host?.label ?? name))
@@ -358,7 +407,13 @@ final class VaultsTabsModel: ObservableObject {
               let node = tab.surfaceTree.root?.node(view: oldSurface),
               let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
         deleteTempFile(model.passwordFilePath)   // discard the previous attempt's password file
-        let made = makeSSHSurface(app: app, command: conn.command, password: password)
+        // Rebuild the command from the LATEST saved host (the user may have just
+        // edited it), so changed port/options take effect on reconnect.
+        let command = model.host
+            .flatMap { SavedHostsStore.shared.host(withID: $0.id) }
+            .map { $0.sshCommand(staged: true) } ?? conn.command
+        let made = makeSSHSurface(app: app, command: command, password: password)
+        applyHostTheme(model.host, to: made.surface)
         // Replace only this pane's node — works whether it's the whole tab or one
         // pane of a split.
         if let newTree = try? tab.surfaceTree.replacing(node: node, with: .leaf(view: made.surface)) {
@@ -371,17 +426,18 @@ final class VaultsTabsModel: ObservableObject {
         model.stage = .connecting
         conn.controller.stop()
         let controller = SSHConnectionController(model: model, surfaceView: made.surface, tabsModel: self)
-        // Re-key the connection to the new surface.
+        // Re-key the connection to the new surface (with the refreshed command).
         connections[oldID] = nil
-        connections[made.surface.id] = ActiveConnection(model: model, controller: controller, command: conn.command)
+        connections[made.surface.id] = ActiveConnection(model: model, controller: controller, command: command)
         controller.start()
     }
 
-    /// Open the host editor for this connection's host (popup "Edit host").
+    /// Open the host editor for this connection's host (popup "Edit host") as a
+    /// side panel over the current screen, so the connection popup stays visible.
+    /// On save the popup's Connect / Start over re-reads the updated host.
     func editHost(for model: SSHConnectionModel) {
         guard let host = model.host else { return }
-        HostManagerSelection.shared.pendingEditHostID = host.id
-        selectDashboard(section: .vaults)
+        editingHost = SavedHostsStore.shared.host(withID: host.id) ?? host
     }
 
     /// Reconnect / "Start over" (popup button): reset the attempt count. After an
@@ -467,12 +523,57 @@ final class VaultsTabsModel: ObservableObject {
         case .host(let host):
             send(host.sshCommand, to: surface)
             dismissChoice(surface: surface)
+        case .savedHost(let host):
+            // Staged connect (popup + saved password) right in this pane.
+            connectSavedHostInPane(host: host, surface: surface)
         case .quickConnect(let query):
             let target = query.trimmingCharacters(in: .whitespaces)
             guard !target.isEmpty else { return }
             let command = target.hasPrefix("ssh ") ? target : "ssh \(target)"
             send(command, to: surface)
             dismissChoice(surface: surface)
+        }
+    }
+
+    /// Start a staged SSH connection to `host` IN an existing (awaiting) split
+    /// pane rather than a new tab — backs the split chooser's saved-host rows.
+    /// The popup shows over this pane; on connect the live terminal replaces it
+    /// in place, and the per-surface connection registry handles the rest.
+    func connectSavedHostInPane(host: SavedHost, surface: Ghostty.SurfaceView) {
+        guard let tab = tab(containing: surface),
+              let node = tab.surfaceTree.root?.node(view: surface),
+              let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+        let command = host.sshCommand(staged: true)
+        let needsPassword = sshNeedsPassword(host)
+        let knownPassword = host.password.isEmpty ? nil : host.password
+
+        awaitingChoice.remove(surface.id)
+
+        let boundSurface: Ghostty.SurfaceView
+        var passwordFile: String?
+        if needsPassword {
+            // Keep the placeholder surface; the popup collects the password.
+            boundSurface = surface
+        } else {
+            // Swap the placeholder pane for a live ssh surface.
+            let made = makeSSHSurface(app: app, command: command, password: knownPassword)
+            boundSurface = made.surface
+            passwordFile = made.passwordFile
+            applyHostTheme(host, to: made.surface)
+            if let newTree = try? tab.surfaceTree.replacing(node: node, with: .leaf(view: made.surface)) {
+                tab.surfaceTree = newTree
+            }
+        }
+
+        let model = SSHConnectionModel(title: host.displayLabel, host: host, needsPassword: needsPassword)
+        if !needsPassword { model.passwordFilePath = passwordFile }
+        let controller = SSHConnectionController(model: model, surfaceView: boundSurface, tabsModel: self)
+        connections[boundSurface.id] = ActiveConnection(model: model, controller: controller, command: command)
+        if needsPassword {
+            // Let the popup's password field take focus (don't pull it to the pane).
+        } else {
+            controller.start()
+            Ghostty.moveFocus(to: boundSurface)
         }
     }
 

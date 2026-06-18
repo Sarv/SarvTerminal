@@ -54,6 +54,18 @@ struct VaultsRootView: View {
                     .transition(.opacity)
             }
         }
+        // Host editor side panel (from the SSH popup's "Edit host"). Sits above
+        // the content so it overlays the connection popup; the popup stays put
+        // and picks up the saved changes on Connect / Start over.
+        .overlay {
+            if let host = tabs.editingHost {
+                VaultsHostEditorSidebar(host: host, onClose: { tabs.editingHost = nil })
+                    .id(host.id)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(2)
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: tabs.editingHost?.id)
         // Single window-level tooltip layer, above everything (panes, choosers,
         // sidebar). Sits in the named space that every `.hoverTip` resolves in.
         .overlay { TooltipOverlay() }
@@ -142,5 +154,47 @@ private struct VaultsTerminalPane: View {
             action: { VaultsTabsModel.shared.performSplitOperation($0, in: tab) }
         )
         .environmentObject(ghostty)
+    }
+}
+
+/// Trailing side panel that hosts the full `HostEditorView` over the current
+/// Vaults screen (opened from the SSH connection popup's "Edit host"). Saving
+/// upserts the host and closes the panel; the connection popup stays visible
+/// and re-reads the updated host on Connect / Start over.
+private struct VaultsHostEditorSidebar: View {
+    let onClose: () -> Void
+    @State private var draft: SavedHost
+
+    init(host: SavedHost, onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        _draft = State(initialValue: host)
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Dimmed scrim over the rest of the screen; click to dismiss.
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { onClose() }
+
+            HostEditorView(
+                draft: $draft,
+                isNew: false,
+                onSave: {
+                    SavedHostsStore.shared.upsert(draft)
+                    onClose()
+                },
+                onCancel: onClose,
+                onDelete: nil,
+                onConnect: nil
+            )
+            .frame(width: 480)
+            .frame(maxHeight: .infinity)
+            .background(Color(NSColor.windowBackgroundColor))
+            .overlay(alignment: .leading) {
+                Divider()
+            }
+        }
     }
 }

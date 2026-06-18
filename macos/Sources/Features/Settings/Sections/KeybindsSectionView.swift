@@ -34,6 +34,10 @@ struct KeybindsSectionView: View {
     /// Set when the user clicks "Reset to defaults"; presents a confirmation.
     @State private var showResetConfirm: Bool = false
 
+    /// Set when the user tries to assign a combo reserved by a fixed shortcut;
+    /// presents a "can't be reassigned" alert.
+    @State private var reservedBlock: ReservedComboBlock?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             headerCard
@@ -77,6 +81,13 @@ struct KeybindsSectionView: View {
                 file. Ghostty's built-in defaults (Copy ⌘C, Paste ⌘V, …) will \
                 take effect again. This can't be undone.
                 """)
+        }
+        .alert(item: $reservedBlock) { block in
+            Alert(
+                title: Text("Shortcut reserved"),
+                message: Text("\(block.symbolic) is reserved for “\(block.ownerLabel)” and can't be reassigned."),
+                dismissButton: .default(Text("OK"))
+            )
         }
     }
 
@@ -171,7 +182,13 @@ struct KeybindsSectionView: View {
 
             Spacer(minLength: 0)
 
-            if action.isAppAction {
+            if !action.isRebindable {
+                // Fixed shortcut: static chips, no remove, no "+". Its combos
+                // are reserved (can't be reassigned elsewhere).
+                ForEach(action.lockedCombos, id: \.self) { combo in
+                    lockedChip(combo: combo)
+                }
+            } else if action.isAppAction {
                 // App-level shortcut(s): one or more combos backed by
                 // AppKeybindStore, editable via the same capture sheet.
                 ForEach(appStore.combos(forID: action.name), id: \.self) { combo in
@@ -183,27 +200,57 @@ struct KeybindsSectionView: View {
                 }
             }
 
-            Button {
-                capturingFor = action
-            } label: {
-                Image(systemName: "plus")
-                    .font(.callout)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(Color.secondary.opacity(0.12))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-                    )
+            if action.isRebindable {
+                Button {
+                    capturingFor = action
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.callout)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(Color.secondary.opacity(0.12))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Add a shortcut for \(action.label)")
             }
-            .buttonStyle(.plain)
-            .help("Add a shortcut for \(action.label)")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+
+    /// Non-removable chip for a fixed (hardcoded) shortcut — shown with a lock
+    /// glyph and no × button.
+    private func lockedChip(combo: String) -> some View {
+        let (mods, key) = KeybindParser.splitModsAndKey(combo)
+        return HStack(spacing: 2) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .padding(.trailing, 1)
+            Text(mods.symbolicLabel)
+                .font(.system(size: 13, weight: .medium))
+            Text(KeybindKeyGlyph.display(key))
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.secondary.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+        )
+        .foregroundStyle(.secondary)
+        .help("Fixed shortcut — can't be changed")
     }
 
     /// Editable chip for an app-level shortcut (AppKeybindStore-backed).
@@ -333,6 +380,16 @@ struct KeybindsSectionView: View {
     /// (same combo bound to a different action) and either commits or
     /// surfaces a confirm-replace alert.
     private func addBinding(combo: String, actionName: String) {
+        // Hard block: combos owned by a fixed (hardcoded) shortcut can't be
+        // reused — reassigning them would leave the fixed action un-restorable
+        // except via "Reset to defaults".
+        if let owner = reservedComboOwnerLabel(combo) {
+            let (mods, key) = KeybindParser.splitModsAndKey(combo)
+            reservedBlock = ReservedComboBlock(
+                symbolic: mods.symbolicLabel + KeybindKeyGlyph.display(key),
+                ownerLabel: owner)
+            return
+        }
         let isApp = actionName.hasPrefix("app:")
         // Ghostty conflicts (skip the action's own bucket). For an app action,
         // nothing in the Ghostty config is "its own", so don't except anything.
@@ -468,6 +525,13 @@ extension KeybindAction: Identifiable {
 }
 
 // MARK: - Conflict info
+
+/// Data for the "shortcut reserved by a fixed shortcut" hard-block alert.
+struct ReservedComboBlock: Identifiable {
+    let id = UUID()
+    let symbolic: String
+    let ownerLabel: String
+}
 
 /// Data for the "shortcut already used" confirm-replace alert.
 struct KeybindConflict: Identifiable {

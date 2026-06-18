@@ -57,6 +57,34 @@ final class BackgroundDisplayStore: ObservableObject {
         return NSImage(contentsOfFile: (imagePath as NSString).expandingTildeInPath)
     }
 
+    private var cachedLuminance: (path: String, value: Double)?
+
+    /// Average relative luminance (0…1) of the shared background image, or nil
+    /// if there's no image. Used to decide whether a host theme's text will be
+    /// readable over it. Cached per image path.
+    var imageAverageLuminance: Double? {
+        guard useShared, !imagePath.isEmpty, let image = sharedImage else { return nil }
+        if let cached = cachedLuminance, cached.path == imagePath { return cached.value }
+        guard let value = Self.averageLuminance(of: image) else { return nil }
+        cachedLuminance = (imagePath, value)
+        return value
+    }
+
+    /// Down-sample the image to a single pixel to read its average color.
+    private static func averageLuminance(of image: NSImage) -> Double? {
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        var px: [UInt8] = [0, 0, 0, 0]
+        guard let ctx = CGContext(
+            data: &px, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        ctx.interpolationQuality = .medium
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let r = Double(px[0]) / 255, g = Double(px[1]) / 255, b = Double(px[2]) / 255
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+
     static func readConfigValue(_ key: String) -> String? {
         let path = ("~/.config/ghostty/config" as NSString).expandingTildeInPath
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }

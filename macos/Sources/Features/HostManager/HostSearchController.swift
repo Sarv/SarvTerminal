@@ -182,6 +182,14 @@ final class HostSearchController: NSWindowController, NSWindowDelegate {
         switch action {
         case .host(let host):
             VaultsTabsModel.shared.newTerminal(command: host.sshCommand, name: host.label)
+        case .savedHost(let host):
+            // Go through the staged connection popup (askpass + saved password +
+            // auto-reconnect) instead of a bare ssh command.
+            HostConnect.run(
+                command: host.sshCommand(staged: true),
+                name: host.displayLabel,
+                host: host,
+                staged: true)
         case .quickConnect(let query):
             let target = query.trimmingCharacters(in: .whitespaces)
             guard !target.isEmpty else { return }
