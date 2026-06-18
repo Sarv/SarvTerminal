@@ -325,6 +325,7 @@ struct SplitChooserView: View {
     @StateObject private var model = HostSearchModel()
     @FocusState private var searchFocused: Bool
     @State private var dropTargeted = false
+    @State private var keyMonitor: Any?
 
     var body: some View {
         ZStack {
@@ -375,6 +376,10 @@ struct SplitChooserView: View {
             model.loadHosts()
             model.reset()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { searchFocused = true }
+            installKeyMonitor()
+        }
+        .onDisappear {
+            if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         }
         // Accept a tab chip dropped onto this empty split.
         .onDrop(of: [.text], isTargeted: $dropTargeted) { providers in
@@ -386,6 +391,24 @@ struct SplitChooserView: View {
                 }
             }
             return true
+        }
+    }
+
+    /// Arrow-key navigation + Enter-to-connect, scoped to while the chooser's
+    /// search field is focused so it doesn't steal keys from other panes.
+    private func installKeyMonitor() {
+        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard searchFocused else { return event }
+            switch event.keyCode {
+            case 125: model.stepHighlight(+1); return nil      // ↓
+            case 126: model.stepHighlight(-1); return nil      // ↑
+            case 36, 76:                                       // Return / Enter
+                if let row = model.confirmSelection() { onChoose(row.action) }
+                return nil
+            case 53: onDismiss(); return nil                   // Esc
+            default: return event
+            }
         }
     }
 
