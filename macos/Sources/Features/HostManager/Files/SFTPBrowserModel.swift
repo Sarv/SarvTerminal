@@ -38,7 +38,9 @@ final class SFTPBrowserModel: ObservableObject {
     /// chosen column orders within each group, ascending/descending.
     var displayItems: [FileItem] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        var list = q.isEmpty ? items : items.filter { $0.name.lowercased().contains(q) }
+        var list = items
+        if !SFTPSettings.shared.showHidden { list = list.filter { !$0.name.hasPrefix(".") } }
+        if !q.isEmpty { list = list.filter { $0.name.lowercased().contains(q) } }
         list.sort { a, b in
             if a.isDirectory != b.isDirectory { return a.isDirectory }
             let asc: Bool
