@@ -51,9 +51,16 @@ struct AdvancedSectionView: View {
         SettingsCard(title: "Actions") {
             VStack(alignment: .leading, spacing: 0) {
                 actionRow(
-                    title: "Open in editor",
-                    detail: "Opens the config in your default text editor (e.g., $EDITOR or TextEdit).",
+                    title: "Edit config file",
+                    detail: "Opens the config in the inbuilt editor (syntax highlighting, ⌘S to save).",
                     systemImage: "doc.text",
+                    action: editConfig
+                )
+                divider
+                actionRow(
+                    title: "Open in external editor",
+                    detail: "Opens the config in your default text editor (e.g., $EDITOR or TextEdit).",
+                    systemImage: "arrow.up.forward.app",
                     action: openInEditor
                 )
                 divider
@@ -156,6 +163,10 @@ struct AdvancedSectionView: View {
             return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config")
         }()
         return baseDir.appendingPathComponent("ghostty/config").path
+    }
+
+    private func editConfig() {
+        FileEditorWindowController.shared.open(path: configFilePath)
     }
 
     private func openInEditor() {

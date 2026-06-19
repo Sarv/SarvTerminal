@@ -113,16 +113,42 @@ final class SettingsViewModel: ObservableObject {
             .store(in: &subscriptions)
     }
 
-    /// True when any form differs from the last explicit Save (or from the
-    /// window-open baseline if Save hasn't been clicked yet).
-    var isDirty: Bool {
-        appearance != savedAppearance
-            || font != savedFont
-            || cursor != savedCursor
-            || general != savedGeneral
-            || window != savedWindow
-            || tabs != savedTabs
-            || shellIntegration != savedShellIntegration
+    /// Snapshot every form's current values as the baseline that Revert
+    /// returns to. Called when the Settings window opens, so "Revert" means
+    /// "undo the changes I made in this visit".
+    func captureBaselines() {
+        savedAppearance = appearance
+        savedFont = font
+        savedCursor = cursor
+        savedGeneral = general
+        savedWindow = window
+        savedTabs = tabs
+        savedShellIntegration = shellIntegration
+        SFTPSettings.shared.captureBaseline()
+    }
+
+    /// Whether a section participates in the footer Revert / Reset actions.
+    /// Keybinds and Advanced manage their own editing surfaces.
+    func supportsFooterActions(_ section: SettingsSection) -> Bool {
+        switch section {
+        case .keybinds, .advanced: return false
+        default: return true
+        }
+    }
+
+    /// True when the given section differs from its captured baseline.
+    func isDirty(section: SettingsSection) -> Bool {
+        switch section {
+        case .general: return general != savedGeneral
+        case .appearance: return appearance != savedAppearance
+        case .font: return font != savedFont
+        case .cursor: return cursor != savedCursor
+        case .window: return window != savedWindow
+        case .tabs: return tabs != savedTabs
+        case .shellIntegration: return shellIntegration != savedShellIntegration
+        case .sftp: return SFTPSettings.shared.isDirty
+        case .keybinds, .advanced: return false
+        }
     }
 
     var filteredSections: [SettingsSection] {
@@ -134,32 +160,53 @@ final class SettingsViewModel: ObservableObject {
     /// Last error from a write attempt, surfaced in the UI.
     @Published var lastSaveError: String?
 
-    /// User-initiated "confirm current state as the baseline".
-    /// Live preview has already pushed changes to disk; we just update the
-    /// snapshot Revert will restore to.
-    func save() {
-        savedAppearance = appearance
-        savedFont = font
-        savedCursor = cursor
-        savedGeneral = general
-        savedWindow = window
-        savedTabs = tabs
-        savedShellIntegration = shellIntegration
-        lastSaveError = nil
-        objectWillChange.send()
+    /// Drives the transient green "Saved automatically" confirmation in the
+    /// footer. Set true on every successful write, then cleared after a beat.
+    @Published var showSavedFlash: Bool = false
+    private var flashWorkItem: DispatchWorkItem?
+
+    /// Flash the green auto-saved confirmation. Called after any change lands
+    /// on disk (config sections) or in UserDefaults (SFTP).
+    func flashSaved() {
+        showSavedFlash = true
+        flashWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.showSavedFlash = false }
+        flashWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
     }
 
-    /// Restore all forms to their last-saved baselines. The debounce
-    /// subscriptions pick up the assignments and write the restored values
-    /// to disk.
-    func revert() {
-        appearance = savedAppearance
-        font = savedFont
-        cursor = savedCursor
-        general = savedGeneral
-        window = savedWindow
-        tabs = savedTabs
-        shellIntegration = savedShellIntegration
+    /// Undo the changes made to one section since the window opened, restoring
+    /// it to its captured baseline. The debounce subscriptions pick up the
+    /// assignment and write the restored values to disk.
+    func revert(section: SettingsSection) {
+        switch section {
+        case .general: general = savedGeneral
+        case .appearance: appearance = savedAppearance
+        case .font: font = savedFont
+        case .cursor: cursor = savedCursor
+        case .window: window = savedWindow
+        case .tabs: tabs = savedTabs
+        case .shellIntegration: shellIntegration = savedShellIntegration
+        case .sftp: SFTPSettings.shared.revertToBaseline()
+        case .keybinds, .advanced: break
+        }
+        lastSaveError = nil
+    }
+
+    /// Reset one section to its factory defaults. Live preview writes the
+    /// defaults to disk just like any other edit.
+    func resetToDefault(section: SettingsSection) {
+        switch section {
+        case .general: general = GeneralForm(loadedFrom: nil)
+        case .appearance: appearance = AppearanceForm(loadedFrom: nil)
+        case .font: font = FontForm(loadedFrom: nil)
+        case .cursor: cursor = CursorForm(loadedFrom: nil)
+        case .window: window = WindowForm(loadedFrom: nil)
+        case .tabs: tabs = TabsForm(loadedFrom: nil)
+        case .shellIntegration: shellIntegration = ShellIntegrationForm(loadedFrom: nil)
+        case .sftp: SFTPSettings.shared.resetToDefaults()
+        case .keybinds, .advanced: break
+        }
         lastSaveError = nil
     }
 
@@ -194,6 +241,7 @@ final class SettingsViewModel: ObservableObject {
             lastWrittenShellIntegration = shellIntegration
             lastSaveError = nil
             (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
+            flashSaved()
         } catch {
             lastSaveError = error.localizedDescription
         }
@@ -1134,6 +1182,8 @@ struct DetailView: View {
             ShellIntegrationSectionView(viewModel: viewModel)
         case .keybinds:
             KeybindsSectionView(viewModel: viewModel)
+        case .sftp:
+            SFTPSectionView(viewModel: viewModel)
         case .advanced:
             AdvancedSectionView(viewModel: viewModel)
         }
@@ -1153,45 +1203,76 @@ struct DetailView: View {
 
 // MARK: - Footer
 
-/// Bottom bar with Save / Revert. Lives outside the split view (at window
-/// level) so its position is fixed regardless of sidebar state.
+/// Bottom bar. Every change applies live, so there's no "Save": instead the
+/// footer confirms auto-saves (green flash) and offers per-section **Revert**
+/// (undo changes made this visit) and **Reset to Default** (with a warning).
+/// Lives outside the split view so its position is fixed regardless of the
+/// sidebar state. Observes `SFTPSettings` too so the SFTP section's dirty
+/// state keeps the Revert button in sync.
 struct FooterBarView: View {
     @ObservedObject var viewModel: SettingsViewModel
+    @ObservedObject private var sftpSettings = SFTPSettings.shared
+    @State private var showResetConfirm = false
+
+    private var section: SettingsSection? { viewModel.selectedSection }
 
     var body: some View {
         HStack(spacing: 12) {
-            if let err = viewModel.lastSaveError {
-                Label(err, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                    .font(.callout)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            statusMessage
             Spacer()
-            Button {
-                viewModel.revert()
-            } label: {
-                Text("Revert")
-                    .frame(minWidth: 60)
-            }
-            .controlSize(.large)
-            .disabled(!viewModel.isDirty)
-            .help("Discard unsaved changes")
+            if let section, viewModel.supportsFooterActions(section) {
+                Button {
+                    viewModel.revert(section: section)
+                } label: {
+                    Text("Revert").frame(minWidth: 60)
+                }
+                .controlSize(.large)
+                .disabled(!viewModel.isDirty(section: section))
+                .help("Undo the changes you made in this section")
 
-            Button {
-                viewModel.save()
-            } label: {
-                Text("Save")
-                    .frame(minWidth: 60)
+                Button(role: .destructive) {
+                    showResetConfirm = true
+                } label: {
+                    Text("Reset to Default").frame(minWidth: 60)
+                }
+                .controlSize(.large)
+                .help("Restore every option in this section to its default value")
             }
-            .controlSize(.large)
-            .keyboardShortcut(.defaultAction)
-            .disabled(!viewModel.isDirty)
-            .help("Save changes and reload configuration")
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)
         .background(.bar)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.showSavedFlash)
+        .confirmationDialog(
+            "Reset \(section?.title ?? "section") to defaults?",
+            isPresented: $showResetConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Reset to Default", role: .destructive) {
+                if let section { viewModel.resetToDefault(section: section) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This restores every option in this section to its default value. You can undo it with Revert until you close Settings.")
+        }
+    }
+
+    /// Left side: the green "saved automatically" confirmation, or a write
+    /// error if the last commit failed.
+    @ViewBuilder
+    private var statusMessage: some View {
+        if let err = viewModel.lastSaveError {
+            Label(err, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .font(.callout)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        } else if viewModel.showSavedFlash {
+            Label("Saved", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.callout)
+                .transition(.opacity)
+        }
     }
 }
 
@@ -1206,6 +1287,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case cursor
     case keybinds
     case shellIntegration
+    case sftp
     case advanced
 
     /// Sections shown in the sidebar. `tabs` is hidden: its settings (titlebar
@@ -1227,6 +1309,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .cursor: return "Cursor"
         case .keybinds: return "Keybinds"
         case .shellIntegration: return "Shell Integration"
+        case .sftp: return "SFTP"
         case .advanced: return "Advanced"
         }
     }
@@ -1241,6 +1324,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .cursor: return "Style, blinking, color, thickness."
         case .keybinds: return "Keyboard shortcuts and key tables."
         case .shellIntegration: return "Auto-cd, prompts, SSH features."
+        case .sftp: return "File transfer: save behavior, deletes, hidden files."
         case .advanced: return "Raw config editor and power-user options."
         }
     }
@@ -1255,6 +1339,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .cursor: return "cursorarrow"
         case .keybinds: return "keyboard"
         case .shellIntegration: return "terminal"
+        case .sftp: return "folder"
         case .advanced: return "wrench.and.screwdriver"
         }
     }
@@ -1282,6 +1367,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .keybinds: return ["shortcut", "binding", "key", "hotkey", "table", "chord"]
         case .shellIntegration: return ["cursor", "prompt", "ssh", "sudo", "title", "path",
                                        "bash", "zsh", "fish", "elvish", "nushell"]
+        case .sftp: return ["sftp", "scp", "file", "transfer", "save", "autosave",
+                            "auto-save", "delete", "hidden", "editor"]
         case .advanced: return ["config", "include", "raw", "editor", "power"]
         }
     }

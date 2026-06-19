@@ -17,6 +17,12 @@ protocol FileBackend {
     func delete(_ item: FileItem) async throws
     func setPermissions(_ path: String, octal: String) async throws
     func exists(_ path: String) async throws -> Bool
+    /// A local file URL whose contents mirror `item` (the file itself for a
+    /// local backend; a downloaded temp copy for a remote one) — used by the
+    /// file viewer.
+    func localCopy(of item: FileItem) async throws -> URL
+    /// Write `text` back to `item` (in place locally; upload for remote).
+    func save(_ text: String, to item: FileItem) async throws
 }
 
 extension FileBackend {
@@ -84,6 +90,14 @@ final class LocalFileBackend: FileBackend {
 
     func exists(_ path: String) async throws -> Bool {
         fm.fileExists(atPath: path)
+    }
+
+    func localCopy(of item: FileItem) async throws -> URL {
+        URL(fileURLWithPath: item.path)
+    }
+
+    func save(_ text: String, to item: FileItem) async throws {
+        try text.write(toFile: item.path, atomically: true, encoding: .utf8)
     }
 
     static func sort(_ a: FileItem, _ b: FileItem) -> Bool {
@@ -172,6 +186,40 @@ final class RemoteFileBackend: FileBackend {
     var transferOptions: [String] { sshOptions() }
     var transferEnv: [String: String] { askpassEnv }
     var transferPort: Int { host.port }
+
+    func localCopy(of item: FileItem) async throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sarv-view-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent(item.name)
+        let batch = dir.appendingPathComponent("get.sftp")
+        try "get \"\(item.path)\" \"\(dest.path)\"\n".write(to: batch, atomically: true, encoding: .utf8)
+        var args = sshOptions()
+        args += ["-o", "Port=\(host.port)", "-b", batch.path, target]
+        let res = try await Self.runProcess("/usr/bin/sftp", args, env: askpassEnv)
+        try? FileManager.default.removeItem(at: batch)
+        guard res.status == 0 else {
+            throw FileOpError(message: res.stderr.isEmpty ? "Couldn't open file." : res.stderr)
+        }
+        return dest
+    }
+
+    func save(_ text: String, to item: FileItem) async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sarv-save-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let local = dir.appendingPathComponent(item.name)
+        try text.write(to: local, atomically: true, encoding: .utf8)
+        let batch = dir.appendingPathComponent("put.sftp")
+        try "put \"\(local.path)\" \"\(item.path)\"\n".write(to: batch, atomically: true, encoding: .utf8)
+        var args = sshOptions()
+        args += ["-o", "Port=\(host.port)", "-b", batch.path, target]
+        let res = try await Self.runProcess("/usr/bin/sftp", args, env: askpassEnv)
+        guard res.status == 0 else {
+            throw FileOpError(message: res.stderr.isEmpty ? "Couldn't save file." : res.stderr)
+        }
+    }
 
     // MARK: ssh runner
 

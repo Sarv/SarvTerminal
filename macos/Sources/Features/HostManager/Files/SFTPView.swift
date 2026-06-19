@@ -20,6 +20,8 @@ struct SFTPView: View {
     @State private var conflict: ConflictRequest?
     @State private var isTransferring = false
     @State private var didInit = false
+    @State private var viewer: FileViewerModel?
+    @State private var pendingDelete: (side: Side, item: FileItem)?
 
     struct ConflictRequest: Identifiable {
         let id = UUID()
@@ -70,12 +72,28 @@ struct SFTPView: View {
                 permTarget = nil
             }
         }
+        .alert("Delete “\(pendingDelete?.item.name ?? "")”?",
+               isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })) {
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let d = pendingDelete { Task { await model(d.side).delete(d.item) } }
+                pendingDelete = nil
+            }
+        } message: { Text("This can't be undone.") }
         .overlay {
             if let c = conflict { ConflictDialog(name: c.item.name) { resolve(c, $0) } }
         }
         .overlay {
             if isTransferring { transferOverlay }
         }
+        .overlay {
+            if let v = viewer {
+                FileViewerView(model: v, onClose: { viewer = nil })
+                    .transition(.move(edge: .trailing))
+                    .zIndex(3)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: viewer == nil)
     }
 
     private var transferOverlay: some View {
@@ -99,13 +117,17 @@ struct SFTPView: View {
         let m = model(side)
         switch action {
         case .chooseHost: hostPickerSide = side
-        case .open(let item): m.open(item)
+        case .open(let item):
+            if item.isDirectory { m.open(item) }
+            else { viewer = FileViewerModel(item: item, backend: m.backend) }
         case .goUp: m.goUp()
         case .navigate(let p): Task { await m.load(p) }
         case .refresh: Task { await m.reload() }
         case .newFolder: newFolderName = ""; newFolderSide = side
         case .rename(let item): renameText = item.name; renameTarget = (side, item)
-        case .delete(let item): Task { await m.delete(item) }
+        case .delete(let item):
+            if SFTPSettings.shared.confirmDelete { pendingDelete = (side, item) }
+            else { Task { await m.delete(item) } }
         case .editPermissions(let item): permText = octalGuess(item); permTarget = (side, item)
         case .copyToTarget(let item): startCopy(item, from: side)
         }

@@ -279,6 +279,10 @@ struct FilePaneView: View {
             onAction(.open(item))
         })
         .contextMenu {
+            if !item.isDirectory {
+                Button("Open") { onAction(.open(item)) }
+                Divider()
+            }
             Button("Copy to target directory") { onAction(.copyToTarget(item)) }
             Button("Rename") { onAction(.rename(item)) }
             Button("Delete", role: .destructive) { onAction(.delete(item)) }
