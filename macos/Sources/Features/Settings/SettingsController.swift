@@ -14,16 +14,22 @@ class SettingsController: NSWindowController, NSWindowDelegate {
     private let containerVC = SettingsContainerViewController()
 
     private init() {
+        // Chromeless, non-resizable window: it covers the main window like a
+        // full-screen takeover (no traffic lights / minimize / resize) and is
+        // dismissed only by the in-content "Done" (✕) button — not a popup.
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 720),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Settings"
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 880, height: 560)
+        window.isMovable = false
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
         window.center()
         window.contentViewController = containerVC
 
@@ -32,13 +38,25 @@ class SettingsController: NSWindowController, NSWindowDelegate {
         window.delegate = self
 
         // Our own sidebar toggle pinned to the leading edge of the titlebar.
-        // Stays in the same place whether the sidebar is shown or hidden.
+        // Titlebar-accessory hosting views need an explicit frame — without one
+        // a SwiftUI NSHostingView can collapse to zero size and vanish.
         let toggleAccessory = NSTitlebarAccessoryViewController()
         toggleAccessory.layoutAttribute = .leading
-        toggleAccessory.view = NSHostingView(rootView: SidebarToggleButton { [weak containerVC] in
+        let toggleView = NSHostingView(rootView: SidebarToggleButton { [weak containerVC] in
             containerVC?.toggleSidebar(nil)
         })
+        toggleView.frame = NSRect(x: 0, y: 0, width: 44, height: 28)
+        toggleAccessory.view = toggleView
         window.addTitlebarAccessoryViewController(toggleAccessory)
+
+        // Trailing "Done" (✕) button — the only way to dismiss; returns to the
+        // previous screen.
+        let closeAccessory = NSTitlebarAccessoryViewController()
+        closeAccessory.layoutAttribute = .trailing
+        let doneView = NSHostingView(rootView: SettingsDoneButton { [weak self] in self?.hide() })
+        doneView.frame = NSRect(x: 0, y: 0, width: 44, height: 28)
+        closeAccessory.view = doneView
+        window.addTitlebarAccessoryViewController(closeAccessory)
     }
 
     @available(*, unavailable)
@@ -47,6 +65,14 @@ class SettingsController: NSWindowController, NSWindowDelegate {
     }
 
     func show() {
+        // Snapshot current values so per-section "Revert" undoes only the
+        // changes made during this visit.
+        containerVC.viewModel.captureBaselines()
+        // Cover the main window's frame so it reads as a full takeover, not a
+        // floating popup.
+        if let window, let main = HostManagerController.shared.window {
+            window.setFrame(main.frame, display: true)
+        }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -79,5 +105,25 @@ private struct SidebarToggleButton: View {
         .help("Toggle Sidebar")
         .frame(width: 28, height: 28)
         .padding(.leading, 8)
+    }
+}
+
+/// Trailing "Done" (✕) button that closes the Settings takeover.
+private struct SettingsDoneButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(Color.white.opacity(0.18)))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(.cancelAction)
+        .help("Close settings (Esc)")
+        .frame(height: 28)
+        .padding(.trailing, 10)
     }
 }
