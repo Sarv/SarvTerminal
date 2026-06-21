@@ -164,6 +164,8 @@ struct SSHConnectionView: View {
         switch model.stage {
         case .needsPassword:
             passwordSection
+        case .needsHostKey(let info):
+            hostKeySection(info)
         case .connecting:
             Text("Connecting…").font(.callout).foregroundStyle(.secondary)
         case .failed(let f):
@@ -191,6 +193,50 @@ struct SSHConnectionView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.top, 2)
+    }
+
+    private func hostKeySection(_ info: HostKeyInfo) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Are you sure you want to connect?")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(.secondary)
+
+            if info.changed {
+                Text("⚠︎ The host key for \(info.host) has changed. This could be a man-in-the-middle attack — or the server was reinstalled.")
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("The authenticity of \(info.host) can not be established.")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("\(info.keyType.isEmpty ? "Key" : info.keyType.uppercased()) fingerprint is SHA256:")
+                .foregroundStyle(.secondary)
+            Text(info.fingerprint.replacingOccurrences(of: "SHA256:", with: ""))
+                .font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !info.changed {
+                Text("Do you want to add it to the list of known hosts?")
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button("Close") { onCancel() }
+                Spacer()
+                if info.changed {
+                    Button("Replace and continue") { controller.replaceHostKey() }
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Continue") { controller.acceptHostKey(save: false) }
+                    Button("Add and continue") { controller.acceptHostKey(save: true) }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var passwordSection: some View {
@@ -275,6 +321,9 @@ struct SSHConnectionView: View {
                 Button("Close") { onCancel() }.keyboardShortcut(.cancelAction)
                 Spacer()
             }
+        case .needsHostKey:
+            // Buttons are part of the host-key card itself.
+            EmptyView()
         case .failed, .disconnected:
             HStack(spacing: 10) {
                 Button("Close") { onCancel() }.keyboardShortcut(.cancelAction)

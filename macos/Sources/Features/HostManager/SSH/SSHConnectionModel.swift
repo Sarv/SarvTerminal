@@ -24,6 +24,19 @@ final class SSHConnectionModel: ObservableObject {
     /// Max wrong-password tries before we give up and show the failure card.
     let maxPasswordAttempts = 3
 
+    /// True once the user has answered the host-key trust prompt this attempt.
+    @Published var hostKeyResponded = false
+    /// Whether this host needs a typed password (drives the password step after
+    /// the host-key step). Stable for the connection's lifetime.
+    let requiresPassword: Bool
+    /// Scanned known_hosts line(s) awaiting the user's trust decision.
+    var scannedHostKeyLines: String?
+    /// The host's known_hosts token (for add/remove). Persists across the
+    /// controller being recreated on (re)launch.
+    var hostKeyToken: String?
+    /// When set (a "Continue" without saving), the key is removed once connected.
+    var pendingHostKeyRemoval: String?
+
     /// Auto-reconnect (server restart / network drop): when true the popup is
     /// counting down to the next automatic retry. `reconnectSecondsRemaining`
     /// drives the "Reconnecting in Ns…" label; `reconnectAttempts` counts how
@@ -53,9 +66,11 @@ final class SSHConnectionModel: ObservableObject {
     init(title: String, host: SavedHost?, needsPassword: Bool) {
         self.title = title
         self.host = host
+        self.requiresPassword = needsPassword
         self.passwordField = host?.password ?? ""
         self.silent = !needsPassword
-        self.stage = needsPassword ? .needsPassword : .connecting
+        // The pre-flight host-key check sets the real first stage; start neutral.
+        self.stage = .connecting
     }
 
     /// Whether the popup card should be visible. The card shows for the whole

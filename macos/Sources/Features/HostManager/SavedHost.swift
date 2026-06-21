@@ -177,8 +177,10 @@ struct SavedHost: Codable, Identifiable, Hashable {
             args.append("-o ServerAliveInterval=15")
             args.append("-o ServerAliveCountMax=3")
         }
-        // For a staged (popup) connect, auto-accept new host keys so there's no
-        // TTY host-key prompt, and fail fast on a wrong password (one attempt).
+        // For a staged (popup) connect we use `accept-new`: the GUI host-key
+        // trust prompt is handled PRE-FLIGHT (via ssh-keyscan) before this ssh
+        // runs, because `SSH_ASKPASS_REQUIRE=force` would otherwise route ssh's
+        // interactive host-key question to the password helper and deadlock.
         let hostKeyChecking = staged ? "accept-new" : strictHostKeyChecking.rawValue
         args.append("-o StrictHostKeyChecking=\(hostKeyChecking)")
         if staged { args.append("-o NumberOfPasswordPrompts=1") }

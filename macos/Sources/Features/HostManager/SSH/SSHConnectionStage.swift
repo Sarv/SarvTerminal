@@ -13,12 +13,24 @@ enum SSHConnectionStage: Equatable {
     case needsPassword
     /// ssh is launching/authenticating.
     case connecting
+    /// A new/unknown host key needs the user's confirmation before continuing.
+    case needsHostKey(HostKeyInfo)
     /// Authenticated — the live terminal is shown, popup hidden.
     case connected
     /// The connection attempt failed.
     case failed(SSHFailure)
     /// The session ended after having been connected (offer reconnect).
     case disconnected
+}
+
+/// The unknown-host-key details parsed from ssh's verification prompt.
+struct HostKeyInfo: Equatable {
+    let host: String         // e.g. "[127.0.0.1]:2222"
+    let keyType: String      // e.g. "ED25519"
+    let fingerprint: String  // e.g. "SHA256:…"
+    /// True when a key for this host already exists but differs (changed key) —
+    /// the dangerous case that offers "Replace" instead of add/continue.
+    var changed: Bool = false
 }
 
 /// Status of a single row in the connection progress checklist.

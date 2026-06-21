@@ -366,20 +366,9 @@ final class VaultsTabsModel: ObservableObject {
 
     private func startSSHConnection(app: ghostty_app_t, command: String, name: String, host: SavedHost?) -> TerminalTab? {
         let needsPassword = sshNeedsPassword(host)
-        let knownPassword = (host?.password.isEmpty == false) ? host?.password : nil
-        // If we still need a password, the popup collects it first over a blank
-        // placeholder surface; otherwise spawn ssh immediately.
-        let surface: Ghostty.SurfaceView
-        var passwordFile: String?
-        if needsPassword {
-            surface = Ghostty.SurfaceView(app)
-        } else {
-            let made = makeSSHSurface(app: app, command: command, password: knownPassword)
-            surface = made.surface
-            passwordFile = made.passwordFile
-            applyHostTheme(host, to: made.surface)
-        }
-
+        // Always start over a blank placeholder surface; ssh is spawned only
+        // after the pre-flight host-key check (and password step) resolve.
+        let surface = Ghostty.SurfaceView(app)
         let tab = TerminalTab(surface: surface, name: uniqueTabName(base: host?.label ?? name))
         tab.launchCommand = command
         tab.connectHost = host
@@ -388,11 +377,43 @@ final class VaultsTabsModel: ObservableObject {
         HostManagerController.shared.show()
 
         let model = SSHConnectionModel(title: host?.label ?? name, host: host, needsPassword: needsPassword)
-        if !needsPassword { model.passwordFilePath = passwordFile }
         let controller = SSHConnectionController(model: model, surfaceView: surface, tabsModel: self)
         connections[surface.id] = ActiveConnection(model: model, controller: controller, command: command)
-        if !needsPassword { controller.start() }   // else: starts on password submit
+
+        Task { @MainActor in await runHostKeyPreflight(model: model) }
         return tab
+    }
+
+    /// Before spawning ssh, verify the host key out-of-band. If it's unknown we
+    /// scan it and show the trust card; otherwise we proceed straight to connect.
+    @MainActor
+    private func runHostKeyPreflight(model: SSHConnectionModel) async {
+        if let host = model.host {
+            let token = HostKeyScanner.token(host: host.hostname, port: host.port)
+            if await HostKeyScanner.isKnown(token) == false {
+                model.addLog("magnifyingglass", .secondary, "Checking host key…")
+                if let scan = await HostKeyScanner.scan(host: host.hostname, port: host.port) {
+                    model.scannedHostKeyLines = scan.lines
+                    model.hostKeyToken = token
+                    model.showLogs = false
+                    model.stage = .needsHostKey(HostKeyInfo(
+                        host: token, keyType: scan.keyType, fingerprint: scan.fingerprint, changed: false))
+                    return   // wait for the user's choice (controller.acceptHostKey)
+                }
+                // Scan failed (host unreachable) — let the real connect surface the error.
+            }
+        }
+        proceedConnect(model: model)
+    }
+
+    /// Continue past the host-key step: collect a password if needed, else spawn ssh.
+    @MainActor
+    func proceedConnect(model: SSHConnectionModel) {
+        if model.requiresPassword {
+            model.stage = .needsPassword     // popup collects it; submit → launchSSHConnection
+        } else {
+            launchSSHConnection(for: model, password: model.host?.password ?? "")
+        }
     }
 
     /// (Re)launch ssh for `model` with `password` — spawns a fresh ssh surface

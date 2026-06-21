@@ -39,11 +39,24 @@ final class SSHConnectionController {
         return u.isEmpty ? "user" : u
     }
 
+    /// Saved host name for activity logs (falls back to hostname / "Session").
+    private var activityName: String {
+        if let h = model.host { return h.displayLabel }
+        return "Session"
+    }
+    /// `user@host:port` for the activity log detail line.
+    private var activityDetail: String {
+        guard let h = model.host else { return "" }
+        let user = h.username.isEmpty ? "" : "\(h.username)@"
+        return "\(user)\(h.hostname):\(h.port)"
+    }
+
     // MARK: Lifecycle
 
     func start() {
         startTime = Date()
         authNoted = false
+        model.hostKeyResponded = false
         model.logEntries = []
         model.addLog("network", .secondary, "Connecting to \(hostLabel)")
         startTimer()
@@ -61,6 +74,62 @@ final class SSHConnectionController {
         let t = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+    }
+
+    // MARK: Host-key trust (pre-flight)
+    //
+    // The trust prompt is resolved BEFORE ssh runs (the pre-flight in
+    // VaultsTabsModel scans the key and sets `.needsHostKey`). These actions
+    // write/remove the key in known_hosts, then hand back to the launch flow —
+    // no in-terminal "yes/no" is involved (that would deadlock the askpass flow).
+
+    /// "Add and continue" (save=true) or "Continue" (save=false, removed after
+    /// connecting). Adds the scanned key, then proceeds to connect.
+    @MainActor
+    func acceptHostKey(save: Bool) {
+        guard case .needsHostKey = model.stage else { return }
+        model.hostKeyResponded = true
+        if let lines = model.scannedHostKeyLines { HostKeyScanner.add(lines) }
+        if save {
+            model.addLog("checkmark.shield.fill", .green, "Host key trusted and saved")
+        } else {
+            model.addLog("shield.lefthalf.filled", .secondary, "Continuing without saving the host key")
+            model.pendingHostKeyRemoval = model.hostKeyToken
+        }
+        tabsModel?.proceedConnect(model: model)
+    }
+
+    /// Replace a CHANGED host key: drop the stale entry, add the new one, connect.
+    @MainActor
+    func replaceHostKey() {
+        model.hostKeyResponded = true
+        let token = model.hostKeyToken
+        let lines = model.scannedHostKeyLines
+        model.addLog("arrow.triangle.2.circlepath", .secondary, "Replacing old host key")
+        Task { @MainActor in
+            if let token { await HostKeyScanner.remove(token) }
+            if let lines { HostKeyScanner.add(lines) }
+            tabsModel?.proceedConnect(model: model)
+        }
+    }
+
+    /// A CHANGED key surfaced at connect time (accept-new refuses it): scan the
+    /// new key and show the "Replace" card instead of just failing.
+    private func handleChangedHostKey() {
+        stop()
+        model.hostKeyResponded = true
+        guard let host = model.host else { fail(.hostKeyVerification); return }
+        let token = HostKeyScanner.token(host: host.hostname, port: host.port)
+        model.addLog("exclamationmark.shield.fill", .orange, "Host key changed")
+        Task { @MainActor in
+            let scan = await HostKeyScanner.scan(host: host.hostname, port: host.port)
+            model.scannedHostKeyLines = scan?.lines
+            model.hostKeyToken = token
+            model.showLogs = false
+            model.stage = .needsHostKey(HostKeyInfo(
+                host: token, keyType: scan?.keyType ?? "",
+                fingerprint: scan?.fingerprint ?? "—", changed: true))
+        }
     }
 
     // MARK: Popup actions
@@ -130,6 +199,12 @@ final class SSHConnectionController {
             let lower = text.lowercased()
 
             if let f = failure(in: lower) {
+                // A CHANGED host key (accept-new refuses it): offer Replace
+                // instead of a dead-end failure.
+                if f == .hostKeyVerification, !model.hostKeyResponded, model.host != nil {
+                    handleChangedHostKey()
+                    return
+                }
                 noteAuthenticating()
                 model.addLog("xmark.octagon.fill", .red, failureLine(text) ?? f.title)
                 fail(f)
@@ -162,6 +237,7 @@ final class SSHConnectionController {
         case .connected:
             if sv.childExitedMessage != nil {
                 model.addLog("xmark.octagon.fill", .red, "Session closed")
+                ActivityLog.shared.log(.connection, "Disconnected from \(activityName)", detail: activityDetail, success: true)
                 model.stage = .disconnected
                 stop()
                 // A dropped session (server restart, network loss) recovers on
@@ -185,11 +261,17 @@ final class SSHConnectionController {
         noteAuthenticating()
         model.addLog("checkmark.circle.fill", .green, "Authenticated")
         model.addLog("checkmark.circle.fill", .green, "Session opened")
+        ActivityLog.shared.log(.connection, "Connected to \(activityName)", detail: activityDetail, success: true)
         // A successful connect clears any auto-reconnect back-off so a later drop
         // starts counting from the shortest interval again.
         model.autoReconnecting = false
         model.reconnectAttempts = 0
         model.reconnectSecondsRemaining = 0
+        // "Continue" (connect without saving): drop the key we just added.
+        if let token = model.pendingHostKeyRemoval {
+            model.pendingHostKeyRemoval = nil
+            Task { await HostKeyScanner.remove(token) }
+        }
         tabsModel?.connectionDidConnect(for: model)
         // Keep watching for the session ending (no log reset).
         startTimer()
@@ -212,6 +294,7 @@ final class SSHConnectionController {
             }
         }
         model.stage = .failed(failure)
+        ActivityLog.shared.log(.connection, "Connection failed: \(activityName)", detail: "\(activityDetail) — \(failure.title)", success: false)
         // Server-side / network failures (refused, timeout, unreachable, dropped
         // handshake) recover on their own — auto-retry at increasing intervals.
         // Auth / host-key failures need the user, so we leave the card as-is.
