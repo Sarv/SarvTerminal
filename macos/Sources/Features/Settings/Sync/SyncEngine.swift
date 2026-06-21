@@ -214,12 +214,15 @@ enum SyncEngine {
                 // we never wipe hosts created before sync was enabled. After that
                 // we MIRROR (replace), so deletes made elsewhere propagate.
                 let firstPull = settings.lastSyncedVersion == 0
+                let snippets = h.snippets ?? []
                 if firstPull && !SavedHostsStore.shared.hosts.isEmpty {
                     HostGroupsStore.shared.ingest(h.groups)
                     SavedHostsStore.shared.ingest(h.hosts)
+                    SnippetsStore.shared.ingest(snippets)
                 } else {
                     HostGroupsStore.shared.replaceAll(h.groups)
                     SavedHostsStore.shared.replaceAll(h.hosts)
+                    SnippetsStore.shared.replaceAll(snippets)
                 }
             }
             (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
@@ -317,9 +320,11 @@ enum SyncEngine {
     }
 
     private static func buildHostsPayload() -> SyncHostsPayload {
-        // Faithful mirror — sync every host/group as-is. A deleted host is simply
-        // absent here, so the deletion propagates on pull.
-        SyncHostsPayload(hosts: SavedHostsStore.shared.hosts, groups: HostGroupsStore.shared.groups)
+        // Faithful mirror — sync every host/group/snippet as-is. A deleted item
+        // is simply absent here, so the deletion propagates on pull.
+        SyncHostsPayload(hosts: SavedHostsStore.shared.hosts,
+                         groups: HostGroupsStore.shared.groups,
+                         snippets: SnippetsStore.shared.snippets)
     }
 
     // MARK: - Apply (pull)

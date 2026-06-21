@@ -50,7 +50,7 @@ struct VaultsView: View {
                 case .hosts:          HostsSectionView()
                 case .keychain:       keychainScaffold
                 case .portForwarding: portForwardingScaffold
-                case .snippets:       snippetsScaffold
+                case .snippets:       SnippetsSectionView()
                 case .knownHosts:     KnownHostsSectionView()
                 case .logs:           LogsSectionView()
                 }
@@ -139,15 +139,5 @@ struct VaultsView: View {
                          badge: Self.soon))
     }
 
-    private var snippetsScaffold: some View {
-        VaultsScaffoldSection(
-            toolbar: VaultsToolbar(
-                primary: .init(title: "New snippet", icon: "plus", disabled: true, help: Self.soon),
-                actions: [.init(title: "Shell History", icon: "clock", disabled: true, help: Self.soon)],
-                trailing: trailingIcons),
-            empty: .init(icon: "curlybraces", title: "Create snippet",
-                         subtitle: "Save your most-used commands as snippets to run them in one click.",
-                         badge: Self.soon))
-    }
 
 }

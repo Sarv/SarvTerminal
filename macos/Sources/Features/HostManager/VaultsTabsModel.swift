@@ -122,7 +122,12 @@ final class VaultsTabsModel: ObservableObject {
     /// Staged SSH connections, keyed by the current surface id of each. A pane
     /// shows the connection popup when its surface id has an entry here.
     @Published private(set) var connections: [UUID: ActiveConnection] = [:]
-    @Published var selection: Selection = .dashboard
+    @Published var selection: Selection = .dashboard {
+        didSet { if case let .terminal(id) = selection { lastTerminalID = id } }
+    }
+    /// The most recently focused terminal — the target for "run snippet" when a
+    /// dashboard (e.g. Snippets) is showing instead of a terminal.
+    private var lastTerminalID: UUID?
     /// Surface IDs of freshly-split panes that are showing the inline chooser
     /// (blank pane) and waiting for the user to pick what to run.
     @Published private(set) var awaitingChoice: Set<UUID> = []
@@ -207,6 +212,47 @@ final class VaultsTabsModel: ObservableObject {
     var activeTerminal: TerminalTab? {
         guard case let .terminal(id) = selection else { return nil }
         return terminals.first { $0.id == id }
+    }
+
+    /// The surface a snippet should run in: the focused terminal, else the most
+    /// recently focused one, else any open terminal.
+    private var snippetTargetSurface: Ghostty.SurfaceView? {
+        if case let .terminal(id) = selection, let s = surface(withID: id) { return s }
+        if let id = lastTerminalID, let s = surface(withID: id) { return s }
+        return terminals.last?.surfaceTree.root?.leaves().last
+    }
+
+    /// True when there's an open terminal a snippet can be sent to.
+    var hasActiveTerminal: Bool { snippetTargetSurface != nil }
+
+    /// Send a snippet's command to a terminal (adding a newline so it runs).
+    /// Returns false when there's no terminal open to receive it.
+    @MainActor @discardableResult
+    func runSnippet(_ command: String) -> Bool {
+        guard let surface = snippetTargetSurface else { return false }
+        let text = command.hasSuffix("\n") ? command : command + "\n"
+        surface.surfaceModel?.sendText(text)
+        return true
+    }
+
+    /// Send a snippet to a SPECIFIC terminal tab and bring it to front. When
+    /// `execute` is true a trailing newline runs it; otherwise it's just pasted.
+    @MainActor @discardableResult
+    func sendSnippet(_ command: String, toTabID id: UUID, execute: Bool) -> Bool {
+        guard let tab = terminals.first(where: { $0.id == id }),
+              let surface = tab.surfaceTree.root?.leaves().last,
+              let model = surface.surfaceModel else { return false }
+        // `sendText` is a bracketed paste — the shell won't auto-run a pasted
+        // newline (a safety feature). So paste the text, then submit it with a
+        // REAL Enter key event (which encodes properly and runs it).
+        var text = command
+        if execute { while text.hasSuffix("\n") || text.hasSuffix("\r") { text.removeLast() } }
+        model.sendText(text)
+        if execute {
+            model.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .press))
+        }
+        selection = .terminal(id)   // show the terminal so the result is visible
+        return true
     }
 
     private func tab(containing surface: Ghostty.SurfaceView) -> TerminalTab? {
