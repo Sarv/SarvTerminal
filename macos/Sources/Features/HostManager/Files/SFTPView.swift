@@ -3,9 +3,49 @@ import SwiftUI
 /// Dual-pane file manager (SFTP + local, server↔server). Each pane points at
 /// Local or a saved host; "Copy to target directory" transfers the selection
 /// into the OTHER pane's current folder. Replaces the old SFTP and SCP tabs.
+/// Holds the two SFTP panes so their state (current folder, connected host,
+/// listing) survives the dashboard being torn down when a terminal tab shows.
+/// `SFTPView`'s own `@StateObject` panes used to reset on every re-mount.
+/// Live progress for an in-flight transfer.
+struct TransferState: Equatable {
+    var fileName: String
+    var total: Int64          // 0 = indeterminate (e.g. a directory)
+    var transferred: Int64
+    var bytesPerSecond: Double
+    var direct: Bool          // true = server→server direct; false = via this Mac
+}
+
+@MainActor
+final class SFTPSession: ObservableObject {
+    static let shared = SFTPSession()
+    let left = SFTPBrowserModel()
+    let right = SFTPBrowserModel()
+
+    /// Current transfer progress (nil when idle). Lives here so the overlay
+    /// survives the dashboard being torn down for a terminal tab.
+    @Published var transfer: TransferState?
+    /// The in-flight transfer task, so it can be cancelled from the overlay.
+    var transferTask: Task<Void, Never>?
+
+    func cancelTransfer() { transferTask?.cancel() }
+
+    private var started = false
+    private init() {}
+
+    /// Connect both panes to Local — once, ever. No-op after the first call so
+    /// returning to SFTP keeps wherever the user navigated.
+    func startIfNeeded() {
+        guard !started else { return }
+        started = true
+        left.connect(to: .local)
+        right.connect(to: .local)
+    }
+}
+
 struct SFTPView: View {
-    @StateObject private var left = SFTPBrowserModel()
-    @StateObject private var right = SFTPBrowserModel()
+    @ObservedObject private var left = SFTPSession.shared.left
+    @ObservedObject private var right = SFTPSession.shared.right
+    @ObservedObject private var session = SFTPSession.shared
 
     enum Side: String, Identifiable { case left, right; var id: String { rawValue } }
 
@@ -16,10 +56,7 @@ struct SFTPView: View {
     @State private var renameTarget: (side: Side, item: FileItem)?
     @State private var renameText = ""
     @State private var permTarget: (side: Side, item: FileItem)?
-    @State private var permText = ""
     @State private var conflict: ConflictRequest?
-    @State private var isTransferring = false
-    @State private var didInit = false
     @State private var viewer: FileViewerModel?
     @State private var pendingDelete: (side: Side, item: FileItem)?
 
@@ -36,12 +73,7 @@ struct SFTPView: View {
             FilePaneView(model: right) { handle($0, on: .right) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear {
-            guard !didInit else { return }
-            didInit = true
-            left.connect(to: .local)
-            right.connect(to: .local)
-        }
+        .onAppear { SFTPSession.shared.startIfNeeded() }
         .sheet(item: $hostPickerSide) { side in
             FileHostChooser { location in
                 model(side).connect(to: location)
@@ -64,12 +96,17 @@ struct SFTPView: View {
                 renameTarget = nil
             }
         }
-        .alert("Edit Permissions", isPresented: Binding(get: { permTarget != nil }, set: { if !$0 { permTarget = nil } })) {
-            TextField("Octal (e.g. 755)", text: $permText)
-            Button("Cancel", role: .cancel) { permTarget = nil }
-            Button("Apply") {
-                if let t = permTarget, !permText.isEmpty { Task { await model(t.side).setPermissions(t.item, octal: permText) } }
-                permTarget = nil
+        .sheet(isPresented: Binding(get: { permTarget != nil }, set: { if !$0 { permTarget = nil } })) {
+            if let t = permTarget {
+                PermissionsSheet(
+                    fileName: t.item.name,
+                    isDirectory: t.item.isDirectory,
+                    octal: octalGuess(t.item),
+                    onApply: { octal in
+                        Task { await model(t.side).setPermissions(t.item, octal: octal) }
+                        permTarget = nil
+                    },
+                    onCancel: { permTarget = nil })
             }
         }
         .alert("Delete “\(pendingDelete?.item.name ?? "")”?",
@@ -84,7 +121,7 @@ struct SFTPView: View {
             if let c = conflict { ConflictDialog(name: c.item.name) { resolve(c, $0) } }
         }
         .overlay {
-            if isTransferring { transferOverlay }
+            if let t = session.transfer { progressOverlay(t) }
         }
         .overlay {
             if let v = viewer {
@@ -96,16 +133,52 @@ struct SFTPView: View {
         .animation(.easeInOut(duration: 0.15), value: viewer == nil)
     }
 
-    private var transferOverlay: some View {
-        ZStack {
+    private func progressOverlay(_ t: TransferState) -> some View {
+        let fraction = t.total > 0 ? min(1, Double(t.transferred) / Double(t.total)) : 0
+        return ZStack {
             Color.black.opacity(0.35).ignoresSafeArea()
-            VStack(spacing: 14) {
-                ProgressView()
-                Text("Copying…").font(.callout).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: t.direct ? "arrow.left.arrow.right" : "externaldrive.connected.to.line.below")
+                        .foregroundStyle(t.direct ? .green : .blue)
+                    Text(t.fileName).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Text(t.direct ? "Server → Server" : "Via this Mac")
+                        .font(.caption).foregroundStyle(t.direct ? .green : .secondary)
+                }
+                if t.total > 0 {
+                    ProgressView(value: fraction)
+                    HStack {
+                        Text("\(byteString(t.transferred)) / \(byteString(t.total)) · \(Int(fraction * 100))%")
+                        Spacer()
+                        Text(t.bytesPerSecond > 0 ? "\(byteString(Int64(t.bytesPerSecond)))/s" : "—")
+                    }
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                    Text("Transferring…").font(.caption).foregroundStyle(.secondary)
+                }
+                if !t.direct {
+                    Label("Servers can't connect directly — relaying through this Mac (uses your bandwidth).",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { session.cancelTransfer() }
+                        .controlSize(.small)
+                }
+                .padding(.top, 2)
             }
-            .padding(28)
+            .padding(20)
+            .frame(width: 380)
             .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.ultraThinMaterial))
         }
+    }
+
+    private func byteString(_ n: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: n, countStyle: .file)
     }
 
     // MARK: - Coordination
@@ -128,7 +201,7 @@ struct SFTPView: View {
         case .delete(let item):
             if SFTPSettings.shared.confirmDelete { pendingDelete = (side, item) }
             else { Task { await m.delete(item) } }
-        case .editPermissions(let item): permText = octalGuess(item); permTarget = (side, item)
+        case .editPermissions(let item): permTarget = (side, item)
         case .copyToTarget(let item): startCopy(item, from: side)
         }
     }
@@ -139,7 +212,7 @@ struct SFTPView: View {
             if await dest.exists(name: item.name) {
                 conflict = ConflictRequest(item: item, fromSide: side)
             } else {
-                await performCopy(item, from: side, resolution: .replace) // no conflict → straight copy
+                beginTransfer(item, from: side, resolution: .replace) // no conflict → straight copy
             }
         }
     }
@@ -147,32 +220,102 @@ struct SFTPView: View {
     private func resolve(_ request: ConflictRequest, _ resolution: ConflictResolution) {
         conflict = nil
         guard resolution != .stop, resolution != .skip else { return }
-        Task { await performCopy(request.item, from: request.fromSide, resolution: resolution) }
+        beginTransfer(request.item, from: request.fromSide, resolution: resolution)
+    }
+
+    /// Start a transfer as a cancellable task tracked by the session.
+    private func beginTransfer(_ item: FileItem, from side: Side, resolution: ConflictResolution) {
+        let task = Task { await performCopy(item, from: side, resolution: resolution) }
+        session.transferTask = task
+        Task { await task.value; session.transferTask = nil }
     }
 
     private func performCopy(_ item: FileItem, from side: Side, resolution: ConflictResolution) async {
         let source = model(side), dest = model(otherSide(side))
-        isTransferring = true
-        do {
+        // Server → server. We have both hosts' details, so never ask — try the
+        // direct path when the destination is key-based, and otherwise (or if the
+        // servers can't reach each other) relay through this Mac automatically.
+        if source.backend is RemoteFileBackend, dest.backend is RemoteFileBackend {
+            // Always try a direct A→B transfer first (key → agent forwarding,
+            // password → saved password via one-shot askpass on A). Only relay
+            // through this Mac if the servers can't reach each other.
+            let ok = await runRemoteTransfer(item, from: side, resolution: resolution, direct: true)
+            if !ok, !Task.isCancelled {
+                _ = await runRemoteTransfer(item, from: side, resolution: resolution, direct: false)
+            }
+            return
+        }
+        // Local ⇄ remote (or local ⇄ local): the existing path, with progress.
+        await withProgress(item: item, destBackend: dest.backend, destDir: dest.path,
+                           resolution: resolution, direct: false) {
             try await FileTransfer.copy(item: item, from: source.backend, to: dest.backend,
                                         destDir: dest.path, resolution: resolution)
-            await dest.reload()
-        } catch {
-            dest.error = (error as? FileOpError)?.message ?? error.localizedDescription
+        } onFinish: { await dest.reload() } onError: { dest.error = $0 }
+    }
+
+    /// Run a server→server transfer. Returns false on failure (so the caller can
+    /// fall back from direct → relay). A relay failure is surfaced to the pane;
+    /// a direct failure is silent (we just relay instead).
+    @discardableResult
+    private func runRemoteTransfer(_ item: FileItem, from side: Side, resolution: ConflictResolution, direct: Bool) async -> Bool {
+        guard let src = model(side).backend as? RemoteFileBackend,
+              let dst = model(otherSide(side)).backend as? RemoteFileBackend else { return false }
+        let dest = model(otherSide(side))
+        var ok = true
+        await withProgress(item: item, destBackend: dst, destDir: dest.path, resolution: resolution, direct: direct) {
+            _ = try await FileTransfer.serverToServer(item: item, from: src, to: dst,
+                                                      destDir: dest.path, resolution: resolution, direct: direct)
+        } onFinish: { await dest.reload() } onError: { msg in
+            ok = false
+            if !direct { dest.error = msg }   // relay is the final attempt → surface it
         }
-        isTransferring = false
+        return ok
+    }
+
+    /// Wrap a transfer with the progress overlay + a poller that watches the
+    /// destination file's size against the known source size.
+    private func withProgress(item: FileItem, destBackend: FileBackend, destDir: String,
+                              resolution: ConflictResolution, direct: Bool,
+                              _ op: @escaping () async throws -> Void,
+                              onFinish: @escaping () async -> Void,
+                              onError: @escaping (String) -> Void) async {
+        let destPath = destBackend.join(destDir, FileTransfer.finalName(for: item, resolution: resolution))
+        let total = item.isDirectory ? 0 : item.size
+        session.transfer = TransferState(fileName: item.name, total: total, transferred: 0,
+                                         bytesPerSecond: 0, direct: direct)
+        let start = Date()
+        let poller = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                if Task.isCancelled { break }
+                let size = await destBackend.fileSize(destPath) ?? session.transfer?.transferred ?? 0
+                let elapsed = max(0.001, Date().timeIntervalSince(start))
+                if var t = session.transfer {
+                    t.transferred = size
+                    t.bytesPerSecond = Double(size) / elapsed
+                    session.transfer = t
+                }
+            }
+        }
+        do { try await op(); await onFinish() }
+        catch {
+            // A user cancel terminates the process (non-zero) — don't show it as an error.
+            if !Task.isCancelled { onError((error as? FileOpError)?.message ?? error.localizedDescription) }
+        }
+        poller.cancel()
+        session.transfer = nil
     }
 
     /// Best-effort octal default for the permissions dialog from "rwxr-xr-x".
     private func octalGuess(_ item: FileItem) -> String {
         guard let p = item.permissions, p.count == 9 else { return item.isDirectory ? "755" : "644" }
+        let chars = Array(p)
         var digits = ""
         for chunk in stride(from: 0, to: 9, by: 3) {
-            let part = Array(p)[chunk..<chunk+3]
             var v = 0
-            if part[0] == "r" { v += 4 }
-            if part[1] == "w" { v += 2 }
-            if part[2] == "x" { v += 1 }
+            if chars[chunk] == "r" { v += 4 }
+            if chars[chunk + 1] == "w" { v += 2 }
+            if chars[chunk + 2] == "x" { v += 1 }
             digits += "\(v)"
         }
         return digits
