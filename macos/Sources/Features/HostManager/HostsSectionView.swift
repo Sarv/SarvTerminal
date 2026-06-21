@@ -26,8 +26,12 @@ struct HostsSectionView: View {
     @State private var newHostSeed: String = ""
 
     /// nil = root level ("All hosts"). When set, the user has drilled into
-    /// a group and the two sections show that group's contents.
-    @State private var focusedGroupID: UUID? = nil
+    /// a group. Backed by the shared selection store so drilling survives a
+    /// switch to a terminal tab and back.
+    private var focusedGroupID: UUID? {
+        get { hostSelection.hostsFocusedGroupID }
+        nonmutating set { hostSelection.hostsFocusedGroupID = newValue }
+    }
 
     @State private var viewMode: HostsViewMode = .grid   // grid is default
     @State private var sortMode: HostsSortMode = .azAscending
