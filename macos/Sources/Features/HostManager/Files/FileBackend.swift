@@ -23,6 +23,9 @@ protocol FileBackend {
     func localCopy(of item: FileItem) async throws -> URL
     /// Write `text` back to `item` (in place locally; upload for remote).
     func save(_ text: String, to item: FileItem) async throws
+    /// Current size of a file in bytes (nil if missing) — polled to drive
+    /// transfer progress against the known source size.
+    func fileSize(_ path: String) async -> Int64?
 }
 
 extension FileBackend {
@@ -98,6 +101,10 @@ final class LocalFileBackend: FileBackend {
 
     func save(_ text: String, to item: FileItem) async throws {
         try text.write(toFile: item.path, atomically: true, encoding: .utf8)
+    }
+
+    func fileSize(_ path: String) async -> Int64? {
+        (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? nil
     }
 
     static func sort(_ a: FileItem, _ b: FileItem) -> Bool {
@@ -221,6 +228,21 @@ final class RemoteFileBackend: FileBackend {
         }
     }
 
+    func fileSize(_ path: String) async -> Int64? {
+        // `wc -c` is portable (GNU + BusyBox); prints just the byte count.
+        guard let r = try? await run(ssh: ["wc", "-c", "<", sftpQuote(path)]), r.status == 0 else { return nil }
+        let digits = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: " ").first.map(String.init) ?? r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Int64(digits)
+    }
+
+    /// True when this host authenticates with a key/agent (so direct
+    /// server-to-server via agent forwarding is possible).
+    var usesKeyAuth: Bool { host.authMethod == .publicKey || host.authMethod == .agent }
+    /// The saved password (empty if none) — used to feed a direct A→B transfer
+    /// where B is a password host (via a one-shot askpass on A).
+    var hostPassword: String { host.password }
+
     // MARK: ssh runner
 
     @discardableResult
@@ -291,29 +313,52 @@ final class RemoteFileBackend: FileBackend {
 
     struct ProcessResult { let status: Int32; let stdout: String; let stderr: String }
 
+    /// Thread-safe holder so a cancelled Task can terminate the running process.
+    private final class ProcessBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var proc: Process?
+        private var cancelled = false
+        func attach(_ p: Process) {
+            lock.lock(); defer { lock.unlock() }
+            proc = p
+            if cancelled { p.terminate() }
+        }
+        func cancel() {
+            lock.lock(); defer { lock.unlock() }
+            cancelled = true
+            proc?.terminate()
+        }
+    }
+
     static func runProcess(_ launchPath: String, _ args: [String], env: [String: String]) async throws -> ProcessResult {
-        try await withCheckedThrowingContinuation { cont in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: launchPath)
-                proc.arguments = args
-                var environment = ProcessInfo.processInfo.environment
-                env.forEach { environment[$0.key] = $0.value }
-                proc.environment = environment
-                let outPipe = Pipe(), errPipe = Pipe()
-                proc.standardOutput = outPipe
-                proc.standardError = errPipe
-                proc.standardInput = FileHandle.nullDevice
-                do { try proc.run() } catch { cont.resume(throwing: error); return }
-                let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                proc.waitUntilExit()
-                cont.resume(returning: ProcessResult(
-                    status: proc.terminationStatus,
-                    stdout: String(data: outData, encoding: .utf8) ?? "",
-                    stderr: String(data: errData, encoding: .utf8) ?? ""
-                ))
+        let box = ProcessBox()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { cont in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let proc = Process()
+                    proc.executableURL = URL(fileURLWithPath: launchPath)
+                    proc.arguments = args
+                    var environment = ProcessInfo.processInfo.environment
+                    env.forEach { environment[$0.key] = $0.value }
+                    proc.environment = environment
+                    let outPipe = Pipe(), errPipe = Pipe()
+                    proc.standardOutput = outPipe
+                    proc.standardError = errPipe
+                    proc.standardInput = FileHandle.nullDevice
+                    box.attach(proc)   // lets a cancel terminate it
+                    do { try proc.run() } catch { cont.resume(throwing: error); return }
+                    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    proc.waitUntilExit()
+                    cont.resume(returning: ProcessResult(
+                        status: proc.terminationStatus,
+                        stdout: String(data: outData, encoding: .utf8) ?? "",
+                        stderr: String(data: errData, encoding: .utf8) ?? ""
+                    ))
+                }
             }
+        } onCancel: {
+            box.cancel()
         }
     }
 }
