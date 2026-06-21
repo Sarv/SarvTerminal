@@ -32,15 +32,27 @@ struct HostsSectionView: View {
     @State private var viewMode: HostsViewMode = .grid   // grid is default
     @State private var sortMode: HostsSortMode = .azAscending
     @State private var tagFilter: String? = nil
+    @State private var showImporter = false
 
-    enum HostsViewMode: String, CaseIterable {
-        case list   // full-width rows
+    enum HostsViewMode: String, CaseIterable, Identifiable {
         case grid   // adaptive card grid
+        case list   // full-width rows
 
-        var toggleSystemImage: String {
+        var id: String { rawValue }
+
+        var label: String {
             switch self {
-            case .list: return "square.grid.2x2"
-            case .grid: return "list.bullet"
+            case .grid: return "Grid"
+            case .list: return "List"
+            }
+        }
+
+        /// Icon for *this* mode — shown in the toolbar for the active mode and
+        /// beside each option in the menu.
+        var systemImage: String {
+            switch self {
+            case .grid: return "square.grid.2x2"
+            case .list: return "list.bullet"
             }
         }
     }
@@ -93,6 +105,7 @@ struct HostsSectionView: View {
         // host from the store so a just-saved password shows).
         .onAppear { openPendingEditHostIfNeeded() }
         .onChange(of: hostSelection.pendingEditHostID) { _ in openPendingEditHostIfNeeded() }
+        .sheet(isPresented: $showImporter) { ImportHostsView() }
     }
 
     private func openPendingEditHostIfNeeded() {
@@ -221,8 +234,8 @@ struct HostsSectionView: View {
                 Button("New Group", systemImage: "folder.badge.plus") {
                     startNewGroup(parentID: focusedGroupID)
                 }
-                Button("Import from ~/.ssh/config", systemImage: "square.and.arrow.down") {
-                    importFromSSHConfig()
+                Button("Import hosts…", systemImage: "square.and.arrow.down") {
+                    showImporter = true
                 }
                 Divider()
                 Section("Cloud (coming soon)") {
@@ -262,13 +275,19 @@ struct HostsSectionView: View {
 
     private var rightActionIcons: some View {
         HStack(spacing: 6) {
-            Button {
-                viewMode = (viewMode == .list ? .grid : .list)
+            Menu {
+                Picker("View", selection: $viewMode) {
+                    ForEach(HostsViewMode.allCases) { mode in
+                        Label(mode.label, systemImage: mode.systemImage).tag(mode)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
             } label: {
-                rightIcon(systemImage: viewMode.toggleSystemImage)
+                rightIcon(systemImage: viewMode.systemImage)
             }
-            .buttonStyle(.plain)
-            .help(viewMode == .list ? "Switch to grid view" : "Switch to list view")
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("View: \(viewMode.label)")
 
             Menu {
                 Button("Show all (clear filter)", systemImage: "xmark.circle") {
