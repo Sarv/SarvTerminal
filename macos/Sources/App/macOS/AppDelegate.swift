@@ -222,6 +222,10 @@ class AppDelegate: NSObject,
         // Start our update checker.
         updateController.startUpdater()
 
+        // Start settings sync: pull on launch (if remote is newer), then
+        // auto-push on change + hourly pull.
+        SyncCoordinator.shared.start()
+
         // Register our service provider. This must happen after everything is initialized.
         NSApp.servicesProvider = ServiceProvider()
 

@@ -10,6 +10,11 @@ final class SavedHostsStore: ObservableObject {
 
     @Published private(set) var hosts: [SavedHost] = []
 
+    /// True when `hosts.json` exists on disk but couldn't be read/parsed. In
+    /// that state the empty `hosts` array is NOT authoritative — sync must not
+    /// push it (doing so would wipe the remote backup).
+    private(set) var loadFailed = false
+
     private let fileURL: URL
     private let queue = DispatchQueue(label: "SavedHostsStore.io", qos: .utility)
 
@@ -72,6 +77,33 @@ final class SavedHostsStore: ObservableObject {
         hosts.contains { $0.id == id }
     }
 
+    /// Replace the entire host set with `incoming` (a sync mirror). Used on pull
+    /// so deletions made on another machine propagate here. Timestamps preserved.
+    func replaceAll(_ incoming: [SavedHost]) {
+        hosts = incoming
+        sortInPlace()
+        persist()
+    }
+
+    /// Merge synced hosts in by `id`, keeping whichever copy is newer by
+    /// `updatedAt`. Timestamps are preserved as-is (NOT bumped) so future merges
+    /// stay deterministic. Local-only hosts are never deleted.
+    func ingest(_ incoming: [SavedHost]) {
+        var changed = false
+        for host in incoming {
+            if let idx = hosts.firstIndex(where: { $0.id == host.id }) {
+                if host.updatedAt >= hosts[idx].updatedAt {
+                    hosts[idx] = host
+                    changed = true
+                }
+            } else {
+                hosts.append(host)
+                changed = true
+            }
+        }
+        if changed { sortInPlace(); persist() }
+    }
+
     /// The current saved host for `id`, if any (e.g. to re-read a password the
     /// user just changed via the editor).
     func host(withID id: UUID) -> SavedHost? {
@@ -108,12 +140,23 @@ final class SavedHostsStore: ObservableObject {
     // MARK: - IO
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
+        // No file yet = legitimately empty (fresh install), NOT a failure.
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            loadFailed = false
+            return
+        }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            loadFailed = true   // exists but unreadable — treat as unsafe
+            return
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let decoded = try? decoder.decode([SavedHost].self, from: data) {
             hosts = decoded
             sortInPlace()
+            loadFailed = false
+        } else {
+            loadFailed = true   // exists but corrupt — don't let sync treat it as empty
         }
     }
 

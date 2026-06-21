@@ -27,6 +27,9 @@ class SettingsController: NSWindowController, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.isMovable = false
+        // Let AppKit maintain the key-view loop so Tab / Shift-Tab move focus
+        // between the hosted SwiftUI text fields instead of doing nothing.
+        window.autorecalculatesKeyViewLoop = true
         window.standardWindowButton(.closeButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
@@ -87,6 +90,14 @@ class SettingsController: NSWindowController, NSWindowDelegate {
 
     @objc func cancel(_ sender: Any?) {
         hide()
+    }
+
+    // MARK: - NSWindowDelegate
+
+    /// Closing Settings is the commit point for settings sync: flush the whole
+    /// editing session as a single version instead of pushing per change.
+    func windowWillClose(_ notification: Notification) {
+        NotificationCenter.default.post(name: .sarvSettingsClosed, object: nil)
     }
 }
 

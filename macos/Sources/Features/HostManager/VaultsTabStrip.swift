@@ -13,6 +13,7 @@ import UniformTypeIdentifiers
 struct VaultsTabStrip: View {
     @ObservedObject var tabs: VaultsTabsModel = .shared
     @ObservedObject var section: HostManagerSelection = .shared
+    @ObservedObject private var syncSettings: SyncSettings = .shared
     /// Opens the command palette (quick connect / Local Terminal / Serial).
     let newTabAction: () -> Void
 
@@ -74,15 +75,93 @@ struct VaultsTabStrip: View {
 
     // MARK: - Section pills
 
+    /// The Vaults pill: an animated sync-status cloud + label that selects the
+    /// dashboard, plus a chevron that opens the vault (Personal / Team) menu.
     private var vaultsPill: some View {
-        sectionPill(
-            section: .vaults,
-            icon: "icloud.slash",
-            label: "Vaults",
-            trailingChevron: true,
-            comingSoon: false,
-            help: "Vaults — saved hosts, keychain, snippets"
+        let (icon, tint) = syncCloudIcon
+        let isSelected = dashboardActive && section.section == .vaults
+        return HStack(spacing: 5) {
+            Button {
+                tabs.selectDashboard(section: .vaults)
+            } label: {
+                HStack(spacing: 5) {
+                    SyncStatusIcon(icon: icon, tint: tint, spinning: syncSettings.status == .syncing)
+                    Text("Vaults").lineLimit(1).fixedSize()
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(isSelected ? Color.primary : .secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(syncCloudHelp)
+
+            Menu {
+                vaultMenuContent
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("Switch vault")
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isSelected ? Color.primary.opacity(0.12) : Color.secondary.opacity(0.08))
         )
+    }
+
+    /// Personal (the active vault, with its live sync status) + Team (later).
+    @ViewBuilder
+    private var vaultMenuContent: some View {
+        Section("Personal") {
+            Label("Personal", systemImage: syncCloudIcon.0)
+            Text(vaultSyncSummary)
+        }
+        Section {
+            Button {} label: { Label("Team — coming soon", systemImage: "person.2") }
+                .disabled(true)
+        }
+    }
+
+    /// One-line sync status shown under "Personal" in the vault menu.
+    private var vaultSyncSummary: String {
+        let s = syncSettings
+        if !s.enabled { return "Sync is off" }
+        if !s.isConfigured { return "Sync not set up" }
+        switch s.status {
+        case .syncing: return "Syncing…"
+        case .error(let reason): return "Error: \(reason)"
+        case .remoteNewer: return "Update available · pull to refresh"
+        default:
+            if let date = s.lastSyncDate {
+                return "Synced · v\(s.lastSyncedVersion) · \(date.formatted(date: .abbreviated, time: .shortened))"
+            }
+            return "Enabled · not synced yet"
+        }
+    }
+
+    /// Cloud glyph + tint reflecting sync status. Default `icloud.slash` look
+    /// when sync is off/unconfigured; green when working.
+    private var syncCloudIcon: (String, Color?) {
+        switch syncSettings.status {
+        case .disabled:    return ("icloud.slash", nil)
+        case .idle:        return ("checkmark.icloud.fill", .green)
+        case .syncing:     return ("arrow.triangle.2.circlepath.icloud", .blue)
+        case .remoteNewer: return ("exclamationmark.icloud.fill", .orange)
+        case .error:       return ("exclamationmark.icloud.fill", .red)
+        }
+    }
+
+    private var syncCloudHelp: String {
+        switch syncSettings.status {
+        case .disabled:    return "Vaults — saved hosts, keychain, snippets (sync off)"
+        case .idle:        return "Vaults — sync on and up to date"
+        case .syncing:     return "Vaults — syncing…"
+        case .remoteNewer: return "Vaults — a newer version is available to pull"
+        case .error:       return "Vaults — sync error"
+        }
     }
 
     private var sftpPill: some View {
@@ -99,6 +178,7 @@ struct VaultsTabStrip: View {
     private func sectionPill(
         section pillSection: HostManagerSelection.Section,
         icon: String,
+        iconTint: Color? = nil,
         label: String,
         trailingChevron: Bool,
         comingSoon: Bool,
@@ -113,6 +193,7 @@ struct VaultsTabStrip: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: icon)
+                    .foregroundStyle(iconTint ?? (isSelected ? Color.primary : .secondary))
                 Text(label).lineLimit(1).fixedSize()
                 if comingSoon {
                     Text("soon")
@@ -348,5 +429,45 @@ private struct TabColorPicker: View {
         }
         .buttonStyle(.plain)
         .help(isSelected ? "Selected" : "")
+    }
+}
+
+/// Sync-status cloud glyph. While syncing, the cloud stays still and only the
+/// inner circular arrows rotate (blue). Otherwise it shows the static status
+/// symbol (green check / grey slash / red exclamation).
+private struct SyncStatusIcon: View {
+    let icon: String
+    let tint: Color?
+    let spinning: Bool
+    @State private var angle: Double = 0
+
+    var body: some View {
+        Group {
+            if spinning {
+                ZStack {
+                    Image(systemName: "icloud.fill")
+                        .foregroundStyle(.blue)
+                    Image(systemName: "arrow.2.circlepath")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(.white)
+                        .rotationEffect(.degrees(angle))
+                        .offset(y: 1)
+                }
+            } else {
+                Image(systemName: icon)
+                    .foregroundStyle(tint ?? Color.secondary)
+            }
+        }
+        .onChange(of: spinning) { startStop($0) }
+        .onAppear { startStop(spinning) }
+    }
+
+    private func startStop(_ on: Bool) {
+        if on {
+            angle = 0
+            withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) { angle = 360 }
+        } else {
+            withAnimation(.default) { angle = 0 }
+        }
     }
 }

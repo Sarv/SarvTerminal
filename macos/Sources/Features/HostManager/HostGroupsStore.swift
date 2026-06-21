@@ -8,6 +8,10 @@ final class HostGroupsStore: ObservableObject {
 
     @Published private(set) var groups: [HostGroup] = []
 
+    /// True when `groups.json` exists but couldn't be read/parsed — the empty
+    /// array is then NOT authoritative and sync must not push it.
+    private(set) var loadFailed = false
+
     private let fileURL: URL
     private let queue = DispatchQueue(label: "HostGroupsStore.io", qos: .utility)
 
@@ -58,6 +62,32 @@ final class HostGroupsStore: ObservableObject {
         for i in groups.indices where groups[i].parentID == id {
             groups[i].parentID = newParent
         }
+        persist()
+    }
+
+    /// Merge synced groups in by `id`, keeping whichever copy is newer by
+    /// `updatedAt`. Timestamps preserved; local-only groups never deleted.
+    func ingest(_ incoming: [HostGroup]) {
+        var changed = false
+        for group in incoming {
+            if let idx = groups.firstIndex(where: { $0.id == group.id }) {
+                if group.updatedAt >= groups[idx].updatedAt {
+                    groups[idx] = group
+                    changed = true
+                }
+            } else {
+                groups.append(group)
+                changed = true
+            }
+        }
+        if changed { sortInPlace(); persist() }
+    }
+
+    /// Replace the entire group set with `incoming` (a sync mirror). Used on
+    /// pull so deletions made elsewhere propagate. Timestamps preserved.
+    func replaceAll(_ incoming: [HostGroup]) {
+        groups = incoming
+        sortInPlace()
         persist()
     }
 
@@ -115,12 +145,22 @@ final class HostGroupsStore: ObservableObject {
     // MARK: - IO
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            loadFailed = false
+            return
+        }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            loadFailed = true
+            return
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let decoded = try? decoder.decode([HostGroup].self, from: data) {
             groups = decoded
             sortInPlace()
+            loadFailed = false
+        } else {
+            loadFailed = true
         }
     }
 

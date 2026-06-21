@@ -100,6 +100,29 @@ final class SettingsViewModel: ObservableObject {
         wireLivePreview($window.eraseToAnyPublisher())
         wireLivePreview($tabs.eraseToAnyPublisher())
         wireLivePreview($shellIntegration.eraseToAnyPublisher())
+
+        // After a sync Pull overwrites config/UserDefaults on disk, re-read so
+        // the open Settings window reflects the pulled values immediately.
+        NotificationCenter.default.addObserver(
+            forName: .sarvSyncDidPull, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.reloadFromDisk()
+        }
+    }
+
+    /// Rebuild every form from what's currently on disk (config + UserDefaults)
+    /// and re-baseline. Used after a sync Pull, since forms are otherwise only
+    /// read at init.
+    func reloadFromDisk() {
+        let config = (NSApp.delegate as? AppDelegate)?.ghostty.config
+        appearance = AppearanceForm(loadedFrom: config)
+        font = FontForm(loadedFrom: config)
+        cursor = CursorForm(loadedFrom: config)
+        general = GeneralForm(loadedFrom: config)
+        window = WindowForm(loadedFrom: config)
+        tabs = TabsForm(loadedFrom: config)
+        shellIntegration = ShellIntegrationForm(loadedFrom: config)
+        captureBaselines()
     }
 
     /// Sets up the standard debounce subscription that writes the form to
@@ -131,7 +154,7 @@ final class SettingsViewModel: ObservableObject {
     /// Keybinds and Advanced manage their own editing surfaces.
     func supportsFooterActions(_ section: SettingsSection) -> Bool {
         switch section {
-        case .keybinds, .advanced: return false
+        case .keybinds, .advanced, .sync: return false
         default: return true
         }
     }
@@ -147,7 +170,7 @@ final class SettingsViewModel: ObservableObject {
         case .tabs: return tabs != savedTabs
         case .shellIntegration: return shellIntegration != savedShellIntegration
         case .sftp: return SFTPSettings.shared.isDirty
-        case .keybinds, .advanced: return false
+        case .keybinds, .advanced, .sync: return false
         }
     }
 
@@ -155,6 +178,21 @@ final class SettingsViewModel: ObservableObject {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !q.isEmpty else { return SettingsSection.visibleSections }
         return SettingsSection.visibleSections.filter { $0.matchesSearch(q) }
+    }
+
+    /// True when the user is actively searching.
+    var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Individual settings matching the query, across all visible sections.
+    /// Drives the search results list in the sidebar.
+    var searchResults: [SettingsSearchEntry] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return [] }
+        return SettingsSearchEntry.all.filter {
+            SettingsSection.visibleSections.contains($0.section) && $0.matches(q)
+        }
     }
 
     /// Last error from a write attempt, surfaced in the UI.
@@ -188,7 +226,7 @@ final class SettingsViewModel: ObservableObject {
         case .tabs: tabs = savedTabs
         case .shellIntegration: shellIntegration = savedShellIntegration
         case .sftp: SFTPSettings.shared.revertToBaseline()
-        case .keybinds, .advanced: break
+        case .keybinds, .advanced, .sync: break
         }
         lastSaveError = nil
     }
@@ -205,7 +243,7 @@ final class SettingsViewModel: ObservableObject {
         case .tabs: tabs = TabsForm(loadedFrom: nil)
         case .shellIntegration: shellIntegration = ShellIntegrationForm(loadedFrom: nil)
         case .sftp: SFTPSettings.shared.resetToDefaults()
-        case .keybinds, .advanced: break
+        case .keybinds, .advanced, .sync: break
         }
         lastSaveError = nil
     }
@@ -242,6 +280,7 @@ final class SettingsViewModel: ObservableObject {
             lastSaveError = nil
             (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
             flashSaved()
+            NotificationCenter.default.post(name: .sarvConfigDidCommit, object: nil)
         } catch {
             lastSaveError = error.localizedDescription
         }
@@ -1070,22 +1109,80 @@ struct SidebarView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 6)
 
-            List(selection: $viewModel.selectedSection) {
+            if viewModel.isSearching {
+                searchResultsList
+            } else {
+                sectionList
+            }
+        }
+        .frame(minWidth: 200)
+    }
+
+    /// Normal mode: the list of sections.
+    private var sectionList: some View {
+        List(selection: $viewModel.selectedSection) {
+            Section {
+                ForEach(viewModel.filteredSections) { section in
+                    Label(section.title, systemImage: section.icon)
+                        .tag(section)
+                }
+            } header: {
+                Text("Settings")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    /// Search mode: individual settings matching the query. Selecting one jumps
+    /// to its section.
+    private var searchResultsList: some View {
+        List {
+            let results = viewModel.searchResults
+            if results.isEmpty {
+                Text("No settings match “\(viewModel.searchText)”")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+            } else {
                 Section {
-                    ForEach(viewModel.filteredSections) { section in
-                        Label(section.title, systemImage: section.icon)
-                            .tag(section)
+                    ForEach(results) { entry in
+                        Button {
+                            viewModel.selectedSection = entry.section
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: entry.section.icon)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 18)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(entry.title)
+                                        .foregroundStyle(.primary)
+                                    Text(entry.section.title)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 0)
+                                if viewModel.selectedSection == entry.section {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
                 } header: {
-                    Text("Settings")
+                    Text("\(results.count) result\(results.count == 1 ? "" : "s")")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .textCase(.uppercase)
                 }
             }
-            .listStyle(.sidebar)
         }
-        .frame(minWidth: 200)
+        .listStyle(.sidebar)
     }
 
     private var searchField: some View {
@@ -1184,6 +1281,8 @@ struct DetailView: View {
             KeybindsSectionView(viewModel: viewModel)
         case .sftp:
             SFTPSectionView(viewModel: viewModel)
+        case .sync:
+            SyncSectionView()
         case .advanced:
             AdvancedSectionView(viewModel: viewModel)
         }
@@ -1288,6 +1387,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case keybinds
     case shellIntegration
     case sftp
+    case sync
     case advanced
 
     /// Sections shown in the sidebar. `tabs` is hidden: its settings (titlebar
@@ -1310,6 +1410,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .keybinds: return "Keybinds"
         case .shellIntegration: return "Shell Integration"
         case .sftp: return "SFTP"
+        case .sync: return "Sync"
         case .advanced: return "Advanced"
         }
     }
@@ -1325,6 +1426,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .keybinds: return "Keyboard shortcuts and key tables."
         case .shellIntegration: return "Auto-cd, prompts, SSH features."
         case .sftp: return "File transfer: save behavior, deletes, hidden files."
+        case .sync: return "Encrypted backup of your settings, keybinds, and hosts."
         case .advanced: return "Raw config editor and power-user options."
         }
     }
@@ -1340,6 +1442,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .keybinds: return "keyboard"
         case .shellIntegration: return "terminal"
         case .sftp: return "folder"
+        case .sync: return "icloud"
         case .advanced: return "wrench.and.screwdriver"
         }
     }
@@ -1369,6 +1472,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
                                        "bash", "zsh", "fish", "elvish", "nushell"]
         case .sftp: return ["sftp", "scp", "file", "transfer", "save", "autosave",
                             "auto-save", "delete", "hidden", "editor"]
+        case .sync: return ["sync", "cloud", "backup", "encrypt", "github", "folder",
+                            "pull", "push", "master password", "icloud"]
         case .advanced: return ["config", "include", "raw", "editor", "power"]
         }
     }
