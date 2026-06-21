@@ -37,7 +37,11 @@ struct VaultsView: View {
         }
     }
 
-    @State private var selection: Section = .hosts
+    @ObservedObject private var sel = HostManagerSelection.shared
+    private var selection: Section {
+        get { sel.vaultsSection }
+        nonmutating set { sel.vaultsSection = newValue }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -48,8 +52,8 @@ struct VaultsView: View {
             Group {
                 switch selection {
                 case .hosts:          HostsSectionView()
-                case .keychain:       keychainScaffold
-                case .portForwarding: portForwardingScaffold
+                case .keychain:       KeychainSectionView()
+                case .portForwarding: PortForwardingSectionView()
                 case .snippets:       SnippetsSectionView()
                 case .knownHosts:     KnownHostsSectionView()
                 case .logs:           LogsSectionView()
@@ -96,48 +100,5 @@ struct VaultsView: View {
         }
         .buttonStyle(.plain)
     }
-
-    // MARK: - Section scaffolds (shared top bar + empty state)
-    //
-    // These features aren't built yet, but they already share the reusable
-    // `VaultsToolbar` so the top bar is identical to Hosts — only the buttons
-    // differ. Buttons are disabled ("Coming soon") until each feature lands.
-
-    private static let soon = "Coming soon"
-
-    /// Trailing search / grid / list icons present on every section's top bar.
-    private var trailingIcons: [VaultsToolbar.Item] {
-        [
-            .init(icon: "magnifyingglass", disabled: true, help: Self.soon),
-            .init(icon: "square.grid.2x2", disabled: true, help: Self.soon),
-            .init(icon: "list.bullet", disabled: true, help: Self.soon),
-        ]
-    }
-
-    private var keychainScaffold: some View {
-        VaultsScaffoldSection(
-            toolbar: VaultsToolbar(
-                primary: .init(title: "New key", icon: "plus", disabled: true, help: Self.soon),
-                actions: [
-                    .init(title: "Certificate", icon: "doc.text", disabled: true, help: Self.soon),
-                    .init(title: "Touch ID", icon: "touchid", disabled: true, help: Self.soon),
-                    .init(title: "FIDO2", icon: "key.radiowaves.forward", disabled: true, help: Self.soon),
-                ],
-                trailing: trailingIcons),
-            empty: .init(icon: "key", title: "Add credentials",
-                         subtitle: "Store SSH keys and credentials to connect to your servers quickly and securely.",
-                         badge: Self.soon))
-    }
-
-    private var portForwardingScaffold: some View {
-        VaultsScaffoldSection(
-            toolbar: VaultsToolbar(
-                primary: .init(title: "New forwarding", icon: "plus", disabled: true, help: Self.soon),
-                trailing: trailingIcons),
-            empty: .init(icon: "arrow.left.arrow.right", title: "Set up port forwarding",
-                         subtitle: "Save port forwarding rules to reach databases, web apps, and other services.",
-                         badge: Self.soon))
-    }
-
 
 }
