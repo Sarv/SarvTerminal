@@ -10,6 +10,7 @@ struct SnippetsSectionView: View {
     @State private var draft: Snippet?
     @State private var isNew = false
     @State private var toast: String?
+    @State private var showHistory = false
 
     private var filtered: [Snippet] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -23,7 +24,10 @@ struct SnippetsSectionView: View {
         VStack(spacing: 0) {
             VaultsToolbar(
                 primary: .init(title: "New snippet", icon: "plus") { startNew() },
-                actions: [.init(title: "Shell History", icon: "clock", disabled: true, help: "Coming soon")])
+                actions: [.init(title: "Shell History", icon: "clock",
+                                help: "Save a past command as a snippet") {
+                    withAnimation(.easeInOut(duration: 0.18)) { showHistory.toggle() }
+                }])
             Divider()
 
             if store.snippets.isEmpty {
@@ -38,6 +42,15 @@ struct SnippetsSectionView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .trailing) {
+            if showHistory {
+                ShellHistoryPanel(
+                    onSave: { saveFromHistory($0) },
+                    onClose: { withAnimation(.easeInOut(duration: 0.18)) { showHistory = false } })
+                    .transition(.move(edge: .trailing))
+                    .zIndex(2)
+            }
+        }
         .overlay(alignment: .bottom) { toastView }
         .sheet(item: $draft) { snippet in
             SnippetEditorView(
@@ -93,6 +106,15 @@ struct SnippetsSectionView: View {
 
     private func startNew() { draft = .blank(); isNew = true }
     private func edit(_ s: Snippet) { draft = s; isNew = false }
+
+    /// Turn a shell-history command into a saved snippet (name defaults to the
+    /// command's first line). Keeps the history panel open so several can be added.
+    private func saveFromHistory(_ command: String) {
+        var snippet = Snippet.blank()
+        snippet.command = command
+        store.upsert(snippet)
+        showToast("Saved to snippets")
+    }
 
     private func send(_ s: Snippet, toTabID id: UUID, execute: Bool) {
         if tabs.sendSnippet(s.command, toTabID: id, execute: execute) {
