@@ -83,6 +83,14 @@ the SarvTerminal layer.** Each section below shows the feature in action.
 
 ![Terminal — tabs, split panes and background image](assets/screenshots/terminal-splits.png)
 
+### 🔌 Serial Console
+- Connect to a device over a **USB-serial adapter** (console cables for routers/switches, Raspberry
+  Pi, microcontrollers, etc.) right from the Hosts screen or the command palette.
+- Pick a detected `/dev/cu.*` device and a baud rate; opens a session in a terminal tab (8-N-1, via
+  the built-in `screen`).
+- A built-in **"report an issue"** helper opens a pre-filled GitHub issue — serial behavior is
+  hardware-specific, so this makes it easy to tell us your adapter/chipset when something's off.
+
 ### 📁 SFTP / SCP Dual-Pane File Manager
 - Transfers run over **both SFTP and SCP** — SFTP for local ⇄ remote browsing/transfer, and **SCP for
   direct server-to-server (server ⇄ server) transfers**.
