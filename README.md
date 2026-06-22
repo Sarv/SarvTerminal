@@ -64,6 +64,8 @@ the SarvTerminal layer.** Each section below shows the feature in action.
 
 ### 🧩 Snippets
 - A library of your most-used commands; run them straight into the focused terminal or copy them.
+- **Shell History** — browse your recent shell commands (zsh / bash / fish) in a side panel and
+  **save any of them as a snippet** in one click.
 
 ![Snippets — one-click command library](assets/screenshots/snippets.png)
 
