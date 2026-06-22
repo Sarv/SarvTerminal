@@ -30,23 +30,10 @@ with your whole setup optionally synced between machines under your own end-to-e
 
 It is built for developers and operators who live in the terminal and manage more than one server.
 
-## Screenshots
-
-|  |  |
-|:--:|:--:|
-| **Connection Manager** — saved hosts, groups & tags | **Terminal** — tabs, split panes & background image |
-| ![Vaults — Hosts](assets/screenshots/hosts.png) | ![Terminal with split panes](assets/screenshots/terminal-splits.png) |
-| **SFTP / SCP** — dual-pane file manager | **Port Forwarding** — local / remote / SOCKS tunnels |
-| ![SFTP file manager](assets/screenshots/sftp.png) | ![Port forwarding](assets/screenshots/port-forwarding.png) |
-| **Keychain** — generate & manage SSH keys | **Snippets** — one-click command library |
-| ![SSH Keychain](assets/screenshots/keychain.png) | ![Snippets](assets/screenshots/snippets.png) |
-| **Appearance** — themes, opacity, blur & background image | **Encrypted Sync** — end-to-end-encrypted backup |
-| ![Appearance settings](assets/screenshots/appearance.png) | ![Encrypted settings sync](assets/screenshots/sync.png) |
-
 ## Features
 
 Everything Ghostty gives you — fast GPU rendering, ligatures, true color, native macOS feel — **plus
-the SarvTerminal layer:**
+the SarvTerminal layer.** Each section below shows the feature in action.
 
 ### 🗄️ Connection Manager (Vaults)
 - **Saved hosts** with a full SSH profile: user, port, identity file, agent forwarding, compression,
@@ -58,27 +45,41 @@ the SarvTerminal layer:**
 - **Import** hosts from a CSV or from your existing `~/.ssh/config`.
 - **Command palette / quick-connect** to jump to any host or action.
 
+![Vaults — saved hosts, groups and tags](assets/screenshots/hosts.png)
+
 ### 🔑 SSH Keychain
 - See every key in `~/.ssh` with its type, size, fingerprint, and comment.
 - **Generate** new keys (Ed25519 / ECDSA / RSA-4096) with an optional passphrase and comment.
 - **Copy the public key** in one click (to paste into a server's `authorized_keys` or GitHub),
   copy the path, reveal in Finder, or delete safely.
 
+![SSH Keychain — generate and manage keys](assets/screenshots/keychain.png)
+
 ### ↔️ Port Forwarding
 - Save **Local (`-L`)**, **Remote (`-R`)**, and **Dynamic / SOCKS (`-D`)** tunnels.
 - Each tunnel runs over one of your saved hosts; **start/stop** with a live status indicator and
   inline error reporting (e.g. "port already in use").
 
+![Port Forwarding — local, remote and SOCKS tunnels](assets/screenshots/port-forwarding.png)
+
 ### 🧩 Snippets
 - A library of your most-used commands; run them straight into the focused terminal or copy them.
+
+![Snippets — one-click command library](assets/screenshots/snippets.png)
 
 ### ✅ Known Hosts & 🪵 Activity Logs
 - Browse and manage `~/.ssh/known_hosts`.
 - A running activity log of connections and session events.
 
+![Known Hosts — browse and manage known_hosts](assets/screenshots/known-hosts.png)
+
+![Activity Logs — connection and session events](assets/screenshots/logs.png)
+
 ### 🖥️ Terminal Workspace
 - **Embedded tabs and splits** in a single window, with **focus mode**, **input broadcasting**
   across panes, tab colors & renaming, an **all-tabs overview**, and **reopen-closed-tab**.
+
+![Terminal — tabs, split panes and background image](assets/screenshots/terminal-splits.png)
 
 ### 📁 SFTP / SCP Dual-Pane File Manager
 - Transfers run over **both SFTP and SCP** — SFTP for local ⇄ remote browsing/transfer, and **SCP for
@@ -93,10 +94,14 @@ the SarvTerminal layer:**
 - **Two-way permissions editor** — set permissions with `rwx` checkboxes **or** an octal field, kept
   in sync live.
 
+![SFTP / SCP — dual-pane file manager](assets/screenshots/sftp.png)
+
 ### 🎨 Customization
 - Appearance: themes, **background image** with adjustable opacity & blur.
 - Font, cursor, window, tabs, and shell-integration settings.
 - **Fully rebindable app keybinds** that never clobber Ghostty's defaults.
+
+![Appearance — themes, opacity, blur and background image](assets/screenshots/appearance.png)
 
 ## Security & Privacy
 
@@ -116,6 +121,8 @@ Move your entire setup between machines under encryption only *you* can open:
 - A small **plaintext manifest** carries only version + timestamp so status can be shown without
   decrypting anything. Encryption is **one-way**: if you forget the master password, the synced data
   is unrecoverable (this is surfaced clearly in the UI).
+
+![Encrypted Sync — end-to-end-encrypted backup of settings, keybinds and hosts](assets/screenshots/sync.png)
 
 ### 🛡️ Credential handling
 - SSH passwords are fed to `ssh`/`scp` **out-of-band via `SSH_ASKPASS`** — never typed on the TTY and
