@@ -202,6 +202,30 @@ extension Ghostty {
             return String(cString: ptr)
         }
 
+        /// Read the full screen text INCLUDING scrollback (uncached). Backs the
+        /// search bar's grep-style "only matching lines" filter, which needs the
+        /// whole buffer — not just the visible viewport — to filter against.
+        func liveScreenText() -> String {
+            guard let surface = self.surface else { return "" }
+            var text = ghostty_text_s()
+            let sel = ghostty_selection_s(
+                top_left: ghostty_point_s(
+                    tag: GHOSTTY_POINT_SCREEN,
+                    coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+                    x: 0,
+                    y: 0),
+                bottom_right: ghostty_point_s(
+                    tag: GHOSTTY_POINT_SCREEN,
+                    coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+                    x: 0,
+                    y: 0),
+                rectangle: false)
+            guard ghostty_surface_read_text(surface, sel, &text) else { return "" }
+            defer { ghostty_surface_free_text(surface, &text) }
+            guard let ptr = text.text else { return "" }
+            return String(cString: ptr)
+        }
+
         /// Clear the terminal screen and scrollback (the `clear_screen` binding
         /// action). The staged SSH connect uses this to wipe the connection
         /// noise (command echo, host-key + password prompts) right before the

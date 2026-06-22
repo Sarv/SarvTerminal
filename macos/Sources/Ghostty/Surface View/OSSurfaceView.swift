@@ -129,6 +129,22 @@ extension Ghostty.OSSurfaceView {
         /// The range of the needle's text selection in the find bar.
         @Published var needleSelection: Range<String.Index>?
 
+        // MARK: grep-style filter (advanced search options)
+
+        /// "Only matching lines" — when on, the surface shows a grep-filtered
+        /// view of the scrollback (matching lines + context) instead of the
+        /// raw terminal.
+        @Published var filterEnabled = false
+        /// Context lines kept BEFORE each match (grep `-B`). Non-negative.
+        /// Default 0 — show only the matching lines unless the user asks for context.
+        @Published var linesBefore = 0
+        /// Context lines kept AFTER each match (grep `-A`). Non-negative.
+        @Published var linesAfter = 0
+        /// Case-sensitive matching for the filter (insensitive by default).
+        @Published var caseSensitive = false
+        /// Treat the needle as a regular expression in the filter.
+        @Published var useRegex = false
+
         init(
             from startSearch: Ghostty.Action.StartSearch,
             pasteboard: OSPasteboard = OSPasteboard.find

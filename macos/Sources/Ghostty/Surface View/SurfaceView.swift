@@ -161,6 +161,13 @@ extension Ghostty {
 
                 // Search overlay
                 if let searchState = surfaceView.searchState {
+                    // grep-style filtered view (shows only while "Only matching
+                    // lines" is enabled); sits under the search bar.
+                    SurfaceSearchFilterOverlay(
+                        surfaceView: surfaceView,
+                        searchState: searchState,
+                        backgroundColor: ghostty.config.backgroundColor
+                    )
                     SurfaceSearchOverlay(
                         surfaceView: surfaceView,
                         searchState: searchState,
@@ -370,13 +377,15 @@ extension Ghostty {
         @State private var corner: Corner = .topRight
         @State private var dragOffset: CGSize = .zero
         @State private var barSize: CGSize = .zero
+        @State private var showAdvanced: Bool = false
         @FocusState private var isSearchFieldFocused: Bool
 
         private let padding: CGFloat = 8
 
         var body: some View {
             GeometryReader { geo in
-                HStack(spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
+                  HStack(spacing: 4) {
                     BackportSelectionTextField(
                         "Search",
                         text: $searchState.needle,
@@ -443,6 +452,7 @@ extension Ghostty {
                         Image(systemName: "chevron.up")
                     })
                     .buttonStyle(SearchButtonStyle())
+                    .hoverTip("Next match (↩)")
 
                     Button(action: {
                         guard let surface = surfaceView.surface else { return }
@@ -452,11 +462,30 @@ extension Ghostty {
                         Image(systemName: "chevron.down")
                     })
                     .buttonStyle(SearchButtonStyle())
+                    .hoverTip("Previous match (⇧↩)")
+
+                    Button(action: {
+                        withAnimation(.easeInOut(duration: 0.12)) { showAdvanced.toggle() }
+                    }, label: {
+                        Image(systemName: "slider.horizontal.3")
+                    })
+                    .buttonStyle(SearchButtonStyle())
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(searchState.filterEnabled
+                                  ? Color.accentColor.opacity(0.30)
+                                  : (showAdvanced ? Color.primary.opacity(0.12) : Color.clear))
+                    )
+                    .hoverTip("Advanced search options")
 
                     Button(action: onClose) {
                         Image(systemName: "xmark")
                     }
                     .buttonStyle(SearchButtonStyle())
+                    .hoverTip("Close search (Esc)")
+                  }
+
+                  if showAdvanced { advancedRow }
                 }
                 .padding(8)
                 .background(.background)
@@ -500,6 +529,57 @@ extension Ghostty {
                         }
                 )
             }
+        }
+
+        /// Advanced options revealed by the slider button: a grep-style filter
+        /// that shows only matching lines, with before/after context counts.
+        private var advancedRow: some View {
+            // No Spacer here — a Spacer would force the whole bar to full width.
+            // The bar stays compact and sizes to its content.
+            VStack(alignment: .leading, spacing: 6) {
+                Divider()
+                HStack(spacing: 8) {
+                    Toggle(isOn: $searchState.filterEnabled) {
+                        Text("Only matching lines").font(.caption)
+                    }
+                    .toggleStyle(.checkbox)
+                    .hoverTip("Show only lines that match, hiding everything else (like grep)")
+
+                    if searchState.filterEnabled {
+                        optionToggle("Aa", isOn: $searchState.caseSensitive, tip: "Match case")
+                        optionToggle(".*", isOn: $searchState.useRegex, tip: "Use a regular expression")
+                    }
+                }
+
+                if searchState.filterEnabled {
+                    HStack(spacing: 6) {
+                        Text("Before").font(.caption2).foregroundColor(.secondary)
+                        SearchContextField(value: $searchState.linesBefore)
+                            .hoverTip("Lines of context to keep before each match (grep -B)")
+                        Text("After").font(.caption2).foregroundColor(.secondary)
+                        SearchContextField(value: $searchState.linesAfter)
+                            .hoverTip("Lines of context to keep after each match (grep -A)")
+                    }
+                    .fixedSize()
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.bottom, 2)
+            .fixedSize(horizontal: true, vertical: false)
+        }
+
+        /// A compact text toggle button (e.g. "Aa" / ".*") with an accent
+        /// background when on — matches the advanced-options visual language.
+        private func optionToggle(_ label: String, isOn: Binding<Bool>, tip: String) -> some View {
+            Button(action: { isOn.wrappedValue.toggle() }, label: {
+                Text(label).font(.caption.weight(.semibold)).monospaced()
+            })
+            .buttonStyle(SearchButtonStyle())
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isOn.wrappedValue ? Color.accentColor.opacity(0.30) : Color.clear)
+            )
+            .hoverTip(tip)
         }
 
         private var clipShape: some Shape {
