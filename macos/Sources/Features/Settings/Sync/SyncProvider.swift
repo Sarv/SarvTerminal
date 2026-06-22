@@ -97,56 +97,99 @@ struct GitHubSyncProvider: SyncProvider {
         return decoded
     }
 
-    /// Fetch the blob SHA for an existing file (nil if it doesn't exist) — the
-    /// contents API needs it to update in place.
-    private func currentSHA(_ name: String) async throws -> String? {
-        guard let url = URL(string: "\(apiBase)/contents/\(name)") else { return nil }
-        let (data, response) = try await URLSession.shared.data(for: request(url))
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        return json["sha"] as? String
-    }
-
+    /// Write ALL files in a SINGLE commit via the Git Data API (blobs → one
+    /// tree → one commit → move the branch ref), instead of the contents API
+    /// which creates one commit per file. Retries the whole sequence if the
+    /// branch moved under us (another machine synced concurrently).
     func writeFiles(_ files: [String: Data]) async throws {
-        // manifest.json last.
-        let ordered = files.sorted { a, _ in a.key != SyncManifest.manifestFile }
-        for (name, bytes) in ordered {
-            try await put(name, bytes)
-        }
+        try await commitAll(files, attempt: 0)
     }
 
-    /// PUT a file, fetching its current blob SHA first. A 409 means the SHA went
-    /// stale between the GET and the PUT (e.g. overlapping pushes) — re-fetch and
-    /// retry a couple of times before surfacing the error.
-    private func put(_ name: String, _ bytes: Data, attempt: Int = 0) async throws {
-        let sha = try await currentSHA(name)
-        var payload: [String: Any] = [
-            "message": "sarv sync: \(name)",
-            "content": bytes.base64EncodedString(),
-        ]
-        if let sha { payload["sha"] = sha }
-        let body = try JSONSerialization.data(withJSONObject: payload)
-        guard let url = URL(string: "\(apiBase)/contents/\(name)") else {
-            throw SyncProviderError(message: "Invalid path \(name).")
+    private func commitAll(_ files: [String: Data], attempt: Int) async throws {
+        // 1. Default branch.
+        let (rc0, repoJSON) = try await gh("", method: "GET")
+        guard rc0 == 200, let branch = repoJSON?["default_branch"] as? String else {
+            throw SyncProviderError(message: "Couldn't read repository info (\(rc0)).")
         }
-        let (_, response) = try await URLSession.shared.data(for: request(url, method: "PUT", body: body))
-        let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-        if (200...201).contains(code) { return }
-        // 409 Conflict / 422 (stale or missing sha) → something else is mid-sync.
-        // Wait a randomized 2–5s (jitter, to avoid two machines lock-stepping)
-        // then refetch the sha and retry.
-        if (code == 409 || code == 422), attempt < 3 {
-            let waitSeconds = Double.random(in: 2...5)
-            try? await Task.sleep(nanoseconds: UInt64(waitSeconds * 1_000_000_000))
-            try await put(name, bytes, attempt: attempt + 1)
+
+        // 2. Current HEAD of the branch (404 ⇒ empty repo / no branch yet).
+        let (rcRef, refJSON) = try await gh("/git/ref/heads/\(branch)", method: "GET")
+        var parentCommit: String?
+        var baseTree: String?
+        if rcRef == 200 {
+            parentCommit = (refJSON?["object"] as? [String: Any])?["sha"] as? String
+            if let parentCommit {
+                let (rcC, commitJSON) = try await gh("/git/commits/\(parentCommit)", method: "GET")
+                if rcC == 200 { baseTree = (commitJSON?["tree"] as? [String: Any])?["sha"] as? String }
+            }
+        } else if rcRef != 404 {
+            throw SyncProviderError(message: "Couldn't read branch \(branch) (\(rcRef)).")
+        }
+
+        // 3. One blob per file (base64 — works for the .enc binaries and the
+        //    plaintext manifest alike).
+        var entries: [[String: Any]] = []
+        for (name, bytes) in files {
+            let blobBody = try JSONSerialization.data(withJSONObject: [
+                "content": bytes.base64EncodedString(), "encoding": "base64",
+            ])
+            let (rcB, blobJSON) = try await gh("/git/blobs", method: "POST", body: blobBody)
+            guard (200...201).contains(rcB), let sha = blobJSON?["sha"] as? String else {
+                throw SyncProviderError(message: "Failed to upload \(name) (\(rcB)).")
+            }
+            entries.append(["path": name, "mode": "100644", "type": "blob", "sha": sha])
+        }
+
+        // 4. A single tree containing every file.
+        var treeBody: [String: Any] = ["tree": entries]
+        if let baseTree { treeBody["base_tree"] = baseTree }
+        let (rcT, treeJSON) = try await gh("/git/trees", method: "POST",
+                                           body: try JSONSerialization.data(withJSONObject: treeBody))
+        guard (200...201).contains(rcT), let treeSHA = treeJSON?["sha"] as? String else {
+            throw SyncProviderError(message: "Failed to create tree (\(rcT)).")
+        }
+
+        // 5. One commit.
+        var commitBody: [String: Any] = ["message": "Sync SarvTerminal settings", "tree": treeSHA]
+        if let parentCommit { commitBody["parents"] = [parentCommit] }
+        let (rcCm, commitJSON) = try await gh("/git/commits", method: "POST",
+                                              body: try JSONSerialization.data(withJSONObject: commitBody))
+        guard (200...201).contains(rcCm), let newCommit = commitJSON?["sha"] as? String else {
+            throw SyncProviderError(message: "Failed to create commit (\(rcCm)).")
+        }
+
+        // 6. Move (or create) the branch ref to the new commit.
+        let rcU: Int
+        if rcRef == 200 {
+            let (code, _) = try await gh("/git/refs/heads/\(branch)", method: "PATCH",
+                                         body: try JSONSerialization.data(withJSONObject: ["sha": newCommit, "force": false]))
+            rcU = code
+        } else {
+            let (code, _) = try await gh("/git/refs", method: "POST",
+                                         body: try JSONSerialization.data(withJSONObject: ["ref": "refs/heads/\(branch)", "sha": newCommit]))
+            rcU = code
+        }
+        if (200...201).contains(rcU) { return }
+
+        // Ref moved under us (concurrent sync) → re-fetch and retry the sequence.
+        if (rcU == 409 || rcU == 422), attempt < 3 {
+            try? await Task.sleep(nanoseconds: UInt64(Double.random(in: 2...5) * 1_000_000_000))
+            try await commitAll(files, attempt: attempt + 1)
             return
         }
-        // A conflict that survived all retries is still transient — flag it so
-        // the coordinator stays silent and lets the next sync resolve it.
-        let conflict = (code == 409 || code == 422)
-        throw SyncProviderError(message: "Failed to upload \(name) (\(code)).", isConflict: conflict)
+        throw SyncProviderError(message: "Failed to update \(branch) (\(rcU)).",
+                                isConflict: rcU == 409 || rcU == 422)
+    }
+
+    /// Small JSON helper: returns (statusCode, parsed-object?).
+    private func gh(_ path: String, method: String, body: Data? = nil) async throws -> (Int, [String: Any]?) {
+        guard let url = URL(string: apiBase + path) else {
+            throw SyncProviderError(message: "Invalid path \(path).")
+        }
+        let (data, response) = try await URLSession.shared.data(for: request(url, method: method, body: body))
+        let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return (code, json)
     }
 }
 
