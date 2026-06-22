@@ -199,16 +199,9 @@ final class HostSearchController: NSWindowController, NSWindowDelegate {
         case .localTerminal:
             VaultsTabsModel.shared.newTerminal(command: nil, name: "Terminal")
         case .serial:
-            showSerialComingSoon()
+            // Show the Vaults dashboard and open the serial connect sheet there.
+            VaultsTabsModel.shared.selectDashboard(section: .vaults)
+            VaultsTabsModel.shared.presentingSerialConnect = true
         }
-    }
-
-    private func showSerialComingSoon() {
-        let alert = NSAlert()
-        alert.messageText = "Serial connections are coming soon"
-        alert.informativeText = "Serial console support isn't available yet in SarvTerminal."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
     }
 }

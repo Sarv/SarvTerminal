@@ -211,7 +211,9 @@ struct HostsSectionView: View {
             actionPill(label: "Terminal", systemImage: "terminal") {
                 VaultsTabsModel.shared.newTerminal(command: nil, name: "Terminal")
             }
-            actionPill(label: "Serial",   systemImage: "cable.connector") { /* later */ }
+            actionPill(label: "Serial",   systemImage: "cable.connector") {
+                VaultsTabsModel.shared.presentingSerialConnect = true
+            }
             Spacer()
             rightActionIcons
         }

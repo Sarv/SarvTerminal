@@ -66,6 +66,7 @@ struct VaultsRootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: tabs.editingHost?.id)
+        .sheet(isPresented: $tabs.presentingSerialConnect) { SerialConnectSheet() }
         // Single window-level tooltip layer, above everything (panes, choosers,
         // sidebar). Sits in the named space that every `.hoverTip` resolves in.
         .overlay { TooltipOverlay() }

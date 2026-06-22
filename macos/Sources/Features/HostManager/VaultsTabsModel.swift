@@ -143,6 +143,11 @@ final class VaultsTabsModel: ObservableObject {
     /// screen (driven by the SSH popup's "Edit host" — keeps the popup visible).
     @Published var editingHost: SavedHost?
 
+    /// Drives the ad-hoc Serial Console connect sheet (device + baud picker).
+    /// Set from the Hosts "Serial" button and the command palette; presented by
+    /// `VaultsRootView`.
+    @Published var presentingSerialConnect = false
+
     /// Recently closed tabs (oldest first), retained so they can be reopened
     /// with full state — local shell, SSH session, or a pending chooser — via
     /// the reopen-closed-tab shortcut (⌘⇧T). Retaining the `TerminalTab` keeps
@@ -365,6 +370,25 @@ final class VaultsTabsModel: ObservableObject {
                 surface.surfaceModel?.sendText("\(command)\n")
             }
         }
+        return tab
+    }
+
+    /// Open a serial console tab: spawn a surface running `screen <device> <baud>`
+    /// directly (no shell prompt first). macOS ships `screen`, so there's nothing
+    /// to install. Framing is `screen`'s default 8-N-1, no flow control.
+    @discardableResult
+    func newSerial(device: String, baud: Int) -> TerminalTab? {
+        guard let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return nil }
+        var cfg = Ghostty.SurfaceConfiguration()
+        // Single-quote the device path for the shell that runs the command.
+        cfg.command = "screen '\(device)' \(baud)"
+        let surface = Ghostty.SurfaceView(app, baseConfig: cfg)
+        let tab = TerminalTab(surface: surface, name: uniqueTabName(base: "Serial \(SerialPorts.label(device))"))
+        tab.launchCommand = cfg.command
+        terminals.append(tab)
+        selection = .terminal(tab.id)
+        HostManagerController.shared.show()
+        Ghostty.moveFocus(to: surface)
         return tab
     }
 
