@@ -1,226 +1,203 @@
-<!-- LOGO -->
-<h1>
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/fe853809-ba8b-400b-83ab-a9a0da25be8a" alt="Logo" width="128">
-  <br>Ghostty
-</h1>
-  <p align="center">
-    Fast, native, feature-rich terminal emulator pushing modern features.
-    <br />
-    A native GUI or embeddable library via <code>libghostty</code>.
-    <br />
-    <a href="#about">About</a>
-    ·
-    <a href="https://ghostty.org/download">Download</a>
-    ·
-    <a href="https://ghostty.org/docs">Documentation</a>
-    ·
-    <a href="CONTRIBUTING.md">Contributing</a>
-    ·
-    <a href="HACKING.md">Developing</a>
-  </p>
-</p>
+# SarvTerminal
+
+**An open-source, full-fledged terminal _and_ SSH connection manager for macOS.**
+Fast GPU-accelerated terminal, a built-in host vault, SFTP/SCP file manager, SSH key & tunnel
+manager, and end-to-end-encrypted settings sync — in one native app.
+
+[Features](#features) · [Security & Privacy](#security--privacy) · [Install](#install) · [Build](#build-from-source) · [Contributing](#contributing) · [Credits](#credits--license)
+
+![Platform: macOS](https://img.shields.io/badge/platform-macOS-black)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue)
+![Built on Ghostty](https://img.shields.io/badge/built%20on-Ghostty-7B68EE)
+
+---
+
+> ### Built on Ghostty 👻
+> SarvTerminal is a **fork of [Ghostty](https://github.com/ghostty-org/ghostty)** by
+> [Mitchell Hashimoto](https://github.com/mitchellh) and the Ghostty contributors. The blazing-fast,
+> GPU-accelerated terminal engine at the heart of this app is entirely their work, and we are deeply
+> grateful for it. SarvTerminal layers a **connection-manager workflow** (hosts, SFTP, keys, tunnels,
+> encrypted sync) on top of that engine. **Huge thanks to the Ghostty team** — please consider
+> [supporting the upstream project](https://github.com/ghostty-org/ghostty). See
+> [Credits & License](#credits--license).
 
 ## About
 
-Ghostty is a terminal emulator that differentiates itself by being
-fast, feature-rich, and native. While there are many excellent terminal
-emulators available, they all force you to choose between speed,
-features, or native UIs. Ghostty provides all three.
+Most terminals make you choose: a *fast native terminal* **or** a *connection manager* (like the
+commercial SSH clients). SarvTerminal aims to be both — a single, native macOS app where your
+terminal, your saved servers, your SSH keys, your tunnels, and your file transfers all live together,
+with your whole setup optionally synced between machines under your own end-to-end encryption.
 
-**`libghostty`** is a cross-platform, zero-dependency C and Zig library
-for building terminal emulators or utilizing terminal functionality
-(such as style parsing). Anyone can use `libghostty` to build a terminal
-emulator or embed a terminal into their own applications. See
-[Ghostling](https://github.com/ghostty-org/ghostling) for a minimal complete project
-example or the [`examples` directory](https://github.com/ghostty-org/ghostty/tree/main/example)
-for smaller examples of using `libghostty` in C and Zig.
+It is built for developers and operators who live in the terminal and manage more than one server.
 
-For more details, see [About Ghostty](https://ghostty.org/docs/about).
+## Screenshots
 
-## Download
+|  |  |
+|:--:|:--:|
+| **Connection Manager** — saved hosts, groups & tags | **Terminal** — tabs, split panes & background image |
+| ![Vaults — Hosts](assets/screenshots/hosts.png) | ![Terminal with split panes](assets/screenshots/terminal-splits.png) |
+| **SFTP / SCP** — dual-pane file manager | **Port Forwarding** — local / remote / SOCKS tunnels |
+| ![SFTP file manager](assets/screenshots/sftp.png) | ![Port forwarding](assets/screenshots/port-forwarding.png) |
+| **Keychain** — generate & manage SSH keys | **Snippets** — one-click command library |
+| ![SSH Keychain](assets/screenshots/keychain.png) | ![Snippets](assets/screenshots/snippets.png) |
+| **Appearance** — themes, opacity, blur & background image | **Encrypted Sync** — end-to-end-encrypted backup |
+| ![Appearance settings](assets/screenshots/appearance.png) | ![Encrypted settings sync](assets/screenshots/sync.png) |
 
-See the [download page](https://ghostty.org/download) on the Ghostty website.
+## Features
 
-## Documentation
+Everything Ghostty gives you — fast GPU rendering, ligatures, true color, native macOS feel — **plus
+the SarvTerminal layer:**
 
-See the [documentation](https://ghostty.org/docs) on the Ghostty website.
+### 🗄️ Connection Manager (Vaults)
+- **Saved hosts** with a full SSH profile: user, port, identity file, agent forwarding, compression,
+  keep-alives, proxy jump, host-key policy, and a startup command.
+- **Groups & tags** — organize servers into a workspace → project folder tree.
+- **Per-host themes** — each server can open with its own color theme so you always know where you are.
+- **Guided connect popup** with **auto-reconnect** on network drops / wake-from-sleep, and clean
+  inline error handling.
+- **Import** hosts from a CSV or from your existing `~/.ssh/config`.
+- **Command palette / quick-connect** to jump to any host or action.
 
-## Contributing and Developing
+### 🔑 SSH Keychain
+- See every key in `~/.ssh` with its type, size, fingerprint, and comment.
+- **Generate** new keys (Ed25519 / ECDSA / RSA-4096) with an optional passphrase and comment.
+- **Copy the public key** in one click (to paste into a server's `authorized_keys` or GitHub),
+  copy the path, reveal in Finder, or delete safely.
 
-If you have any ideas, issues, etc. regarding Ghostty, or would like to
-contribute to Ghostty through pull requests, please check out our
-["Contributing to Ghostty"](CONTRIBUTING.md) document. Those who would like
-to get involved with Ghostty's development as well should also read the
-["Developing Ghostty"](HACKING.md) document for more technical details.
+### ↔️ Port Forwarding
+- Save **Local (`-L`)**, **Remote (`-R`)**, and **Dynamic / SOCKS (`-D`)** tunnels.
+- Each tunnel runs over one of your saved hosts; **start/stop** with a live status indicator and
+  inline error reporting (e.g. "port already in use").
 
-## Roadmap and Status
+### 🧩 Snippets
+- A library of your most-used commands; run them straight into the focused terminal or copy them.
 
-Ghostty is stable and in use by millions of people and machines daily.
+### ✅ Known Hosts & 🪵 Activity Logs
+- Browse and manage `~/.ssh/known_hosts`.
+- A running activity log of connections and session events.
 
-The high-level ambitious plan for the project, in order:
+### 🖥️ Terminal Workspace
+- **Embedded tabs and splits** in a single window, with **focus mode**, **input broadcasting**
+  across panes, tab colors & renaming, an **all-tabs overview**, and **reopen-closed-tab**.
 
-|  #  | Step                                                    | Status |
-| :-: | ------------------------------------------------------- | :----: |
-|  1  | Standards-compliant terminal emulation                  |   ✅   |
-|  2  | Competitive performance                                 |   ✅   |
-|  3  | Rich windowing features -- multi-window, tabbing, panes |   ✅   |
-|  4  | Native Platform Experiences                             |   ✅   |
-|  5  | Cross-platform `libghostty` for Embeddable Terminals    |   ✅   |
-|  6  | Ghostty-only Terminal Control Sequences                 |   ❌   |
+### 📁 SFTP / SCP Dual-Pane File Manager
+- Transfers run over **both SFTP and SCP** — SFTP for local ⇄ remote browsing/transfer, and **SCP for
+  direct server-to-server (server ⇄ server) transfers**.
+- Browse **local ⇄ remote** side by side and transfer between them.
+- **Direct server-to-server transfers** — copy a file from one server straight to another (via SCP)
+  without it passing through your Mac, with an automatic **relay-through-this-Mac fallback** when the
+  two servers can't reach each other directly.
+- **Live transfer progress** (file name, size, speed, %, bytes) with a **Cancel** button, and a clear
+  *Server → Server* vs *Via this Mac* indicator.
+- **In-app file viewer & editor** for remote and config files.
+- **Two-way permissions editor** — set permissions with `rwx` checkboxes **or** an octal field, kept
+  in sync live.
 
-Additional details for each step in the big roadmap below:
+### 🎨 Customization
+- Appearance: themes, **background image** with adjustable opacity & blur.
+- Font, cursor, window, tabs, and shell-integration settings.
+- **Fully rebindable app keybinds** that never clobber Ghostty's defaults.
 
-#### Standards-Compliant Terminal Emulation
+## Security & Privacy
 
-Ghostty implements all of the regularly used control sequences and
-can run every mainstream terminal program without issue. For legacy sequences,
-we've done a [comprehensive xterm audit](https://github.com/ghostty-org/ghostty/issues/632)
-comparing Ghostty's behavior to xterm and building a set of conformance
-test cases.
+SarvTerminal is **local-first**. Your hosts, keys, snippets, and tunnel rules are stored on your
+machine under `~/.config/sarvterminal/`; nothing is sent anywhere unless you explicitly enable sync.
 
-In addition to legacy sequences (what you'd call real "terminal" emulation),
-Ghostty also supports more modern sequences than almost any other terminal
-emulator. These features include things like the Kitty graphics protocol,
-Kitty image protocol, clipboard sequences, synchronized rendering,
-light/dark mode notifications, and many, many more.
+### 🔐 End-to-end-encrypted settings sync
+Move your entire setup between machines under encryption only *you* can open:
+- **AES-256-GCM** encryption with a key derived via **PBKDF2-HMAC-SHA256** from a master password.
+- The **master password is stored only in the macOS Keychain**, unlocked with **Touch ID**, marked
+  *this-device-only* so it can never leave your Mac (not even via iCloud Keychain) — **it is never
+  synced**.
+- Choose your own backend: a **private GitHub repository** (public repos are rejected) **or** a
+  **local / cloud folder** (iCloud Drive, Dropbox, Google Drive — any synced directory).
+- Syncs your terminal config, app settings, keybinds, and saved hosts. **Blank/default values are
+  never synced** and never overwrite a populated value on pull, so sync can't silently wipe data.
+- A small **plaintext manifest** carries only version + timestamp so status can be shown without
+  decrypting anything. Encryption is **one-way**: if you forget the master password, the synced data
+  is unrecoverable (this is surfaced clearly in the UI).
 
-We believe Ghostty is one of the most compliant and feature-rich terminal
-emulators available.
+### 🛡️ Credential handling
+- SSH passwords are fed to `ssh`/`scp` **out-of-band via `SSH_ASKPASS`** — never typed on the TTY and
+  never echoed into the terminal or shell history.
+- **Pre-flight host-key verification** (out-of-band `ssh-keyscan`) so trust prompts are explicit and
+  can't be hijacked by the password helper.
+- Sensitive material lives in the **macOS Keychain** with *this-device-only* accessibility.
 
-Terminal behavior is partially a de jure standard
-(i.e. [ECMA-48](https://ecma-international.org/publications-and-standards/standards/ecma-48/))
-but mostly a de facto standard as defined by popular terminal emulators
-worldwide. Ghostty takes the approach that our behavior is defined by
-(1) standards, if available, (2) xterm, if the feature exists, (3)
-other popular terminals, in that order. This defines what the Ghostty project
-views as a "standard."
+> **Note:** saved-host passwords are currently stored in the local `hosts.json`. Prefer SSH keys, and
+> see the [roadmap](#roadmap--status) — moving host passwords into the Keychain is a tracked
+> follow-up where help is welcome.
 
-#### Competitive Performance
+## Install
 
-Ghostty is generally in the same performance category as the other highest
-performing terminal emulators.
+Pre-built releases are not published yet. For now, [build from source](#build-from-source). Once the
+project stabilizes, signed builds will be attached to GitHub Releases — contributions to set up that
+pipeline are welcome.
 
-"The same performance category" means that Ghostty is much faster than
-traditional or "slow" terminals and is within an unnoticeable margin of the
-well-known "fast" terminals. For example, Ghostty and Alacritty are usually within
-a few percentage points of each other on various benchmarks, but are both
-something like 100x faster than Terminal.app and iTerm. However, Ghostty
-is much more feature rich than Alacritty and has a much more native app
-experience.
+## Build from source
 
-This performance is achieved through high-level architectural decisions and
-low-level optimizations. At a high-level, Ghostty has a multi-threaded
-architecture with a dedicated read thread, write thread, and render thread
-per terminal. Our renderer uses OpenGL on Linux and Metal on macOS.
-Our read thread has a heavily optimized terminal parser that leverages
-CPU-specific SIMD instructions. Etc.
+**Requirements:** macOS, [Zig](https://ziglang.org/) (matching the version in
+[`build.zig`](build.zig) / [HACKING.md](HACKING.md)), and Xcode (for the macOS app bundle).
 
-#### Rich Windowing Features
+```sh
+git clone https://github.com/Sarv/SarvTerminal.git
+cd SarvTerminal
 
-The Mac and Linux (build with GTK) apps support multi-window, tabbing, and
-splits with additional features such as tab renaming, coloring, etc. These
-features allow for a higher degree of organization and customization than
-single-window terminals.
+# Build the macOS app bundle
+zig build
 
-#### Native Platform Experiences
-
-Ghostty is a cross-platform terminal emulator but we don't aim for a
-least-common-denominator experience. There is a large, shared core written
-in Zig but we do a lot of platform-native things:
-
-- The macOS app is a true SwiftUI-based application with all the things you
-  would expect such as real windowing, menu bars, a settings GUI, etc.
-- macOS uses a true Metal renderer with CoreText for font discovery.
-- macOS supports AppleScript, Apple Shortcuts (AppIntents), etc.
-- The Linux app is built with GTK.
-- The Linux app integrates deeply with systemd if available for things
-  like always-on, new windows in a single instance, cgroup isolation, etc.
-
-Our goal with Ghostty is for users of whatever platform they run Ghostty
-on to think that Ghostty was built for their platform first and maybe even
-exclusively. We want Ghostty to feel like a native app on every platform,
-for the best definition of "native" on each platform.
-
-#### Cross-platform `libghostty` for Embeddable Terminals
-
-In addition to being a standalone terminal emulator, Ghostty is a
-C-compatible library for embedding a fast, feature-rich terminal emulator
-in any 3rd party project. This library is called `libghostty`.
-
-Due to the scope of this project, we're breaking libghostty down into
-separate libraries, starting with `libghostty-vt`. The goal of
-this project is to focus on parsing terminal sequences and maintaining
-terminal state. This is covered in more detail in this
-[blog post](https://mitchellh.com/writing/libghostty-is-coming).
-
-`libghostty-vt` is already available and usable today for Zig and C and
-is compatible for macOS, Linux, Windows, and WebAssembly. The functionality
-is extremely stable (since its been proven in Ghostty GUI for a long time),
-but the API signatures are still in flux.
-
-`libghostty` is already heavily in use. See [`examples`](https://github.com/ghostty-org/ghostty/tree/main/example)
-for small examples of using `libghostty` in C and Zig or the
-[Ghostling](https://github.com/ghostty-org/ghostling) project for a
-complete example. See [awesome-libghostty](https://github.com/Uzaaft/awesome-libghostty)
-for a list of projects and resources related to `libghostty`.
-
-We haven't tagged libghostty with a version yet and we're still working
-on a better docs experience, but our [Doxygen website](https://libghostty.tip.ghostty.org/)
-is a good resource for the C API.
-
-#### Ghostty-only Terminal Control Sequences
-
-We want and believe that terminal applications can and should be able
-to do so much more. We've worked hard to support a wide variety of modern
-sequences created by other terminal emulators towards this end, but we also
-want to fill the gaps by creating our own sequences.
-
-We've been hesitant to do this up until now because we don't want to create
-more fragmentation in the terminal ecosystem by creating sequences that only
-work in Ghostty. But, we do want to balance that with the desire to push the
-terminal forward with stagnant standards and the slow pace of change in the
-terminal ecosystem.
-
-We haven't done any of this yet.
-
-## Crash Reports
-
-Ghostty has a built-in crash reporter that will generate and save crash
-reports to disk. The crash reports are saved to the `$XDG_STATE_HOME/ghostty/crash`
-directory. If `$XDG_STATE_HOME` is not set, the default is `~/.local/state`.
-**Crash reports are _not_ automatically sent anywhere off your machine.**
-
-Crash reports are only generated the next time Ghostty is started after a
-crash. If Ghostty crashes and you want to generate a crash report, you must
-restart Ghostty at least once. You should see a message in the log that a
-crash report was generated.
-
-> [!NOTE]
->
-> Use the `ghostty +crash-report` CLI command to get a list of available crash
-> reports. A future version of Ghostty will make the contents of the crash
-> reports more easily viewable through the CLI and GUI.
-
-Crash reports end in the `.ghosttycrash` extension. The crash reports are in
-[Sentry envelope format](https://develop.sentry.dev/sdk/envelopes/). You can
-upload these to your own Sentry account to view their contents, but the format
-is also publicly documented so any other available tools can also be used.
-The `ghostty +crash-report` CLI command can be used to list any crash reports.
-A future version of Ghostty will show you the contents of the crash report
-directly in the terminal.
-
-To send the crash report to the Ghostty project, you can use the following
-CLI command using the [Sentry CLI](https://docs.sentry.io/cli/installation/):
-
-```shell-session
-SENTRY_DSN=https://e914ee84fd895c4fe324afa3e53dac76@o4507352570920960.ingest.us.sentry.io/4507850923638784 sentry-cli send-envelope --raw <path to ghostty crash>
+# The app is produced at:
+open zig-out/SarvTerminal.app
 ```
 
-> [!WARNING]
->
-> The crash report can contain sensitive information. The report doesn't
-> purposely contain sensitive information, but it does contain the full
-> stack memory of each thread at the time of the crash. This information
-> is used to rebuild the stack trace but can also contain sensitive data
-> depending on when the crash occurred.
+For deeper build details and the core engine internals, see [HACKING.md](HACKING.md).
+
+## Roadmap & Status
+
+- ✅ **macOS app** — actively developed; all features above work today.
+- 🐧 **Linux UI — the big open item.** The terminal *engine* (from Ghostty) is cross-platform, but
+  the SarvTerminal experience (Vaults, SFTP, Keychain, Port Forwarding, Sync) is currently built in
+  **SwiftUI for macOS only**. **A Linux UI is not yet built, and this is where we'd love help most.**
+  If you know GTK/Qt (or have ideas for a shared cross-platform UI), please jump in — see
+  [Contributing](#contributing).
+- 🔜 Move saved-host passwords into the Keychain; published signed releases; more sync providers.
+
+## Contributing
+
+**Everyone is welcome — let's make this a wonderful, full-fledged open-source terminal together.** 🎉
+
+Whether you're fixing a bug, polishing the UI, improving docs, or taking on a big feature, your help
+matters. A few especially valuable areas:
+
+- **🐧 A Linux UI** — the single biggest opportunity. If you're a GTK/Qt developer, we'd love your help.
+- **🔒 Security hardening** — moving host passwords into the Keychain, audits, threat-model review.
+- **🚀 Releases & packaging** — CI, signed/notarized builds, Homebrew.
+- **📸 Docs & screenshots** — including the gallery above (see [`assets/screenshots/`](assets/screenshots)).
+
+How to get started:
+
+1. **Open an issue or discussion** describing the bug or idea before large changes, so we can align.
+2. Fork, branch, and send a focused pull request. Keep commits small and logically grouped, using
+   [Conventional Commit](https://www.conventionalcommits.org/) messages (`feat:`, `fix:`, `docs:`…).
+3. Build locally with `zig build` and make sure the app launches.
+4. See [HACKING.md](HACKING.md) for engine/build internals and [CONTRIBUTING.md](CONTRIBUTING.md) for
+   general guidelines.
+
+Be kind and constructive — we want this to be a friendly community.
+
+## Credits & License
+
+SarvTerminal stands on the shoulders of **[Ghostty](https://github.com/ghostty-org/ghostty)**. The
+core terminal engine, rendering, and `libghostty` are the work of **Mitchell Hashimoto and the
+Ghostty contributors**, and SarvTerminal would not exist without them. 🙏
+
+This project — both the inherited Ghostty code and the SarvTerminal additions — is released under the
+**[MIT License](LICENSE)**.
+
+```
+Ghostty:      Copyright (c) Mitchell Hashimoto, Ghostty contributors
+SarvTerminal: Copyright (c) SarvTerminal contributors
+```
+
+If you find SarvTerminal useful, please ⭐ the repo, contribute, and consider supporting upstream
+Ghostty as well.
