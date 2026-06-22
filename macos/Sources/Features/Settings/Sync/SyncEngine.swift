@@ -394,8 +394,7 @@ enum SyncEngine {
     }
 
     private static func assetsDir() -> URL? {
-        let dir = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent(".config/sarvterminal/assets", isDirectory: true)
+        let dir = AppPaths.configDir.appendingPathComponent("assets", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

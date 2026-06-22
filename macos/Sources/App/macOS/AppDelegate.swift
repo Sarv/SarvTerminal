@@ -176,6 +176,9 @@ class AppDelegate: NSObject,
     // MARK: - NSApplicationDelegate
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Carry settings forward from the pre-rebrand com.mitchellh.ghostty*
+        // UserDefaults domains so the release app keeps the user's preferences.
+        AppPaths.migrateLegacyDefaultsIfNeeded()
         #if DEBUG
         if
             let suite = UserDefaults.ghosttySuite,

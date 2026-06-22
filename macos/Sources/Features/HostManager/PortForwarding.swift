@@ -102,9 +102,7 @@ final class PortForwardStore: ObservableObject {
     private let queue = DispatchQueue(label: "PortForwardStore.io", qos: .utility)
 
     private init() {
-        let dir = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent(".config/sarvterminal", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = AppPaths.configDir
         fileURL = dir.appendingPathComponent("portforwards.json")
         load()
     }
