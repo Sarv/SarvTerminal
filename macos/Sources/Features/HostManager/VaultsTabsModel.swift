@@ -416,7 +416,8 @@ final class VaultsTabsModel: ObservableObject {
         command: String? = nil,
         name: String = "Terminal",
         host: SavedHost? = nil,
-        staged: Bool = false
+        staged: Bool = false,
+        workingDirectory: String? = nil
     ) -> TerminalTab? {
         guard let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return nil }
 
@@ -426,8 +427,18 @@ final class VaultsTabsModel: ObservableObject {
             return startSSHConnection(app: app, command: command, name: name, host: host)
         }
 
-        // Plain local terminal / non-staged command typed into a shell.
-        let surface = Ghostty.SurfaceView(app)
+        // Plain local terminal / non-staged command typed into a shell. When a
+        // working directory is given (e.g. Duplicate Tab) we spawn the shell IN
+        // it rather than typing `cd` afterwards — a typed `cd` races the shell's
+        // login startup (profile scripts, dotenv prompts) and gets lost.
+        let surface: Ghostty.SurfaceView = {
+            if let workingDirectory, !workingDirectory.isEmpty {
+                var cfg = Ghostty.SurfaceConfiguration()
+                cfg.workingDirectory = workingDirectory
+                return Ghostty.SurfaceView(app, baseConfig: cfg)
+            }
+            return Ghostty.SurfaceView(app)
+        }()
         let tab = TerminalTab(surface: surface, name: uniqueTabName(base: name))
         tab.launchCommand = command
         tab.connectHost = host
@@ -825,7 +836,19 @@ final class VaultsTabsModel: ObservableObject {
         // Split along the pane's longer axis so the new pane gets usable space.
         let direction: SplitTree<Ghostty.SurfaceView>.NewDirection =
             surface.bounds.width >= surface.bounds.height ? .right : .down
-        let newView = Ghostty.SurfaceView(app)
+        // Prefer the source pane's own SSH command (it travels with the surface,
+        // so a migrated SSH pane still duplicates correctly); fall back to the
+        // tab's launch command. A plain local shell instead duplicates at the
+        // source cwd, set on the surface so it spawns there.
+        let command = connections[surface.id]?.command ?? tab.launchCommand
+        let newView: Ghostty.SurfaceView = {
+            if command == nil, let cwd = surface.pwd, !cwd.isEmpty {
+                var cfg = Ghostty.SurfaceConfiguration()
+                cfg.workingDirectory = cwd
+                return Ghostty.SurfaceView(app, baseConfig: cfg)
+            }
+            return Ghostty.SurfaceView(app)
+        }()
         let sourceAwaiting = awaitingChoice.contains(surface.id)
         if !sourceAwaiting {
             // Show the source pane's name in the sidebar immediately (the new
@@ -844,13 +867,10 @@ final class VaultsTabsModel: ObservableObject {
             return
         }
         Ghostty.moveFocus(to: newView)
-        // Prefer the source pane's own SSH command (it travels with the surface,
-        // so a migrated SSH pane still duplicates correctly); fall back to the
-        // tab's launch command, then to cd-ing a local shell to the source cwd.
-        if let command = connections[surface.id]?.command ?? tab.launchCommand {
+        // An SSH/launch command travels with the surface; re-run it. A plain
+        // local shell already spawned in the source cwd (set above).
+        if let command {
             send(command, to: newView)
-        } else if let cwd = surface.pwd, !cwd.isEmpty {
-            send("cd \"\(cwd)\"", to: newView)
         }
     }
 
@@ -1160,14 +1180,10 @@ final class VaultsTabsModel: ObservableObject {
             newTerminal(command: command, name: tab.displayName, host: tab.connectHost, staged: staged)
             return
         }
-        // Local shell: reopen at the focused pane's cwd.
+        // Local shell: reopen in the focused pane's cwd (set at spawn, not via
+        // a typed `cd` that the shell's login startup can swallow).
         let cwd = (tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf())?.pwd
-        let newTab = newTerminal(command: nil, name: tab.displayName)
-        if let cwd, !cwd.isEmpty, let surface = newTab?.surfaceTree.root?.leftmostLeaf() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                surface.surfaceModel?.sendText("cd \"\(cwd)\"\n")
-            }
-        }
+        newTerminal(command: nil, name: tab.displayName, workingDirectory: cwd)
     }
 
     /// Rename a tab (right-click → Rename Tab…). Empty clears the override.
