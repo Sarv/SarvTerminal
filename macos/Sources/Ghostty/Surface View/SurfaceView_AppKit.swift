@@ -472,6 +472,15 @@ extension Ghostty {
             super.endSearch()
         }
 
+        /// Force this surface to render as unfocused (hollow cursor) even though
+        /// it isn't the AppKit first responder. A split pane defaults to
+        /// `focused == true`, so without this every inactive pane would show a
+        /// solid blinking cursor. No-op if already unfocused.
+        func renderUnfocused() {
+            guard focused else { return }
+            focusDidChange(false)
+        }
+
         override func focusDidChange(_ focused: Bool) {
             guard let surface = self.surface else { return }
             guard self.focused != focused else { return }

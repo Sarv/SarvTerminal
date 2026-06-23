@@ -130,9 +130,18 @@ private struct VaultsTerminalPane: View {
         .focused($focused)
         .onAppear {
             focused = true
+            // Restore focus to the pane that was active when we last left this
+            // tab (falling back to the first pane), so switching tabs doesn't
+            // jump focus back to split #1. Only trust the remembered pane if it
+            // still belongs to THIS tab's tree — a stale/cross-tab reference
+            // would send focus to a detached surface, leaving the pane visually
+            // selected but with no real cursor.
+            let remembered = tab.focusedSurface.flatMap {
+                tab.surfaceTree.contains($0) ? $0 : nil
+            }
             // During a staged SSH connect the popup owns focus (its password
             // field); don't pull it into a connecting terminal underneath.
-            if let surface = tab.surfaceTree.root?.leftmostLeaf(),
+            if let surface = remembered ?? tab.surfaceTree.root?.leftmostLeaf(),
                tabs.connections[surface.id]?.model.showsCard != true {
                 Ghostty.moveFocus(to: surface)
             }
@@ -141,6 +150,12 @@ private struct VaultsTerminalPane: View {
             guard let newValue else { return }
             lastFocusedSurface = .init(newValue)
             tab.focusedSurface = newValue
+            // Enforce single focus: inactive split panes default to
+            // `focused == true` and would otherwise show a solid blinking
+            // cursor, so tell every other pane to render the hollow one.
+            for leaf in tab.surfaceTree.root?.leaves() ?? [] where leaf !== newValue {
+                leaf.renderUnfocused()
+            }
         }
     }
 
