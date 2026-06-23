@@ -23,17 +23,24 @@ struct SSHConnectionView: View {
         if model.showsCard {
             ZStack {
                 backdrop
-                card
-                    .padding(24)
-                    .frame(maxWidth: 460)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(.ultraThinMaterial))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
-                    .shadow(color: .black.opacity(0.35), radius: 30, y: 10)
-                    .padding(16)
+                // Scroll when the pane is too short for the card (e.g. a 4-way
+                // split) so it's never clipped to a sliver; centred when it fits.
+                GeometryReader { geo in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        card
+                            .padding(24)
+                            .frame(maxWidth: 460)
+                            .background(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(.ultraThinMaterial))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.35), radius: 30, y: 10)
+                            .padding(16)
+                            .frame(maxWidth: .infinity, minHeight: geo.size.height)
+                    }
+                }
             }
             .onAppear { focusPasswordIfNeeded() }
             .onChange(of: model.stage) { _ in focusPasswordIfNeeded() }

@@ -337,40 +337,44 @@ struct SplitChooserView: View {
                         : nil
                 )
 
-            VStack(spacing: 14) {
-                VStack(spacing: 4) {
-                    Image(systemName: "rectangle.split.2x1")
-                        .font(.system(size: 26, weight: .light))
-                        .foregroundStyle(.secondary)
-                    Text("Open in this split")
-                        .font(.headline)
-                    Text("Pick a host, quick-connect, or use a local terminal")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                searchField
-
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(model.rows.enumerated()), id: \.element.id) { idx, item in
-                            row(item: item, index: idx)
+            // One outer scroll so the whole chooser is reachable even in a tiny
+            // split pane (centred when it fits, scrollable when it doesn't).
+            GeometryReader { geo in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 14) {
+                        VStack(spacing: 4) {
+                            Image(systemName: "rectangle.split.2x1")
+                                .font(.system(size: 26, weight: .light))
+                                .foregroundStyle(.secondary)
+                            Text("Open in this split")
+                                .font(.headline)
+                            Text("Pick a host, quick-connect, or use a local terminal")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
+
+                        searchField
+
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(model.rows.enumerated()), id: \.element.id) { idx, item in
+                                row(item: item, index: idx)
+                            }
+                        }
+
+                        Text("Tip: drag a tab here to open it in this split")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+
+                        Button("Dismiss") { onDismiss() }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 2)
                     }
+                    .padding(24)
+                    .frame(maxWidth: 460)
+                    .frame(maxWidth: .infinity, minHeight: geo.size.height)
                 }
-                .frame(maxHeight: 220)
-
-                Text("Tip: drag a tab here to open it in this split")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-
-                Button("Dismiss") { onDismiss() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 2)
             }
-            .padding(24)
-            .frame(maxWidth: 460)
         }
         .onAppear {
             model.loadHosts()
