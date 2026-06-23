@@ -8,7 +8,9 @@ cd "$(dirname "$0")/.."
 
 zig build "$@"
 
-DEV_APP="/tmp/SarvTerminal Dev.app"
+# No space in the filename so the path is shell-friendly (`open /tmp/...`).
+# The in-app display name stays "SarvTerminal Dev" (set in Info.plist).
+DEV_APP="/tmp/SarvTerminal_Dev.app"
 rm -rf "$DEV_APP"
 cp -R zig-out/SarvTerminal.app "$DEV_APP"
 # ad-hoc re-sign the copy so it launches cleanly
@@ -16,7 +18,7 @@ codesign --force --deep --sign - "$DEV_APP" >/dev/null 2>&1 || true
 
 # Restart ONLY the dev instance (match by its /tmp path; the release app in
 # /Applications is left running).
-pkill -f "SarvTerminal Dev.app/Contents/MacOS/ghostty" 2>/dev/null || true
+pkill -f "SarvTerminal_Dev.app/Contents/MacOS/ghostty" 2>/dev/null || true
 sleep 0.5
 open -n "$DEV_APP"
 echo "launched dev: $DEV_APP"
