@@ -134,12 +134,24 @@ enum SyncEngine {
         // files (e.g. an empty hosts list must overwrite a previously-synced one).
         let settingsPayload = buildSettingsPayload()
         let hostsPayload = buildHostsPayload()
+        let settingsData = try JSONEncoder.sync.encode(settingsPayload)
+        let hostsData = try JSONEncoder.sync.encode(hostsPayload)
+        let fingerprint = contentFingerprint(settingsData, hostsData)
+
+        // Skip a no-op push: the plaintext is byte-identical to our last sync
+        // and the remote still holds exactly that version, so there's nothing to
+        // upload. (Closing the Settings window flushes a push even when the user
+        // didn't change anything — this stops the version churn from that.)
+        if !force,
+           let rm = remoteManifest,
+           rm.version == settings.lastSyncedVersion,
+           fingerprint == settings.lastSyncedFingerprint {
+            return rm
+        }
 
         var files: [String: Data] = [:]
-        files[SyncManifest.settingsFile] = try SyncCrypto.encrypt(
-            JSONEncoder.sync.encode(settingsPayload), key: key)
-        files[SyncManifest.hostsFile] = try SyncCrypto.encrypt(
-            JSONEncoder.sync.encode(hostsPayload), key: key)
+        files[SyncManifest.settingsFile] = try SyncCrypto.encrypt(settingsData, key: key)
+        files[SyncManifest.hostsFile] = try SyncCrypto.encrypt(hostsData, key: key)
 
         let verifier = try SyncCrypto.encrypt(Data(SyncManifest.verifierToken.utf8), key: key)
         let nextVersion = max(remoteManifest?.version ?? 0, settings.lastSyncedVersion) + 1
@@ -162,10 +174,29 @@ enum SyncEngine {
         await MainActor.run {
             settings.recordSync(version: nextVersion, date: now,
                                 hostCount: hostsPayload.hosts.count,
-                                groupCount: hostsPayload.groups.count)
+                                groupCount: hostsPayload.groups.count,
+                                fingerprint: fingerprint)
             ActivityLog.shared.log(.sync, "Synced to \(settings.provider.label)", detail: "v\(nextVersion)", success: true)
         }
         return manifest
+    }
+
+    /// SHA-256 of the two plaintext payloads — a stable content fingerprint.
+    /// (Encrypted bytes differ every push due to the GCM nonce, so we hash the
+    /// plaintext to detect "nothing actually changed".)
+    static func contentFingerprint(_ settingsData: Data, _ hostsData: Data) -> String {
+        var hasher = SHA256()
+        hasher.update(data: settingsData)
+        hasher.update(data: hostsData)
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Fingerprint of the CURRENT local state — recorded after a pull so a
+    /// later settings-close doesn't re-push identical content.
+    static func currentFingerprint() -> String {
+        let s = (try? JSONEncoder.sync.encode(buildSettingsPayload())) ?? Data()
+        let h = (try? JSONEncoder.sync.encode(buildHostsPayload())) ?? Data()
+        return contentFingerprint(s, h)
     }
 
     /// Download, decrypt, and merge into local state.
@@ -229,7 +260,8 @@ enum SyncEngine {
             NotificationCenter.default.post(name: .sarvSyncDidPull, object: nil)
             settings.recordSync(version: manifest.version, date: manifest.lastSyncDate,
                                 hostCount: SavedHostsStore.shared.hosts.count,
-                                groupCount: HostGroupsStore.shared.groups.count)
+                                groupCount: HostGroupsStore.shared.groups.count,
+                                fingerprint: currentFingerprint())
             ActivityLog.shared.log(.sync, "Pulled from \(settings.provider.label)", detail: "v\(manifest.version)", success: true)
         }
     }

@@ -39,6 +39,7 @@ final class SyncSettings: ObservableObject {
         static let lastDate = "SarvSyncLastDate"
         static let lastHostCount = "SarvSyncLastHostCount"
         static let lastGroupCount = "SarvSyncLastGroupCount"
+        static let lastFingerprint = "SarvSyncLastFingerprint"
         static let historyEnabled = "SarvSyncHistoryEnabled"
         static let historyLimitEnabled = "SarvSyncHistoryLimitEnabled"
         static let historyKeepCount = "SarvSyncHistoryKeepCount"
@@ -70,6 +71,11 @@ final class SyncSettings: ObservableObject {
     @Published var lastSyncedHostCount: Int { didSet { UserDefaults.standard.set(lastSyncedHostCount, forKey: Keys.lastHostCount) } }
     @Published var lastSyncedGroupCount: Int { didSet { UserDefaults.standard.set(lastSyncedGroupCount, forKey: Keys.lastGroupCount) } }
 
+    /// Content fingerprint (SHA-256 of the plaintext payload) of the last
+    /// successful sync. Lets a push become a no-op when nothing actually
+    /// changed — e.g. closing the Settings window without editing anything.
+    @Published var lastSyncedFingerprint: String { didSet { UserDefaults.standard.set(lastSyncedFingerprint, forKey: Keys.lastFingerprint) } }
+
     /// Folder provider version history: when enabled we keep only the newest
     /// `historyKeepCount` snapshots and prune the oldest; when disabled we keep
     /// every version (unbounded).
@@ -94,6 +100,7 @@ final class SyncSettings: ObservableObject {
         lastSyncDate = d.object(forKey: Keys.lastDate) as? Date
         lastSyncedHostCount = d.integer(forKey: Keys.lastHostCount)
         lastSyncedGroupCount = d.integer(forKey: Keys.lastGroupCount)
+        lastSyncedFingerprint = d.string(forKey: Keys.lastFingerprint) ?? ""
         historyEnabled = d.object(forKey: Keys.historyEnabled) as? Bool ?? true       // keep history by default
         historyLimitEnabled = d.object(forKey: Keys.historyLimitEnabled) as? Bool ?? false
         historyKeepCount = d.integer(forKey: Keys.historyKeepCount)                   // 0 (unset) = Unlimited by default
@@ -152,11 +159,12 @@ final class SyncSettings: ObservableObject {
     }
 
     /// Record a successful push/pull, including the host/group high-water mark.
-    func recordSync(version: Int, date: Date, hostCount: Int, groupCount: Int) {
+    func recordSync(version: Int, date: Date, hostCount: Int, groupCount: Int, fingerprint: String) {
         lastSyncedVersion = version
         lastSyncDate = date
         lastSyncedHostCount = hostCount
         lastSyncedGroupCount = groupCount
+        lastSyncedFingerprint = fingerprint
         lastError = nil
         if let rv = remoteNewerVersion, rv <= version { remoteNewerVersion = nil }
     }
