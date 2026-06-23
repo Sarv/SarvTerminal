@@ -7188,6 +7188,11 @@ pub const Keybinds = struct {
             );
             try self.set.put(
                 alloc,
+                .{ .key = .{ .physical = .backspace }, .mods = .{ .alt = true } },
+                .{ .text = "\\x1b\\x7f" },
+            );
+            try self.set.put(
+                alloc,
                 .{ .key = .{ .physical = .arrow_left }, .mods = .{ .alt = true } },
                 .{ .esc = "b" },
             );
