@@ -26,9 +26,10 @@ struct VaultsTabStrip: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            // Section pills stay pinned on the left — always visible.
-            vaultsPill
-            sftpPill
+            // Section pills stay pinned on the left — always visible. Grouped in
+            // a subtle "island" so the navigation cluster (Vaults / SFTP) reads
+            // as distinct from the terminal tabs and isn't mistaken for one.
+            navSegment
             divider
             // Only the terminal tabs scroll horizontally when they overflow.
             ScrollViewReader { proxy in
@@ -110,6 +111,7 @@ struct VaultsTabStrip: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(isSelected ? Color.primary.opacity(0.12) : Color.secondary.opacity(0.08))
         )
+        .modifier(ActivePillHighlight(isActive: isSelected))
     }
 
     /// Personal (the active vault, with its live sync status) + Team (later).
@@ -222,19 +224,61 @@ struct VaultsTabStrip: View {
                           ? Color.primary.opacity(0.12)
                           : Color.secondary.opacity(0.08))
             )
+            .modifier(ActivePillHighlight(isActive: isSelected))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(help)
     }
 
+    /// Accent border + bottom underline marking the selected section — mirrors
+    /// the active terminal-tab chip so selection reads consistently.
+    private struct ActivePillHighlight: ViewModifier {
+        let isActive: Bool
+        func body(content: Content) -> some View {
+            content
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(isActive ? Color.accentColor.opacity(0.9) : .clear, lineWidth: 1.5)
+                )
+                .overlay(alignment: .bottom) {
+                    if isActive {
+                        Capsule()
+                            .fill(Color.accentColor)
+                            .frame(height: 2)
+                            .padding(.horizontal, 10)
+                            .padding(.bottom, 1)
+                    }
+                }
+        }
+    }
+
     // MARK: - Divider + new-tab button
+
+    /// Vaults + SFTP grouped into one bordered "island" so the navigation
+    /// cluster is visually separate from the terminal tabs to its right.
+    private var navSegment: some View {
+        HStack(spacing: 4) {
+            vaultsPill
+            sftpPill
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.secondary.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
+        )
+    }
 
     private var divider: some View {
         Rectangle()
             .fill(Color.secondary.opacity(0.35))
-            .frame(width: 1, height: 16)
-            .padding(.horizontal, 2)
+            .frame(width: 1, height: 22)
+            .padding(.horizontal, 4)
     }
 
     private var newTabButton: some View {
