@@ -14,7 +14,14 @@ import Security
 /// The item is `…WhenUnlockedThisDeviceOnly` — excluded from iCloud Keychain
 /// and never synced.
 enum SyncKeychain {
+    // Build-specific so the dev build can't read (or sync with) the release
+    // app's master password / GitHub token — the dev app starts with no sync
+    // credentials.
+    #if DEBUG
+    private static let service = "com.sarv.terminal.sync.debug"
+    #else
     private static let service = "com.sarv.terminal.sync"
+    #endif
     private static let account = "syncSecrets"
 
     private struct Secrets: Codable {
