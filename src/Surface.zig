@@ -3792,7 +3792,24 @@ pub fn mouseButtonCallback(
             // We split this conditional out on its own because this is the
             // only one that requires a renderer mutex grab which is VERY
             // expensive because it could block all our threads.
-            if (!self.hasSelection()) break :extend_selection;
+            if (!self.hasSelection()) {
+                // No existing selection: create a range from the PREVIOUS
+                // left-click to this shift-click (Termius-style "click then
+                // shift-click to select", instead of only extending a drag).
+                self.renderer_state.mutex.lock();
+                defer self.renderer_state.mutex.unlock();
+                const anchor = self.mouse.activeLeftClickPin(&self.io.terminal.screens) orelse
+                    break :extend_selection;
+                const create_pos = self.rt_surface.getCursorPos() catch break :extend_selection;
+                const create_vp = self.posToViewport(create_pos.x, create_pos.y);
+                const create_pin = self.io.terminal.screens.active.pages.pin(.{ .viewport = .{
+                    .x = create_vp.x,
+                    .y = create_vp.y,
+                } }) orelse break :extend_selection;
+                self.setSelectionAndCopy(.init(anchor.*, create_pin, false)) catch
+                    break :extend_selection;
+                return true;
+            }
 
             // If we are within the interval that the click would register
             // an increment then we do not extend the selection.
