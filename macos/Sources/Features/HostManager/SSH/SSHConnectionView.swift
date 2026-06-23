@@ -9,6 +9,7 @@ import AppKit
 struct SSHConnectionView: View {
     @ObservedObject var model: SSHConnectionModel
     @ObservedObject private var background = BackgroundDisplayStore.shared
+    @ObservedObject private var tabs = VaultsTabsModel.shared
     let controller: SSHConnectionController
     /// Abort and close the tab (Close button).
     let onCancel: () -> Void
@@ -331,6 +332,13 @@ struct SSHConnectionView: View {
                     Button("Edit host") { controller.editHost() }
                 }
                 Spacer()
+                // When several sessions dropped together (e.g. the network
+                // blipped), one click recovers them all.
+                if tabs.reconnectablePopupCount > 1 {
+                    Button("Reconnect all (\(tabs.reconnectablePopupCount))") {
+                        tabs.reconnectAllPopups()
+                    }
+                }
                 if model.autoReconnecting {
                     // Auto-retry loop is running: let the user stop it or skip
                     // the countdown and try right now.

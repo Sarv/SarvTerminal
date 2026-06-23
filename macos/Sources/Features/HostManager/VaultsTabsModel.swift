@@ -604,6 +604,36 @@ final class VaultsTabsModel: ObservableObject {
     /// Reconnect / "Start over" (popup button): reset the attempt count. After an
     /// auth failure on a password host, re-prompt for the password (don't retry
     /// the known-wrong one); otherwise relaunch the connection.
+    /// Number of connection popups currently in a reconnectable state
+    /// (failed or disconnected) — drives the "Reconnect all" button.
+    var reconnectablePopupCount: Int {
+        connections.values.reduce(into: 0) { count, conn in
+            switch conn.model.stage {
+            case .failed, .disconnected: count += 1
+            default: break
+            }
+        }
+    }
+
+    /// Reconnect every popup that's in a failed/disconnected state at once —
+    /// one click recovers all dropped sessions (e.g. after the network blips
+    /// while several split panes are connected). Auto-reconnecting popups skip
+    /// their countdown; the rest start over.
+    func reconnectAllPopups() {
+        for conn in Array(connections.values) {
+            switch conn.model.stage {
+            case .failed, .disconnected:
+                if conn.model.autoReconnecting {
+                    conn.controller.retryNow()
+                } else {
+                    reconnect(for: conn.model)
+                }
+            default:
+                break
+            }
+        }
+    }
+
     func reconnect(for model: SSHConnectionModel) {
         model.passwordAttempts = 0
         model.autoReconnecting = false
