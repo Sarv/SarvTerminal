@@ -7,8 +7,19 @@ struct GeneralSectionView: View {
         VStack(alignment: .leading, spacing: 20) {
             startupCard
             behaviorCard
+            terminalCard
             clipboardCard
             scrollbackCard
+        }
+    }
+
+    private var terminalCard: some View {
+        SettingsCard(title: "Terminal") {
+            row("Progress bar") {
+                Toggle("Show a running-command progress bar under the tab",
+                       isOn: $viewModel.general.showProgressBar)
+                    .toggleStyle(.checkbox)
+            }
         }
     }
 

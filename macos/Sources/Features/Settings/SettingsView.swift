@@ -463,6 +463,9 @@ final class SettingsViewModel: ObservableObject {
             editor.set("mouse-hide-while-typing",
                        cur.mouseHideWhileTyping ? "true" : "false")
         }
+        if cur.showProgressBar != was.showProgressBar {
+            editor.set("progress-style", cur.showProgressBar ? "true" : "false")
+        }
         if cur.focusFollowsMouse != was.focusFollowsMouse {
             editor.set("focus-follows-mouse",
                        cur.focusFollowsMouse ? "true" : "false")
@@ -759,6 +762,7 @@ struct GeneralForm: Equatable {
     var mouseScrollMultiplier: Double
     var clipboardPasteProtection: Bool
     var linkURL: Bool
+    var showProgressBar: Bool
 
     init(loadedFrom config: Ghostty.Config?) {
         // `command` is a Zig union we can't read via the C API, so read it from
@@ -777,6 +781,7 @@ struct GeneralForm: Equatable {
         self.mouseScrollMultiplier = config?.mouseScrollMultiplier ?? 1.0
         self.clipboardPasteProtection = config?.clipboardPasteProtection ?? true
         self.linkURL = config?.linkURL ?? true
+        self.showProgressBar = config?.progressStyle ?? true
     }
 }
 
