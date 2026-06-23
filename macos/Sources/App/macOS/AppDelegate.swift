@@ -359,6 +359,11 @@ class AppDelegate: NSObject,
                 NSApp.arrangeInFront(nil)
             }
         }
+
+        // Offer to reopen the previous session's tabs, once launch settles.
+        DispatchQueue.main.async {
+            VaultsTabsModel.shared.offerSessionRestoreIfNeeded()
+        }
     }
 
     func applicationDidHide(_ notification: Notification) {
@@ -440,6 +445,10 @@ class AppDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Capture the final set of open tabs so they can be reopened next launch
+        // (picks up renames the per-change autosave may have missed).
+        VaultsTabsModel.shared.persistSession()
+
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.

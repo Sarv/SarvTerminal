@@ -126,7 +126,12 @@ final class VaultsTabsModel: ObservableObject {
         case terminal(UUID)
     }
 
-    @Published private(set) var terminals: [TerminalTab] = []
+    @Published private(set) var terminals: [TerminalTab] = [] {
+        didSet { persistSession() }
+    }
+    /// Tabs from the previous run, loaded at init and offered for reopen once
+    /// the app finishes launching. Cleared after the popup is answered.
+    private var pendingRestore: [TabSessionEntry] = []
     /// Staged SSH connections, keyed by the current surface id of each. A pane
     /// shows the connection popup when its surface id has an entry here.
     @Published private(set) var connections: [UUID: ActiveConnection] = [:]
@@ -174,8 +179,65 @@ final class VaultsTabsModel: ObservableObject {
     private var networkSatisfied = true
 
     private init() {
+        // Capture the previous session BEFORE any tab mutation can overwrite
+        // session.json (the `terminals` didSet persists on every change).
+        pendingRestore = TabSessionStore.load()
         installObservers()
         installReachabilityAndWakeObservers()
+    }
+
+    // MARK: - Session restore
+
+    /// Snapshot the open tabs as restorable entries (one pane per tab).
+    private func sessionSnapshot() -> [TabSessionEntry] {
+        terminals.map { tab in
+            TabSessionEntry(
+                hostID: tab.connectHost?.id,
+                launchCommand: tab.launchCommand,
+                title: tab.title,
+                customName: tab.customName
+            )
+        }
+    }
+
+    /// Persist the current open tabs so they can be reopened next launch.
+    func persistSession() {
+        TabSessionStore.save(sessionSnapshot())
+    }
+
+    /// If the previous run left tabs open, ask whether to reopen them. Call
+    /// once after the app finishes launching.
+    func offerSessionRestoreIfNeeded() {
+        let entries = pendingRestore
+        pendingRestore = []
+        guard !entries.isEmpty else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Reopen your last session?"
+        let n = entries.count
+        alert.informativeText = "Reopen the \(n) tab\(n == 1 ? "" : "s") you had open when you last quit."
+        alert.addButton(withTitle: "Reopen All")
+        alert.addButton(withTitle: "Not Now")
+        if alert.runModal() == .alertFirstButtonReturn {
+            restoreSession(entries)
+        } else {
+            // Declined → the current (empty) state replaces the saved session.
+            persistSession()
+        }
+    }
+
+    private func restoreSession(_ entries: [TabSessionEntry]) {
+        for entry in entries {
+            let host = entry.hostID.flatMap { SavedHostsStore.shared.host(withID: $0) }
+            let isSSH = host != nil && (entry.launchCommand?.hasPrefix("ssh ") ?? false)
+            let tab = newTerminal(
+                command: entry.launchCommand,
+                name: entry.title,
+                host: host,
+                staged: isSSH
+            )
+            if let customName = entry.customName { tab?.customName = customName }
+        }
     }
 
     deinit {
