@@ -7,6 +7,7 @@ import SwiftUI
 /// bold/italic overrides, font variations, OpenType features chip editor.
 struct FontSectionView: View {
     @ObservedObject var viewModel: SettingsViewModel
+    @AppStorage("SarvAutoFontWeight") private var autoFontWeight = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -21,10 +22,21 @@ struct FontSectionView: View {
 
     private var advancedCard: some View {
         SettingsCard(title: "Advanced") {
+            row("Auto weight") {
+                Toggle("Adjust weight automatically for the screen (thicker on low-DPI, lighter on Retina)",
+                       isOn: $autoFontWeight)
+                    .toggleStyle(.checkbox)
+                    .onChange(of: autoFontWeight) { _ in
+                        NotificationCenter.default.post(name: .sarvAutoFontWeightChanged, object: nil)
+                    }
+            }
+            divider
             row("Thicken") {
                 Toggle("Synthetic bold — thicken glyphs (helps thin fonts)",
                        isOn: $viewModel.font.thicken)
                     .toggleStyle(.checkbox)
+                    .disabled(autoFontWeight)
+                    .help(autoFontWeight ? "Managed automatically while “Auto weight” is on." : "")
             }
             divider
             row("Cell width") {

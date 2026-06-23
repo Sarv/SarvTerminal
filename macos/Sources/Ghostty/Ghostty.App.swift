@@ -218,6 +218,25 @@ extension Ghostty {
             try? FileManager.default.removeItem(at: tmp)
         }
 
+        /// Push a font-weight (synthetic-bold "thicken") override to JUST this
+        /// surface, without editing the user's config file — built the same way
+        /// as `applyTheme` (defaults + a short-lived overlay). Backs the
+        /// per-display auto weight: thicken on low-DPI screens, off on Retina.
+        func applyFontThicken(_ thicken: Bool, to surface: ghostty_surface_t) {
+            guard let cfg = ghostty_config_new() else { return }
+            defer { ghostty_config_free(cfg) }
+            ghostty_config_load_default_files(cfg)
+
+            let override = "font-thicken = \(thicken ? "true" : "false")\n"
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("sarv-fontweight-\(UUID().uuidString).conf")
+            guard (try? override.write(to: tmp, atomically: true, encoding: .utf8)) != nil else { return }
+            ghostty_config_load_file(cfg, tmp.path)
+            ghostty_config_finalize(cfg)
+            ghostty_surface_update_config(surface, cfg)
+            try? FileManager.default.removeItem(at: tmp)
+        }
+
         /// A theme's resolved foreground and background colors (luminance 0…1 +
         /// background hex), so the caller can judge whether the theme's text will
         /// be readable over the background image. nil if unreadable.

@@ -928,6 +928,10 @@ extension Ghostty {
             // When our scale factor changes, so does our fb size so we send that too
             let scaledSize = self.convertToBacking(contentSize)
             setSurfaceSize(width: UInt32(scaledSize.width), height: UInt32(scaledSize.height))
+
+            // Let the app re-apply per-display font weight for this surface
+            // (thicken on low-DPI screens, plain on Retina).
+            NotificationCenter.default.post(name: .sarvSurfaceBackingChanged, object: self)
         }
 
         override func mouseDown(with event: NSEvent) {

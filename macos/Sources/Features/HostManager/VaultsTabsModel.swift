@@ -11,6 +11,14 @@ extension UTType {
     static let vaultsTabID = UTType(exportedAs: "com.sarvterminal.vaultsTabID")
 }
 
+extension Notification.Name {
+    /// Posted when the "auto-adjust font weight for low-DPI screens" setting changes.
+    static let sarvAutoFontWeightChanged = Notification.Name("com.sarv.terminal.autoFontWeightChanged")
+    /// Posted by a surface (object = the `SurfaceView`) when its backing scale
+    /// changes — i.e. on creation and when its window moves to another screen.
+    static let sarvSurfaceBackingChanged = Notification.Name("com.sarv.terminal.surfaceBackingChanged")
+}
+
 /// Transferable drag payload for a terminal tab (modern SwiftUI
 /// `.draggable`/`.dropDestination` API). Used to reorder tab chips and to
 /// inject a single-terminal tab into a split pane.
@@ -1158,7 +1166,54 @@ final class VaultsTabsModel: ObservableObject {
         // freshly-applied config by the time we read it.
         observe(.ghosttyConfigDidChange) { [weak self] note in
             guard note.object == nil else { return }
-            DispatchQueue.main.async { self?.applyConfigToExistingSurfaces() }
+            DispatchQueue.main.async {
+                self?.applyConfigToExistingSurfaces()
+                // A config reload pushes the base config, dropping our per-display
+                // weight override — re-apply it.
+                self?.applyFontWeightForDisplay()
+            }
+        }
+
+        // Per-display font weight: each surface posts when its backing scale
+        // changes (creation + moving to another screen), and the setting toggle
+        // re-applies to all.
+        observe(.sarvSurfaceBackingChanged) { [weak self] note in
+            guard let pane = note.object as? Ghostty.SurfaceView else { return }
+            self?.applyFontWeight(to: pane)
+        }
+        observe(.sarvAutoFontWeightChanged) { [weak self] _ in self?.applyFontWeightForDisplay() }
+    }
+
+    /// Whether to auto-adjust font weight to the display density. Default ON.
+    private var autoFontWeightEnabled: Bool {
+        UserDefaults.standard.object(forKey: "SarvAutoFontWeight") == nil
+            ? true : UserDefaults.standard.bool(forKey: "SarvAutoFontWeight")
+    }
+
+    /// Re-apply per-display font weight to every open terminal surface.
+    /// (Called on the main queue from notification observers.)
+    func applyFontWeightForDisplay() {
+        for tab in terminals {
+            for pane in tab.surfaceTree.root?.leaves() ?? [] { applyFontWeight(to: pane) }
+        }
+    }
+
+    /// Adjust one surface's font weight to the screen it's on: thicken on a low-DPI
+    /// (≤1×) screen so text stays crisp, plain on a Retina (2×) screen so it isn't
+    /// chunky. Surfaces with a per-host theme are skipped — their theme owns the
+    /// surface config and we must not clobber it. With auto-weight off, the user's
+    /// own configured weight is restored.
+    private func applyFontWeight(to pane: Ghostty.SurfaceView) {
+        guard let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty,
+              let surface = pane.surface else { return }
+        let host = connections[pane.id]?.model.host ?? tab(containing: pane)?.connectHost
+        if !((host?.themeName.trimmingCharacters(in: .whitespaces).isEmpty) ?? true) { return }
+        let scale = pane.window?.backingScaleFactor
+            ?? HostManagerController.shared.window?.backingScaleFactor ?? 2
+        if autoFontWeightEnabled {
+            ghostty.applyFontThicken(scale < 2, to: surface)
+        } else {
+            ghostty.reloadConfig(surface: surface, soft: true)   // restore user's weight
         }
     }
 
