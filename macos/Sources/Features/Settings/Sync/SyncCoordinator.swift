@@ -115,6 +115,7 @@ final class SyncCoordinator {
                 await MainActor.run {
                     SyncSettings.shared.lastError = error.localizedDescription
                     ActivityLog.shared.log(.error, "Sync failed", detail: error.localizedDescription, success: false)
+                    SarvNotifications.shared.notify(.syncFailed(reason: error.localizedDescription))
                 }
             }
         }
@@ -141,6 +142,10 @@ final class SyncCoordinator {
             guard let remote, remote > SyncSettings.shared.lastSyncedVersion else { return }
             let pw = try await masterPassword()
             try await SyncEngine.pull(masterPassword: pw)
+            await MainActor.run {
+                SarvNotifications.shared.notify(
+                    .syncFinished(summary: "Pulled newer settings from \(SyncSettings.shared.provider.label)."))
+            }
         } catch {
             // Launch/interval pulls are best-effort. Stay silent on transient
             // conflicts; surface only genuine errors.
@@ -148,6 +153,7 @@ final class SyncCoordinator {
                 await MainActor.run {
                     SyncSettings.shared.lastError = error.localizedDescription
                     ActivityLog.shared.log(.error, "Pull failed", detail: error.localizedDescription, success: false)
+                    SarvNotifications.shared.notify(.syncFailed(reason: error.localizedDescription))
                 }
             }
         }

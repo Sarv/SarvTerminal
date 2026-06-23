@@ -129,6 +129,9 @@ final class SSHConnectionController {
             model.stage = .needsHostKey(HostKeyInfo(
                 host: token, keyType: scan?.keyType ?? "",
                 fingerprint: scan?.fingerprint ?? "—", changed: true))
+            SarvNotifications.shared.notify(.hostKeyChanged(
+                host: host.displayLabel,
+                detail: "Server key is now \(scan?.fingerprint ?? token). Verify before trusting."))
         }
     }
 
@@ -238,6 +241,8 @@ final class SSHConnectionController {
             if sv.childExitedMessage != nil {
                 model.addLog("xmark.octagon.fill", .red, "Session closed")
                 ActivityLog.shared.log(.connection, "Disconnected from \(activityName)", detail: activityDetail, success: true)
+                let name = activityName
+                Task { @MainActor in SarvNotifications.shared.notify(.sshDisconnected(host: name)) }
                 model.stage = .disconnected
                 stop()
                 // A dropped session (server restart, network loss) recovers on

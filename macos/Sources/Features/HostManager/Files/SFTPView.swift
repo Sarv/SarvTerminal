@@ -232,6 +232,7 @@ struct SFTPView: View {
 
     private func performCopy(_ item: FileItem, from side: Side, resolution: ConflictResolution) async {
         let source = model(side), dest = model(otherSide(side))
+        let started = Date()
         // Server → server. We have both hosts' details, so never ask — try the
         // direct path when the destination is key-based, and otherwise (or if the
         // servers can't reach each other) relay through this Mac automatically.
@@ -239,18 +240,39 @@ struct SFTPView: View {
             // Always try a direct A→B transfer first (key → agent forwarding,
             // password → saved password via one-shot askpass on A). Only relay
             // through this Mac if the servers can't reach each other.
-            let ok = await runRemoteTransfer(item, from: side, resolution: resolution, direct: true)
+            var ok = await runRemoteTransfer(item, from: side, resolution: resolution, direct: true)
             if !ok, !Task.isCancelled {
-                _ = await runRemoteTransfer(item, from: side, resolution: resolution, direct: false)
+                ok = await runRemoteTransfer(item, from: side, resolution: resolution, direct: false)
             }
+            notifyTransferOutcome(item: item, succeeded: ok, reason: dest.error, started: started)
             return
         }
         // Local ⇄ remote (or local ⇄ local): the existing path, with progress.
+        var failure: String?
         await withProgress(item: item, destBackend: dest.backend, destDir: dest.path,
                            resolution: resolution, direct: false) {
             try await FileTransfer.copy(item: item, from: source.backend, to: dest.backend,
                                         destDir: dest.path, resolution: resolution)
-        } onFinish: { await dest.reload() } onError: { dest.error = $0 }
+        } onFinish: { await dest.reload() } onError: { dest.error = $0; failure = $0 }
+        notifyTransferOutcome(item: item, succeeded: failure == nil, reason: failure, started: started)
+    }
+
+    /// Post a finished/failed notification for one completed transfer. Quick
+    /// transfers (< 3s) only notify on failure, to avoid noise; a user-cancelled
+    /// transfer doesn't notify at all.
+    private func notifyTransferOutcome(item: FileItem, succeeded: Bool, reason: String?, started: Date) {
+        if Task.isCancelled { return }
+        let elapsed = Date().timeIntervalSince(started)
+        Task { @MainActor in
+            if succeeded {
+                if elapsed >= 3 {
+                    SarvNotifications.shared.notify(.sftpFinished(file: item.name, host: nil))
+                }
+            } else {
+                SarvNotifications.shared.notify(
+                    .sftpFailed(file: item.name, host: nil, reason: reason ?? "Transfer failed"))
+            }
+        }
     }
 
     /// Run a server→server transfer. Returns false on failure (so the caller can

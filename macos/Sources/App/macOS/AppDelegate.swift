@@ -304,9 +304,15 @@ class AppDelegate: NSObject,
                 actions: actions,
                 intentIdentifiers: [],
                 options: [.customDismissAction]
-            )
+            ),
+            // SarvTerminal app-level events (transfers, tunnels, sync, etc.).
+            SarvNotifications.shared.category,
         ])
         center.delegate = self
+        SarvNotifications.shared.requestAuthorizationIfNeeded()
+
+        // Git-based update check: once now, then hourly.
+        SarvUpdateChecker.shared.start()
 
         // Observe our appearance so we can report the correct value to libghostty.
         self.appearanceObserver = NSApplication.shared.observe(
@@ -1051,7 +1057,12 @@ class AppDelegate: NSObject,
         didReceive: UNNotificationResponse,
         withCompletionHandler: () -> Void
     ) {
-        ghostty.handleUserNotification(response: didReceive)
+        if SarvNotifications.isSarvNotification(didReceive.notification) {
+            let response = didReceive
+            Task { @MainActor in SarvNotifications.shared.handle(response: response) }
+        } else {
+            ghostty.handleUserNotification(response: didReceive)
+        }
         withCompletionHandler()
     }
 
@@ -1060,6 +1071,12 @@ class AppDelegate: NSObject,
         willPresent: UNNotification,
         withCompletionHandler: (UNNotificationPresentationOptions) -> Void
     ) {
+        // Our app-level notifications always present (even in the foreground);
+        // Ghostty's surface notifications follow its own focus logic.
+        if SarvNotifications.isSarvNotification(willPresent) {
+            withCompletionHandler([.banner, .sound])
+            return
+        }
         let shouldPresent = ghostty.shouldPresentNotification(notification: willPresent)
         let options: UNNotificationPresentationOptions = shouldPresent ? [.banner, .sound] : []
         withCompletionHandler(options)

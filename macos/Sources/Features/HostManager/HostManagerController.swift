@@ -19,16 +19,31 @@ struct VaultsGearView: View {
     }
 }
 
-/// Decorative notification bell shown alongside the gear. No real
-/// notification surface is wired up yet — present to match the Termius
-/// dashboard's top-right silhouette.
+/// Notification bell shown alongside the gear. Opens the in-app inbox of
+/// recent app-level notifications (transfers, tunnels, sync, etc.) and shows
+/// an unread badge.
 struct VaultsBellView: View {
+    @ObservedObject private var center = SarvNotificationCenter.shared
+    @State private var showInbox = false
+
     var body: some View {
-        Image(systemName: "bell")
-            .font(.system(size: 14, weight: .regular))
-            .foregroundColor(.white)
-            .frame(width: 28, height: 24)
-            .hoverTip("Notifications (coming soon)")
+        Button {
+            showInbox.toggle()
+        } label: {
+            Image(systemName: center.unreadCount > 0 ? "bell.badge" : "bell")
+                .font(.system(size: 14, weight: .regular))
+                .symbolRenderingMode(center.unreadCount > 0 ? .palette : .monochrome)
+                .foregroundStyle(.white, Color.accentColor)
+                .frame(width: 28, height: 24)
+        }
+        .buttonStyle(.plain)
+        .hoverTip("Notifications")
+        .popover(isPresented: $showInbox, arrowEdge: .bottom) {
+            NotificationsInboxView { showInbox = false }
+        }
+        .onChange(of: showInbox) { open in
+            if open { center.markAllRead() }
+        }
     }
 }
 

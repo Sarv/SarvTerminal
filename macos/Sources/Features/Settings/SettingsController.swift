@@ -67,6 +67,13 @@ class SettingsController: NSWindowController, NSWindowDelegate {
         fatalError("init(coder:) is not supported.")
     }
 
+    /// Open Settings and jump to a specific section (used by notification
+    /// "Show" actions, e.g. a sync failure routing to Settings ▸ Sync).
+    func show(section: SettingsSection) {
+        containerVC.viewModel.selectedSection = section
+        show()
+    }
+
     func show() {
         // Snapshot current values so per-section "Revert" undoes only the
         // changes made during this visit.

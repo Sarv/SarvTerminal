@@ -19,10 +19,13 @@ final class PortForwardManager: ObservableObject {
     private final class Tunnel {
         let process: Process
         let askpassFile: String?
+        /// Human-readable label for notifications (rule name + host).
+        let label: String
         var manualStop = false
-        init(process: Process, askpassFile: String?) {
+        init(process: Process, askpassFile: String?, label: String) {
             self.process = process
             self.askpassFile = askpassFile
+            self.label = label
         }
     }
 
@@ -63,7 +66,10 @@ final class PortForwardManager: ObservableObject {
             proc.environment = ProcessInfo.processInfo.environment.merging(env) { _, new in new }
         }
 
-        let tunnel = Tunnel(process: proc, askpassFile: askpassFile)
+        let label = forward.name.isEmpty
+            ? "\(forward.listenPort) → \(host.displayLabel):\(forward.destinationPort)"
+            : "\(forward.name) (\(host.displayLabel))"
+        let tunnel = Tunnel(process: proc, askpassFile: askpassFile, label: label)
         proc.terminationHandler = { [weak self] p in
             let errText = (try? errPipe.fileHandleForReading.readToEnd())
                 .flatMap { $0.flatMap { String(data: $0, encoding: .utf8) } } ?? ""
@@ -75,6 +81,7 @@ final class PortForwardManager: ObservableObject {
         } catch {
             errors[forward.id] = "Couldn't launch ssh: \(error.localizedDescription)"
             cleanup(askpassFile)
+            SarvNotifications.shared.notify(.tunnelFailed(label: label, reason: error.localizedDescription))
             return
         }
         tunnels[forward.id] = tunnel
@@ -106,6 +113,12 @@ final class PortForwardManager: ObservableObject {
         if tunnel?.manualStop != true, status != 0 {
             let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             errors[id] = msg.isEmpty ? "Tunnel exited unexpectedly (code \(status))." : msg
+            let label = tunnel?.label ?? "Tunnel"
+            if msg.isEmpty {
+                SarvNotifications.shared.notify(.tunnelDropped(label: label))
+            } else {
+                SarvNotifications.shared.notify(.tunnelFailed(label: label, reason: msg))
+            }
         }
     }
 
