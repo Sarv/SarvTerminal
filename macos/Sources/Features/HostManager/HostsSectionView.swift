@@ -533,6 +533,7 @@ struct HostsSectionView: View {
 
     private func groupCardView(_ group: HostGroup) -> some View {
         GroupCard(
+            onConnectAll:  { connectGroup(group) },
             group: group,
             parentPath: parentPath(for: group),
             hostCount: hostsStore.recursiveCount(in: group.id, groupsStore: groupsStore),
@@ -547,6 +548,7 @@ struct HostsSectionView: View {
 
     private func groupListRowView(_ group: HostGroup) -> some View {
         GroupListRow(
+            onConnectAll:  { connectGroup(group) },
             group: group,
             parentPath: parentPath(for: group),
             hostCount: hostsStore.recursiveCount(in: group.id, groupsStore: groupsStore),
@@ -863,6 +865,18 @@ struct HostsSectionView: View {
             staged: true)
     }
 
+    /// Connect to every host in a group (and its subgroups) at once — opens one
+    /// tab per host and runs each guided connect, matching the count shown on
+    /// the group row.
+    private func connectGroup(_ group: HostGroup) {
+        let ids = groupsStore.descendants(of: group.id).union([group.id])
+        let hosts = hostsStore.hosts.filter { host in
+            guard let gid = host.groupID else { return false }
+            return ids.contains(gid)
+        }
+        for host in hosts where host.canConnect { connect(host) }
+    }
+
     private func quickConnectGo() {
         let cmd = quickConnect.trimmingCharacters(in: .whitespaces)
         guard !cmd.isEmpty else { return }
@@ -902,6 +916,7 @@ struct HostsSectionView: View {
 // MARK: - Group card / row
 
 private struct GroupCard<MoveMenu: View>: View {
+    let onConnectAll: () -> Void
     let group: HostGroup
     let parentPath: String
     let hostCount: Int
@@ -955,6 +970,10 @@ private struct GroupCard<MoveMenu: View>: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .contextMenu {
+            if hostCount > 0 {
+                Button("Connect \(hostCount) host\(hostCount == 1 ? "" : "s")", action: onConnectAll)
+                Divider()
+            }
             Button("Open", action: onOpen)
             Button("Edit", action: onEdit)
             Button("Add host here", action: onAddHost)
@@ -973,6 +992,7 @@ private struct GroupCard<MoveMenu: View>: View {
 }
 
 private struct GroupListRow<MoveMenu: View>: View {
+    let onConnectAll: () -> Void
     let group: HostGroup
     let parentPath: String
     let hostCount: Int
@@ -1029,6 +1049,10 @@ private struct GroupListRow<MoveMenu: View>: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .contextMenu {
+            if hostCount > 0 {
+                Button("Connect \(hostCount) host\(hostCount == 1 ? "" : "s")", action: onConnectAll)
+                Divider()
+            }
             Button("Open", action: onOpen)
             Button("Edit", action: onEdit)
             Button("Add host here", action: onAddHost)
