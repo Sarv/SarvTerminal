@@ -31,12 +31,24 @@ struct NotificationsSettingsView: View {
             }
             divider
             row("Sound") {
-                Picker("", selection: .constant(0)) {
-                    Text("Default").tag(0)
+                HStack(spacing: 8) {
+                    Picker("", selection: .constant(0)) {
+                        Text("Default").tag(0)
+                    }
+                    .labelsHidden().pickerStyle(.menu)
+                    .fixedSize()
+                    .disabled(true)
+                    .help("More sounds coming soon.")
+                    Button {
+                        SarvNotifications.shared.previewSound()
+                    } label: {
+                        Image(systemName: "play.circle")
+                            .font(.system(size: 16))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .help("Preview this sound")
                 }
-                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 200)
-                .disabled(true)
-                .help("More sounds coming soon.")
             }
         }
     }

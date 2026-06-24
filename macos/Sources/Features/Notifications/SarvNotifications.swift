@@ -77,6 +77,13 @@ final class SarvNotifications {
 
     private init() {}
 
+    /// Play the alert sound immediately (the Settings preview button),
+    /// bypassing the debounce.
+    func previewSound() {
+        alertSound?.stop()
+        alertSound?.play()
+    }
+
     /// Play the alert sound, but at most once per `soundDebounce` seconds.
     private func playSoundDebounced() {
         let now = Date()
