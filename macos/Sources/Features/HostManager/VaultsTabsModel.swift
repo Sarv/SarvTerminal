@@ -207,7 +207,8 @@ final class VaultsTabsModel: ObservableObject {
                 hostID: tab.connectHost?.id,
                 launchCommand: tab.launchCommand,
                 title: tab.title,
-                customName: tab.customName
+                customName: tab.customName,
+                workingDirectory: (tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf())?.pwd
             )
         }
     }
@@ -246,7 +247,8 @@ final class VaultsTabsModel: ObservableObject {
                 command: entry.launchCommand,
                 name: entry.title,
                 host: host,
-                staged: isSSH
+                staged: isSSH,
+                workingDirectory: entry.workingDirectory
             )
             if let customName = entry.customName { tab?.customName = customName }
         }

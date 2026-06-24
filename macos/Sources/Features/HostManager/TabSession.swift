@@ -9,6 +9,8 @@ struct TabSessionEntry: Codable {
     var launchCommand: String?
     var title: String
     var customName: String?
+    /// Working directory of a local-shell tab, so it reopens where it was.
+    var workingDirectory: String?
 }
 
 /// Reads/writes the last-session tab list to `session.json` in the (build-
