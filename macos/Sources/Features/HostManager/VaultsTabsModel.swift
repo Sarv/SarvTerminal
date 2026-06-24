@@ -224,6 +224,9 @@ final class VaultsTabsModel: ObservableObject {
         let entries = pendingRestore
         pendingRestore = []
         guard !entries.isEmpty else { return }
+        // Respect the "reopen tabs on launch" preference (default on). We keep
+        // autosaving regardless, so re-enabling restores on a later launch.
+        guard UserDefaults.standard.object(forKey: "SarvRestoreSession") as? Bool ?? true else { return }
 
         let alert = NSAlert()
         alert.messageText = "Reopen your last session?"

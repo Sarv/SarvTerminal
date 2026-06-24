@@ -2,14 +2,26 @@ import SwiftUI
 
 struct GeneralSectionView: View {
     @ObservedObject var viewModel: SettingsViewModel
+    @AppStorage("SarvRestoreSession") private var restoreSession = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             startupCard
+            sessionCard
             behaviorCard
             terminalCard
             clipboardCard
             scrollbackCard
+        }
+    }
+
+    private var sessionCard: some View {
+        SettingsCard(title: "Session") {
+            row("Restore tabs") {
+                Toggle("Reopen last session's tabs when SarvTerminal launches",
+                       isOn: $restoreSession)
+                    .toggleStyle(.checkbox)
+            }
         }
     }
 
