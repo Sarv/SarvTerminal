@@ -40,6 +40,7 @@ struct VaultsTabStrip: View {
                                 tab: tab,
                                 number: index + 1,
                                 isActive: tabs.selection == .terminal(tab.id),
+                                needsAttention: tabs.attentionTabs.contains(tab.id),
                                 onRename: { renameText = tab.displayName; renamingTab = tab }
                             )
                             .id(tab.id)
@@ -311,6 +312,8 @@ private struct TerminalTabItem: View {
     let isActive: Bool
     /// Optional accent color set via the Tab Color menu.
     var color: Color?
+    /// The tab rang the bell while off-screen (e.g. a Claude Code prompt).
+    var needsAttention: Bool = false
     let onActivate: () -> Void
     let onClose: () -> Void
 
@@ -337,6 +340,12 @@ private struct TerminalTabItem: View {
                 }
                 .buttonStyle(.plain)
                 .help("Close tab")
+            } else if needsAttention {
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 8, height: 8)
+                    .frame(width: 14, height: 14)
+                    .help("Waiting for input")
             } else {
                 Image(systemName: "terminal")
                     .font(.system(size: 10, weight: .medium))
@@ -391,6 +400,7 @@ private struct TabChip: View {
     @ObservedObject var tab: VaultsTabsModel.TerminalTab
     let number: Int
     let isActive: Bool
+    var needsAttention: Bool = false
     let onRename: () -> Void
 
     @State private var showColorPicker = false
@@ -402,6 +412,7 @@ private struct TabChip: View {
             number: number,
             isActive: isActive,
             color: tab.color,
+            needsAttention: needsAttention,
             onActivate: { tabs.selectTerminal(tab.id) },
             onClose: { tabs.closeTerminal(tab.id) }
         )

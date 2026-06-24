@@ -30,11 +30,21 @@ struct VaultsBellView: View {
         Button {
             showInbox.toggle()
         } label: {
-            Image(systemName: center.unreadCount > 0 ? "bell.badge" : "bell")
+            Image(systemName: "bell")
                 .font(.system(size: 14, weight: .regular))
-                .symbolRenderingMode(center.unreadCount > 0 ? .palette : .monochrome)
-                .foregroundStyle(.white, Color.accentColor)
+                .foregroundColor(.white)
                 .frame(width: 28, height: 24)
+                .overlay(alignment: .topTrailing) {
+                    if center.unreadCount > 0 {
+                        Text(center.unreadCount > 99 ? "99+" : "\(center.unreadCount)")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .frame(minWidth: 15, minHeight: 15)
+                            .background(Capsule().fill(Color.red))
+                            .offset(x: 7, y: -5)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .hoverTip("Notifications")
@@ -42,6 +52,9 @@ struct VaultsBellView: View {
             NotificationsInboxView { showInbox = false }
         }
         .onChange(of: showInbox) { open in
+            // While open, mark everything read and suppress count/sound for new
+            // arrivals; closing re-arms the badge for future notifications.
+            center.isInboxOpen = open
             if open { center.markAllRead() }
         }
     }

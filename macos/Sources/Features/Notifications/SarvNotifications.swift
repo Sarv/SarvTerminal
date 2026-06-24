@@ -13,6 +13,7 @@ enum SarvNotificationRoute: String {
     case sync
     case knownHosts
     case update
+    case tab
 }
 
 /// App-level events worth a macOS notification. Each case carries the
@@ -29,6 +30,11 @@ enum SarvNotificationEvent {
     case sshDisconnected(host: String)
     case hostKeyChanged(host: String, detail: String)
     case updateAvailable(version: String, url: URL?)
+    /// A background tab is waiting for input (e.g. a Claude Code yes/no prompt).
+    case tabAttention(tab: String, tabID: UUID)
+    /// A tab emitted a desktop notification with a message (e.g. Claude Code's
+    /// "needs your permission to…" via an OSC 9/777 sequence).
+    case tabMessage(tab: String, message: String, tabID: UUID)
 }
 
 /// Central macOS-notification helper for SarvTerminal's app-level events
@@ -58,7 +64,28 @@ final class SarvNotifications {
     private let center = UNUserNotificationCenter.current()
     private var didRequestAuthorization = false
 
+    /// Custom alert sound, played by us (not via the notification) so we can
+    /// rate-limit it — a burst of events shouldn't be a burst of beeps.
+    private lazy var alertSound: NSSound? = {
+        guard let url = Bundle.main.url(forResource: "notification_sound", withExtension: "wav") else { return nil }
+        return NSSound(contentsOf: url, byReference: false)
+    }()
+    private var lastSoundAt: Date?
+    /// Minimum gap between sound plays; extra notifications still appear, just
+    /// without re-triggering the sound.
+    private let soundDebounce: TimeInterval = 5
+
     private init() {}
+
+    /// Play the alert sound, but at most once per `soundDebounce` seconds.
+    private func playSoundDebounced() {
+        let now = Date()
+        if let last = lastSoundAt, now.timeIntervalSince(last) < soundDebounce { return }
+        lastSoundAt = now
+        guard let sound = alertSound else { return }
+        sound.stop() // restart cleanly if it's mid-play
+        sound.play()
+    }
 
     // MARK: - Setup
 
@@ -96,21 +123,35 @@ final class SarvNotifications {
 
     /// Deliver a notification for an app-level event.
     func notify(_ event: SarvNotificationEvent) {
+        let copy = Self.copy(for: event)
+
+        // Respect the user's notification preferences (master switch + per
+        // category). A disabled category is dropped entirely — no banner, no
+        // sound, no inbox entry.
+        let prefs = SarvNotificationSettings.shared
+        guard prefs.isEnabled(Self.settingsCategory(for: copy.route)) else { return }
+
         requestAuthorizationIfNeeded()
 
         let content = UNMutableNotificationContent()
-        let copy = Self.copy(for: event)
         content.title = copy.title
         content.body = copy.body
-        content.sound = .default
+        // We play our own (debounced) sound below, so the notification itself
+        // stays silent to avoid a double chime.
+        content.sound = nil
+        // Stay silent if the inbox is already open — the user is watching it.
+        if prefs.soundEnabled && !SarvNotificationCenter.shared.isInboxOpen {
+            playSoundDebounced()
+        }
 
         // Mirror into the in-app inbox (the toolbar bell).
         SarvNotificationCenter.shared.add(title: copy.title, body: copy.body,
-                                          route: copy.route, url: copy.url)
+                                          route: copy.route, url: copy.url, tabID: copy.tabID)
 
         var userInfo: [String: Any] = [Self.kindKey: copy.route.rawValue,
                                         Self.routeKey: copy.route.rawValue]
         if let url = copy.url { userInfo["url"] = url.absoluteString }
+        if let tabID = copy.tabID { userInfo["tabID"] = tabID.uuidString }
         content.userInfo = userInfo
         content.categoryIdentifier = Self.categoryId
 
@@ -122,6 +163,19 @@ final class SarvNotifications {
             if let error {
                 Self.logger.warning("notification add failed error=\(error.localizedDescription, privacy: .public)")
             }
+        }
+    }
+
+    /// Which user-facing category a route belongs to (for the on/off prefs).
+    static func settingsCategory(for route: SarvNotificationRoute) -> SarvNotificationCategory {
+        switch route {
+        case .transfers:      return .transfers
+        case .portForwarding: return .tunnels
+        case .sync:           return .sync
+        case .hosts:          return .ssh
+        case .knownHosts:     return .security
+        case .update:         return .update
+        case .tab:            return .tabs
         }
     }
 
@@ -138,7 +192,10 @@ final class SarvNotifications {
         switch response.actionIdentifier {
         case UNNotificationDefaultActionIdentifier, Self.actionShow:
             NSApp.activate(ignoringOtherApps: true)
-            navigate(to: route, url: (userInfo["url"] as? String).flatMap(URL.init(string:)))
+            let tabID = (userInfo["tabID"] as? String).flatMap(UUID.init(uuidString:))
+            navigate(to: route,
+                     url: (userInfo["url"] as? String).flatMap(URL.init(string:)),
+                     tabID: tabID)
         default:
             break
         }
@@ -146,13 +203,13 @@ final class SarvNotifications {
 
     /// Open the UI for a route — used by inbox-row taps (the "Show" action
     /// goes through `handle(response:)`).
-    func open(route: SarvNotificationRoute, url: URL?) {
+    func open(route: SarvNotificationRoute, url: URL?, tabID: UUID? = nil) {
         NSApp.activate(ignoringOtherApps: true)
-        navigate(to: route, url: url)
+        navigate(to: route, url: url, tabID: tabID)
     }
 
     /// Bring the relevant UI forward for a notification route.
-    private func navigate(to route: SarvNotificationRoute, url: URL?) {
+    private func navigate(to route: SarvNotificationRoute, url: URL?, tabID: UUID? = nil) {
         switch route {
         case .hosts:
             HostManagerController.shared.show()
@@ -177,6 +234,9 @@ final class SarvNotifications {
             } else {
                 HostManagerController.shared.show()
             }
+        case .tab:
+            HostManagerController.shared.show()
+            if let tabID { VaultsTabsModel.shared.selectTerminal(tabID) }
         }
     }
 
@@ -187,6 +247,7 @@ final class SarvNotifications {
         let body: String
         let route: SarvNotificationRoute
         var url: URL? = nil
+        var tabID: UUID? = nil
         /// Suffix that lets same-kind notifications collapse vs. stack.
         var dedupe: String = "latest"
     }
@@ -252,6 +313,24 @@ final class SarvNotifications {
                 route: .update,
                 url: url,
                 dedupe: version
+            )
+        case let .tabAttention(tab, tabID):
+            return Copy(
+                title: tab,
+                body: "Waiting for your input — click to open this tab.",
+                route: .tab,
+                tabID: tabID,
+                dedupe: tabID.uuidString
+            )
+        case let .tabMessage(tab, message, tabID):
+            return Copy(
+                // Title = tab name so you know WHICH tab; body = the AI's own
+                // message (it only sends a short summary, not the full prompt).
+                title: tab,
+                body: message,
+                route: .tab,
+                tabID: tabID,
+                dedupe: tabID.uuidString
             )
         }
     }

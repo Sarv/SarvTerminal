@@ -28,10 +28,21 @@ struct NotificationsInboxView: View {
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 10) {
             Text("Notifications")
                 .font(.headline)
             Spacer()
+            #if DEBUG
+            // Dev-only: fire a sample notification to verify the banner + sound
+            // pipeline without juggling tabs or app focus.
+            Button("Send test") {
+                SarvNotifications.shared.notify(
+                    .tabAttention(tab: "Test notification", tabID: UUID()))
+            }
+            .buttonStyle(.plain)
+            .font(.callout)
+            .foregroundStyle(Color.accentColor)
+            #endif
             if !center.items.isEmpty {
                 Button("Clear") { center.clear() }
                     .buttonStyle(.plain)
@@ -57,35 +68,46 @@ struct NotificationsInboxView: View {
     }
 
     private func row(_ item: SarvNotificationItem) -> some View {
-        Button {
-            if let route = item.route {
-                SarvNotifications.shared.open(route: route, url: item.url)
+        HStack(alignment: .top, spacing: 10) {
+            Circle()
+                .fill(item.read ? Color.clear : Color.accentColor)
+                .frame(width: 7, height: 7)
+                .padding(.top, 5)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.primary)
+                Text(item.body)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                Text(item.date, format: .relative(presentation: .named))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
-            dismiss()
-        } label: {
-            HStack(alignment: .top, spacing: 10) {
-                Circle()
-                    .fill(item.read ? Color.clear : Color.accentColor)
-                    .frame(width: 7, height: 7)
-                    .padding(.top, 5)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.title)
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(.primary)
-                    Text(item.body)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                    Text(item.date, format: .relative(presentation: .named))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer(minLength: 0)
+            Spacer(minLength: 8)
+            // Explicit affordance so it's obvious the row is actionable.
+            Button(action: { open(item) }) {
+                Text("Open")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+                    .foregroundStyle(Color.accentColor)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .padding(.top, 1)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .onTapGesture { open(item) }
+    }
+
+    private func open(_ item: SarvNotificationItem) {
+        if let route = item.route {
+            SarvNotifications.shared.open(route: route, url: item.url, tabID: item.tabID)
+        }
+        dismiss()
     }
 }

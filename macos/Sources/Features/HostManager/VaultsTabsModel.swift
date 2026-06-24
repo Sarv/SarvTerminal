@@ -17,6 +17,9 @@ extension Notification.Name {
     /// Posted by a surface (object = the `SurfaceView`) when its backing scale
     /// changes — i.e. on creation and when its window moves to another screen.
     static let sarvSurfaceBackingChanged = Notification.Name("com.sarv.terminal.surfaceBackingChanged")
+    /// Posted (object = `SurfaceView`) when a surface emits an OSC desktop
+    /// notification; `userInfo["title"]`/`["body"]` carry the message text.
+    static let sarvSurfaceDesktopNotification = Notification.Name("com.sarv.terminal.surfaceDesktopNotification")
 }
 
 /// Transferable drag payload for a terminal tab (modern SwiftUI
@@ -132,11 +135,20 @@ final class VaultsTabsModel: ObservableObject {
     /// Tabs from the previous run, loaded at init and offered for reopen once
     /// the app finishes launching. Cleared after the popup is answered.
     private var pendingRestore: [TabSessionEntry] = []
+
+    /// Tabs that rang the bell (e.g. a Claude Code prompt) while not on screen,
+    /// so the tab chip can show an attention dot. Cleared when the tab is shown.
+    @Published private(set) var attentionTabs: Set<UUID> = []
     /// Staged SSH connections, keyed by the current surface id of each. A pane
     /// shows the connection popup when its surface id has an entry here.
     @Published private(set) var connections: [UUID: ActiveConnection] = [:]
     @Published var selection: Selection = .dashboard {
-        didSet { if case let .terminal(id) = selection { lastTerminalID = id } }
+        didSet {
+            if case let .terminal(id) = selection {
+                lastTerminalID = id
+                attentionTabs.remove(id)
+            }
+        }
     }
     /// The most recently focused terminal — the target for "run snippet" when a
     /// dashboard (e.g. Snippets) is showing instead of a terminal.
@@ -1244,6 +1256,43 @@ final class VaultsTabsModel: ObservableObject {
 
     // MARK: - libghostty notification handling
 
+    /// A surface rang the bell — Claude Code (and most TUIs) ring it when they
+    /// finish a turn or need a yes/no answer. If the ringing tab isn't the one
+    /// on screen, flag it and post a notification so the user can find which of
+    /// many tabs is waiting.
+    private func handleBell(_ note: Notification) {
+        guard let surface = note.object as? Ghostty.SurfaceView,
+              let tab = tab(containing: surface) else { return }
+        let isActiveTab = selection == .terminal(tab.id)
+        let name = tab.displayName
+        let id = tab.id
+        Task { @MainActor in
+            // Don't nag about the tab that's on screen — UNLESS the app is in the
+            // background (you're in another app and can't see it).
+            if isActiveTab && NSApp.isActive { return }
+            self.attentionTabs.insert(id)
+            SarvNotifications.shared.notify(.tabAttention(tab: name, tabID: id))
+        }
+    }
+
+    /// A surface emitted an OSC desktop notification with a message (e.g.
+    /// Claude Code's "needs your permission to…"). Surface the message, naming
+    /// the tab, and flag it — unless that tab is on screen with the app focused.
+    private func handleSurfaceNotification(_ note: Notification) {
+        guard let surface = note.object as? Ghostty.SurfaceView,
+              let tab = tab(containing: surface) else { return }
+        let body = (note.userInfo?["body"] as? String) ?? (note.userInfo?["title"] as? String) ?? ""
+        guard !body.isEmpty else { return }
+        let isActiveTab = selection == .terminal(tab.id)
+        let name = tab.displayName
+        let id = tab.id
+        Task { @MainActor in
+            if isActiveTab && NSApp.isActive { return }
+            self.attentionTabs.insert(id)
+            SarvNotifications.shared.notify(.tabMessage(tab: name, message: body, tabID: id))
+        }
+    }
+
     private func installObservers() {
         let nc = NotificationCenter.default
         func observe(_ name: Notification.Name, _ handler: @escaping (Notification) -> Void) {
@@ -1264,6 +1313,8 @@ final class VaultsTabsModel: ObservableObject {
         observe(.ghosttyMoveTab) { [weak self] in self?.handleMoveTab($0) }
         observe(Ghostty.Notification.didResizeSplit) { [weak self] in self?.handleResizeSplitNote($0) }
         observe(Ghostty.Notification.ghosttyToggleFullscreen) { [weak self] in self?.handleToggleFullscreen($0) }
+        observe(.ghosttyBellDidRing) { [weak self] in self?.handleBell($0) }  // tab needs attention
+        observe(.sarvSurfaceDesktopNotification) { [weak self] in self?.handleSurfaceNotification($0) }
         observe(.ghosttyCloseTab) { [weak self] in self?.handleCloseTabNote($0, kind: .this) }
         observe(.ghosttyCloseOtherTabs) { [weak self] in self?.handleCloseTabNote($0, kind: .other) }
         observe(.ghosttyCloseTabsOnTheRight) { [weak self] in self?.handleCloseTabNote($0, kind: .right) }

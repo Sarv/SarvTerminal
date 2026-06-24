@@ -10,21 +10,25 @@ struct SarvNotificationItem: Identifiable, Codable, Equatable {
     let body: String
     let routeRaw: String
     let urlString: String?
+    /// For `.tab` routes — the tab to open when this row is clicked.
+    let tabIDString: String?
     var read: Bool
 
     init(id: UUID = UUID(), date: Date, title: String, body: String,
-         route: SarvNotificationRoute, url: URL?, read: Bool = false) {
+         route: SarvNotificationRoute, url: URL?, tabID: UUID? = nil, read: Bool = false) {
         self.id = id
         self.date = date
         self.title = title
         self.body = body
         self.routeRaw = route.rawValue
         self.urlString = url?.absoluteString
+        self.tabIDString = tabID?.uuidString
         self.read = read
     }
 
     var route: SarvNotificationRoute? { SarvNotificationRoute(rawValue: routeRaw) }
     var url: URL? { urlString.flatMap(URL.init(string:)) }
+    var tabID: UUID? { tabIDString.flatMap(UUID.init(uuidString:)) }
 }
 
 /// In-memory + on-disk history of app-level notifications, surfaced by the
@@ -36,6 +40,11 @@ final class SarvNotificationCenter: ObservableObject {
 
     @Published private(set) var items: [SarvNotificationItem] = []
 
+    /// True while the inbox popover is open. New notifications that arrive then
+    /// are recorded as already-read (no count bump) and don't play a sound —
+    /// the user is already looking at the list.
+    @Published var isInboxOpen = false
+
     var unreadCount: Int { items.lazy.filter { !$0.read }.count }
 
     private let maxItems = 100
@@ -44,8 +53,9 @@ final class SarvNotificationCenter: ObservableObject {
     private init() { load() }
 
     /// Record a delivered notification (called by `SarvNotifications.notify`).
-    func add(title: String, body: String, route: SarvNotificationRoute, url: URL?, date: Date = Date()) {
-        let item = SarvNotificationItem(date: date, title: title, body: body, route: route, url: url)
+    func add(title: String, body: String, route: SarvNotificationRoute, url: URL?, tabID: UUID? = nil, date: Date = Date()) {
+        let item = SarvNotificationItem(date: date, title: title, body: body, route: route,
+                                        url: url, tabID: tabID, read: isInboxOpen)
         items.insert(item, at: 0)
         if items.count > maxItems { items.removeLast(items.count - maxItems) }
         save()

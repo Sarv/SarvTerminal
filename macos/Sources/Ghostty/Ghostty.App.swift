@@ -1523,7 +1523,14 @@ extension Ghostty {
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
                 guard let title = String(cString: n.title!, encoding: .utf8) else { return }
                 guard let body = String(cString: n.body!, encoding: .utf8) else { return }
-                showDesktopNotification(surfaceView, title: title, body: body)
+                // Route through SarvTerminal's notification system (message +
+                // which tab + custom sound + inbox + click-to-jump) instead of
+                // Ghostty's plain surface-bound banner.
+                NotificationCenter.default.post(
+                    name: .sarvSurfaceDesktopNotification,
+                    object: surfaceView,
+                    userInfo: ["title": title, "body": body]
+                )
 
             default:
                 assertionFailure()
