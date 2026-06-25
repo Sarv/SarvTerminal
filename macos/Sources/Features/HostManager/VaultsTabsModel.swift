@@ -424,6 +424,19 @@ final class VaultsTabsModel: ObservableObject {
 
     // MARK: - Tab mutations
 
+    /// UserDefaults key backing the "New tab directory" preference. Empty → home.
+    static let newTabDirectoryDefaultsKey = "SarvNewTabDirectory"
+
+    /// Resolved working directory for a new blank terminal tab (⌘L). Defaults to
+    /// the user's home directory; overridable via Settings ▸ General ▸ Startup ▸
+    /// "New tab directory". A leading `~` is expanded.
+    static var newTabWorkingDirectory: String {
+        let raw = (UserDefaults.standard.string(forKey: newTabDirectoryDefaultsKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return NSHomeDirectory() }
+        return (raw as NSString).expandingTildeInPath
+    }
+
     /// Create a new embedded terminal tab, select it, and bring the Vaults
     /// window forward. `name` is the base tab label ("Terminal" for a local
     /// shell, the host label for SSH) — deduped with "(1)", "(2)", … suffixes.

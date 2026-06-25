@@ -3,6 +3,7 @@ import SwiftUI
 struct GeneralSectionView: View {
     @ObservedObject var viewModel: SettingsViewModel
     @AppStorage("SarvRestoreSession") private var restoreSession = true
+    @AppStorage("SarvNewTabDirectory") private var newTabDirectory = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -59,6 +60,19 @@ struct GeneralSectionView: View {
                         .font(.system(.body, design: .monospaced))
                     if !viewModel.general.workingDirectory.isEmpty {
                         Button("Reset") { viewModel.general.workingDirectory = "" }
+                            .controlSize(.small)
+                    }
+                }
+            }
+            divider
+            row("New tab directory") {
+                HStack(spacing: 8) {
+                    TextField("home (default), or a path", text: $newTabDirectory)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 360)
+                        .font(.system(.body, design: .monospaced))
+                    if !newTabDirectory.isEmpty {
+                        Button("Reset") { newTabDirectory = "" }
                             .controlSize(.small)
                     }
                 }

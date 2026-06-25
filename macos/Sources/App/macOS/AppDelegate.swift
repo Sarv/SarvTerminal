@@ -631,7 +631,8 @@ class AppDelegate: NSObject,
             case .commandPalette:
                 HostSearchController.shared.show()
             case .newLocalTerminal:
-                VaultsTabsModel.shared.newTerminal()
+                VaultsTabsModel.shared.newTerminal(
+                    workingDirectory: VaultsTabsModel.newTabWorkingDirectory)
             case .splitRight, .splitDown:
                 // Only meaningful when a terminal tab is active. Otherwise let
                 // the key fall through.
@@ -1159,9 +1160,11 @@ class AppDelegate: NSObject,
         HostSearchController.shared.show()
     }
 
-    /// ⌘L → open a local terminal tab directly, skipping the palette.
+    /// ⌘L → open a local terminal tab directly at the configured "New tab
+    /// directory" (home by default), skipping the palette.
     @IBAction func newLocalTerminal(_ sender: Any?) {
-        VaultsTabsModel.shared.newTerminal()
+        VaultsTabsModel.shared.newTerminal(
+            workingDirectory: VaultsTabsModel.newTabWorkingDirectory)
     }
 
     @IBAction func closeAllWindows(_ sender: Any?) {
