@@ -50,13 +50,8 @@ struct SFTPSectionView: View {
     }
 
     private func row<C: View>(_ label: String, @ViewBuilder control: () -> C) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            Text(label).frame(width: 170, alignment: .leading)
-            control()
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16).padding(.vertical, 12)
+        settingsRow(label, alignment: .top, control: control)
     }
 
-    private var divider: some View { Divider().padding(.leading, 16) }
+    private var divider: some View { SettingsDivider() }
 }

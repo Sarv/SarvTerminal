@@ -35,7 +35,7 @@ struct ShellIntegrationSectionView: View {
                         Text(opt.label).tag(opt)
                     }
                 }
-                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 240)
+                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 240, alignment: .leading)
             }
         }
     }
@@ -62,31 +62,16 @@ struct ShellIntegrationSectionView: View {
     }
 
     private func featureRow(_ feature: ShellIntegrationFeature) -> some View {
-        HStack(alignment: .center, spacing: 16) {
+        settingsRow(feature.label, alignment: .top) {
             Toggle(isOn: Binding(
                 get: { isOn(feature) },
                 set: { newValue in setFeature(feature.tag, enabled: newValue) }
             )) {
-                EmptyView()
-            }
-            .toggleStyle(.switch)
-            .labelsHidden()
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(feature.label)
-                    .fontWeight(.medium)
                 Text(feature.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
-            Text(feature.tag)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.tertiary)
+            .toggleStyle(.checkbox)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 
     private func setFeature(_ tag: String, enabled: Bool) {
@@ -105,13 +90,8 @@ struct ShellIntegrationSectionView: View {
     }
 
     private func row<C: View>(_ label: String, @ViewBuilder control: () -> C) -> some View {
-        HStack(alignment: .center, spacing: 16) {
-            Text(label).frame(width: 130, alignment: .leading)
-            control()
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16).padding(.vertical, 12)
+        settingsRow(label, control: control)
     }
 
-    private var divider: some View { Divider().padding(.leading, 16) }
+    private var divider: some View { SettingsDivider() }
 }

@@ -79,13 +79,8 @@ struct NotificationsSettingsView: View {
         _ label: String,
         @ViewBuilder control: () -> Control
     ) -> some View {
-        HStack(alignment: .center, spacing: 16) {
-            Text(label).frame(width: 150, alignment: .leading)
-            control()
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16).padding(.vertical, 12)
+        settingsRow(label, control: control)
     }
 
-    private var divider: some View { Divider().padding(.leading, 16) }
+    private var divider: some View { SettingsDivider() }
 }

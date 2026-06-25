@@ -101,7 +101,7 @@ struct AppearanceSectionView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(maxWidth: 240)
+                .frame(maxWidth: 240, alignment: .leading)
             }
         }
     }
@@ -167,7 +167,7 @@ struct AppearanceSectionView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(maxWidth: 280)
+                    .frame(maxWidth: 280, alignment: .leading)
                 }
                 divider
                 row("Position") {
@@ -178,7 +178,7 @@ struct AppearanceSectionView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
-                    .frame(maxWidth: 200)
+                    .frame(maxWidth: 200, alignment: .leading)
                 }
                 divider
                 row("Tile") {
@@ -251,7 +251,7 @@ struct AppearanceSectionView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .frame(maxWidth: 280)
+                .frame(maxWidth: 280, alignment: .leading)
             }
             divider
             row("Theme") {
@@ -269,48 +269,10 @@ struct AppearanceSectionView: View {
         _ label: String,
         @ViewBuilder control: () -> Control
     ) -> some View {
-        HStack(alignment: .center, spacing: 16) {
-            Text(label)
-                .frame(width: 130, alignment: .leading)
-            control()
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        settingsRow(label, control: control)
     }
 
-    private var divider: some View {
-        Divider().padding(.leading, 16)
-    }
-}
-
-// MARK: - Settings card
-
-/// Visual grouping for a related set of settings. Title at top, rounded
-/// container, full-width.
-struct SettingsCard<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
-                .padding(.horizontal, 4)
-
-            VStack(alignment: .leading, spacing: 0) {
-                content()
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.5))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
-            )
-        }
-    }
+    private var divider: some View { SettingsDivider() }
 }
 
 // MARK: - BackgroundBlurOption availability

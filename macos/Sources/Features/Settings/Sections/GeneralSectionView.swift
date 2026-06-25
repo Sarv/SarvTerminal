@@ -84,7 +84,7 @@ struct GeneralSectionView: View {
                         Text(opt.label).tag(opt)
                     }
                 }
-                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 280)
+                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 280, alignment: .leading)
             }
             divider
             row("Quit after last window") {
@@ -136,7 +136,7 @@ struct GeneralSectionView: View {
                         Text(opt.label).tag(opt)
                     }
                 }
-                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 260)
+                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 260, alignment: .leading)
             }
             divider
             row("Clipboard read") {
@@ -145,7 +145,7 @@ struct GeneralSectionView: View {
                         Text(opt.label).tag(opt)
                     }
                 }
-                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 200)
+                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 200, alignment: .leading)
             }
             divider
             row("Clipboard write") {
@@ -154,7 +154,7 @@ struct GeneralSectionView: View {
                         Text(opt.label).tag(opt)
                     }
                 }
-                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 200)
+                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 200, alignment: .leading)
             }
             divider
             row("Paste protection") {
@@ -182,13 +182,8 @@ struct GeneralSectionView: View {
     }
 
     private func row<C: View>(_ label: String, @ViewBuilder control: () -> C) -> some View {
-        HStack(alignment: .center, spacing: 16) {
-            Text(label).frame(width: 170, alignment: .leading)
-            control()
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16).padding(.vertical, 12)
+        settingsRow(label, control: control)
     }
 
-    private var divider: some View { Divider().padding(.leading, 16) }
+    private var divider: some View { SettingsDivider() }
 }
