@@ -323,8 +323,12 @@ final class SarvNotifications {
             )
         case let .tabAttention(tab, tabID):
             return Copy(
+                // A bare terminal bell is ambiguous — a program rings it both
+                // when it finishes AND when it wants a response — so don't claim
+                // it "needs input". Neutral attention wording avoids the false
+                // "waiting for your input" when a task simply completed.
                 title: tab,
-                body: "Waiting for your input — click to open this tab.",
+                body: "This tab wants your attention — click to open.",
                 route: .tab,
                 tabID: tabID,
                 dedupe: tabID.uuidString
