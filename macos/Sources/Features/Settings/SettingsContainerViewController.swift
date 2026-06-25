@@ -34,6 +34,15 @@ final class SettingsContainerViewController: NSViewController {
         NSHostingView(rootView: FooterBarView(viewModel: viewModel))
     }()
 
+    /// In-content header (the borderless window has no titlebar to host these):
+    /// sidebar toggle + title + close.
+    private lazy var headerHosting: NSHostingView<SettingsHeaderBar> = {
+        NSHostingView(rootView: SettingsHeaderBar(
+            onToggleSidebar: { [weak self] in self?.toggleSidebar(nil) },
+            onClose: { SettingsController.shared.hide() }
+        ))
+    }()
+
     private lazy var splitVC: NSSplitViewController = {
         let vc = NSSplitViewController()
 
@@ -63,6 +72,14 @@ final class SettingsContainerViewController: NSViewController {
         // "View → Show / Hide Sidebar" route correctly.
         addChild(splitVC)
 
+        headerHosting.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(headerHosting)
+
+        let headerDivider = NSBox()
+        headerDivider.boxType = .separator
+        headerDivider.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(headerDivider)
+
         let splitView = splitVC.view
         splitView.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(splitView)
@@ -76,7 +93,16 @@ final class SettingsContainerViewController: NSViewController {
         root.addSubview(footerHosting)
 
         NSLayoutConstraint.activate([
-            splitView.topAnchor.constraint(equalTo: root.topAnchor),
+            headerHosting.topAnchor.constraint(equalTo: root.topAnchor),
+            headerHosting.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            headerHosting.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+
+            headerDivider.topAnchor.constraint(equalTo: headerHosting.bottomAnchor),
+            headerDivider.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            headerDivider.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            headerDivider.heightAnchor.constraint(equalToConstant: 1),
+
+            splitView.topAnchor.constraint(equalTo: headerDivider.bottomAnchor),
             splitView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             splitView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
 

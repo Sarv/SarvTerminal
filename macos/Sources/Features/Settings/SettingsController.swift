@@ -2,64 +2,52 @@ import Foundation
 import Cocoa
 import SwiftUI
 
+/// A borderless window that can still take keyboard focus. Borderless windows
+/// default to `canBecomeKey == false`, which would stop the hosted SwiftUI text
+/// fields from ever becoming first responder.
+final class SettingsOverlayWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 /// Hosts the Settings window. Singleton — `SettingsController.shared.show()` from anywhere.
 ///
-/// The window's content is an `NSSplitViewController` (via
-/// `SettingsContainerViewController`) wrapping SwiftUI sub-views. We use the
-/// AppKit primitive instead of SwiftUI's `NavigationSplitView` to get a
-/// fixed-position sidebar toggle and clean animation.
+/// The window is **borderless** and covers the presenting window's entire frame,
+/// so it reads as a full takeover with nothing (not even the tab strip, which
+/// lives at the top of the Vaults content) left exposed behind it. Because there
+/// is no titlebar, the sidebar toggle and close button live in an in-content
+/// header bar (see `SettingsHeaderBar`). The content is an `NSSplitViewController`
+/// (via `SettingsContainerViewController`).
 class SettingsController: NSWindowController, NSWindowDelegate {
     static let shared: SettingsController = SettingsController()
 
     private let containerVC = SettingsContainerViewController()
 
+    /// The window Settings was opened over. We return focus to exactly this
+    /// window on close — the current terminal tab / window, not always Vaults.
+    private weak var presenter: NSWindow?
+
     private init() {
-        // Chromeless, non-resizable window: it covers the main window like a
-        // full-screen takeover (no traffic lights / minimize / resize) and is
-        // dismissed only by the in-content "Done" (✕) button — not a popup.
-        let window = NSWindow(
+        // Borderless takeover: no titlebar, no traffic lights, covers the whole
+        // presenting window. Dismissed only via the in-content ✕ (or Esc).
+        let window = SettingsOverlayWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 720),
-            styleMask: [.titled, .fullSizeContentView],
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
-        window.title = "Settings"
-        window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.isMovable = false
+        window.isOpaque = true
+        window.backgroundColor = NSColor.windowBackgroundColor
         // Let AppKit maintain the key-view loop so Tab / Shift-Tab move focus
         // between the hosted SwiftUI text fields instead of doing nothing.
         window.autorecalculatesKeyViewLoop = true
-        window.standardWindowButton(.closeButton)?.isHidden = true
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
-        window.center()
         window.contentViewController = containerVC
 
         super.init(window: window)
 
         window.delegate = self
-
-        // Our own sidebar toggle pinned to the leading edge of the titlebar.
-        // Titlebar-accessory hosting views need an explicit frame — without one
-        // a SwiftUI NSHostingView can collapse to zero size and vanish.
-        let toggleAccessory = NSTitlebarAccessoryViewController()
-        toggleAccessory.layoutAttribute = .leading
-        let toggleView = NSHostingView(rootView: SidebarToggleButton { [weak containerVC] in
-            containerVC?.toggleSidebar(nil)
-        })
-        toggleView.frame = NSRect(x: 0, y: 0, width: 44, height: 28)
-        toggleAccessory.view = toggleView
-        window.addTitlebarAccessoryViewController(toggleAccessory)
-
-        // Trailing "Done" (✕) button — the only way to dismiss; returns to the
-        // previous screen.
-        let closeAccessory = NSTitlebarAccessoryViewController()
-        closeAccessory.layoutAttribute = .trailing
-        let doneView = NSHostingView(rootView: SettingsDoneButton { [weak self] in self?.hide() })
-        doneView.frame = NSRect(x: 0, y: 0, width: 44, height: 28)
-        closeAccessory.view = doneView
-        window.addTitlebarAccessoryViewController(closeAccessory)
     }
 
     @available(*, unavailable)
@@ -78,12 +66,21 @@ class SettingsController: NSWindowController, NSWindowDelegate {
         // Snapshot current values so per-section "Revert" undoes only the
         // changes made during this visit.
         containerVC.viewModel.captureBaselines()
-        // Cover the main window's frame so it reads as a full takeover, not a
-        // floating popup.
-        if let window, let main = HostManagerController.shared.window {
-            window.setFrame(main.frame, display: true)
+        guard let window else { return }
+        // Remember the window we're covering so we return to exactly it on close
+        // (the current terminal tab / window, not always Vaults).
+        let host = NSApp.keyWindow ?? HostManagerController.shared.window
+        presenter = host
+        // Show on whatever Space is currently active — including on top of a
+        // full-screen terminal — so Settings never yanks the user to another
+        // Space and closing it lands them right back where they were.
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        // Cover the presenting window's full frame so nothing (e.g. the tab
+        // strip) is left exposed behind or clickable.
+        if let host, host !== window {
+            window.setFrame(host.frame, display: true)
         }
-        window?.makeKeyAndOrderFront(nil)
+        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -92,7 +89,7 @@ class SettingsController: NSWindowController, NSWindowDelegate {
     }
 
     @IBAction func close(_ sender: Any) {
-        window?.performClose(sender)
+        hide()
     }
 
     @objc func cancel(_ sender: Any?) {
@@ -105,43 +102,50 @@ class SettingsController: NSWindowController, NSWindowDelegate {
     /// editing session as a single version instead of pushing per change.
     func windowWillClose(_ notification: Notification) {
         NotificationCenter.default.post(name: .sarvSettingsClosed, object: nil)
+
+        // Closing the takeover just reveals the window it was shown over.
+        presenter?.makeKeyAndOrderFront(nil)
+        presenter = nil
     }
 }
 
-/// Pinned sidebar toggle. Lives in a titlebar accessory; matches the
-/// SF Symbol style of other AppKit window accessories.
-private struct SidebarToggleButton: View {
-    let action: () -> Void
+/// In-content header for the borderless Settings window: sidebar toggle on the
+/// leading edge, centered title, and the close (✕) button trailing. Replaces the
+/// titlebar accessories a titled window would use.
+struct SettingsHeaderBar: View {
+    let onToggleSidebar: () -> Void
+    let onClose: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: "sidebar.left")
-                .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
-        .help("Toggle Sidebar")
-        .frame(width: 28, height: 28)
-        .padding(.leading, 8)
-    }
-}
+        ZStack {
+            Text("Settings")
+                .font(.headline)
 
-/// Trailing "Done" (✕) button that closes the Settings takeover.
-private struct SettingsDoneButton: View {
-    let action: () -> Void
+            HStack(spacing: 0) {
+                Button(action: onToggleSidebar) {
+                    Image(systemName: "sidebar.left")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("Toggle Sidebar")
 
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 24, height: 24)
-                .background(Circle().fill(Color.white.opacity(0.18)))
+                Spacer(minLength: 0)
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.white.opacity(0.18)))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+                .help("Close settings (Esc)")
+            }
         }
-        .buttonStyle(.plain)
-        .keyboardShortcut(.cancelAction)
-        .help("Close settings (Esc)")
-        .frame(height: 28)
-        .padding(.trailing, 10)
+        .padding(.horizontal, 12)
+        .frame(height: 44)
     }
 }
