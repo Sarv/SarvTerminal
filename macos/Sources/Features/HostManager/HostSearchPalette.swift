@@ -42,8 +42,15 @@ final class HostSearchModel: ObservableObject {
     @Published var hosts: [DiscoveredHost] = []
     /// The user's saved Vaults hosts (managed in the Hosts dashboard).
     @Published var savedHosts: [SavedHost] = []
-    @Published var search: String = ""
+    @Published var search: String = "" { didSet { highlightIndex = 0 } }
     @Published var highlightIndex: Int = 0
+    /// Bumped by the controller each time the palette is shown, to pull keyboard
+    /// focus into the search field. The panel is a reused singleton, so SwiftUI's
+    /// `onAppear` only fires on the FIRST show — without this, opening the palette
+    /// a second time leaves the field unfocused and typing does nothing.
+    @Published var focusToken: Int = 0
+
+    func requestSearchFocus() { focusToken &+= 1 }
 
     func loadHosts() {
         savedHosts = SavedHostsStore.shared.hosts
@@ -57,25 +64,15 @@ final class HostSearchModel: ObservableObject {
 
     /// Saved hosts matching the current query.
     private var filteredSavedHosts: [SavedHost] {
-        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return savedHosts }
-        return savedHosts.filter { host in
-            if host.displayLabel.lowercased().contains(q) { return true }
-            if host.hostname.lowercased().contains(q) { return true }
-            if host.username.lowercased().contains(q) { return true }
-            return false
+        SearchMatcher.filter(savedHosts, query: search) {
+            [$0.displayLabel, $0.hostname, $0.username]
         }
     }
 
     /// Discovered (~/.ssh/config) hosts matching the current query.
     private var filteredHosts: [DiscoveredHost] {
-        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return hosts }
-        return hosts.filter { host in
-            if host.label.lowercased().contains(q) { return true }
-            if let h = host.hostname?.lowercased(), h.contains(q) { return true }
-            if let u = host.user?.lowercased(), u.contains(q) { return true }
-            return false
+        SearchMatcher.filter(hosts, query: search) {
+            [$0.label, $0.hostname ?? "", $0.user ?? ""]
         }
     }
 
@@ -112,7 +109,7 @@ final class HostSearchModel: ObservableObject {
             title: "Serial",
             subtitle: nil,
             systemImage: "cable.connector",
-            trailingText: "soon",
+            trailingText: nil,
             section: .quickConnect
         ))
 
@@ -166,6 +163,11 @@ struct HostSearchPalette: View {
     @ObservedObject var model: HostSearchModel
     let onRun: (PaletteAction) -> Void
 
+    /// Row the mouse is over. Purely cosmetic — it gives a faint hover tint but
+    /// never drives the keyboard selection (`model.highlightIndex`) or the
+    /// scroll, so moving the mouse can't make the list jump under the cursor.
+    @State private var hoveredIndex: Int?
+
     var body: some View {
         VStack(spacing: 0) {
             searchField
@@ -188,51 +190,67 @@ struct HostSearchPalette: View {
 
     // MARK: - Search field
 
+    /// Display-only query, driven entirely by the controller's key monitor.
+    /// We deliberately do NOT use a live `TextField`: a focused AppKit field
+    /// editor inside this NSPanel suppresses SwiftUI updates to the results list
+    /// while you type (the list stayed stale and arrows didn't move). A plain
+    /// label + a caret sidesteps that — the monitor mutates `model.search` and
+    /// the whole view re-renders normally.
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.title3)
                 .foregroundStyle(.secondary)
-            TextField(
-                "",
-                text: $model.search,
-                prompt: Text("Search hosts or tabs").foregroundColor(.secondary)
-            )
-                .textFieldStyle(.plain)
-                .font(.title3)
-                // Explicit high-contrast color for typed text — the default
-                // inherited color rendered nearly invisible on the dark panel.
-                .foregroundStyle(.primary)
-                .tint(.accentColor)
-                .onChange(of: model.search) { _ in
-                    model.highlightIndex = 0
+            if model.search.isEmpty {
+                Text("Search hosts or tabs")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 1) {
+                    Text(model.search)
+                        .font(.title3)
+                        .foregroundStyle(.primary)
+                    // A thin caret so it still reads as a text field.
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(width: 2, height: 20)
+                        .opacity(0.9)
                 }
+            }
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 18)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Results
 
     @ViewBuilder
     private var resultsList: some View {
+        // Eager `VStack` (not `LazyVStack`) and a SINGLE identity per row
+        // (`.id(item.id)`, matching the ForEach) so the list re-diffs correctly
+        // when the query changes. The previous Lazy + dual `.id(idx)` identity
+        // cached stale rows — the field updated but the list stayed frozen.
         let rows = model.rows
         ScrollViewReader { scroll in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { idx, item in
                         if idx == 0 || rows[idx - 1].section != item.section {
                             sectionHeader(item.section.rawValue)
                         }
                         row(item: item, index: idx)
-                            .id(idx)
+                            .id(item.id)
                     }
                 }
                 .padding(.vertical, 6)
             }
             .onChange(of: model.highlightIndex) { newIndex in
+                let rows = model.rows
+                guard rows.indices.contains(newIndex) else { return }
                 withAnimation(.easeOut(duration: 0.1)) {
-                    scroll.scrollTo(newIndex, anchor: .center)
+                    scroll.scrollTo(rows[newIndex].id)
                 }
             }
         }
@@ -249,6 +267,7 @@ struct HostSearchPalette: View {
 
     private func row(item: PaletteRow, index: Int) -> some View {
         let isHighlighted = index == model.highlightIndex
+        let isHovered = index == hoveredIndex
         return Button {
             onRun(item.action)
         } label: {
@@ -277,14 +296,22 @@ struct HostSearchPalette: View {
             .padding(.vertical, 9)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isHighlighted ? Color.secondary.opacity(0.18) : Color.clear)
+                    .fill(isHighlighted
+                          ? Color.secondary.opacity(0.18)
+                          : (isHovered ? Color.secondary.opacity(0.10) : Color.clear))
             )
             .padding(.horizontal, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            if hovering { model.highlightIndex = index }
+            // Track hover for a faint tint only — never touch the keyboard
+            // selection or scroll position.
+            if hovering {
+                hoveredIndex = index
+            } else if hoveredIndex == index {
+                hoveredIndex = nil
+            }
         }
     }
 

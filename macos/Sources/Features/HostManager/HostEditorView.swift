@@ -359,7 +359,7 @@ struct HostEditorView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "play.fill")
-                        Text("Connect")
+                        Text("Save & Connect")
                     }
                     .padding(.horizontal, 14).padding(.vertical, 6)
                     .background(

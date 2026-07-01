@@ -90,7 +90,7 @@ struct HostsSectionView: View {
                     onSave:   { saveHostDraft() },
                     onCancel: { cancel() },
                     onDelete: isNew ? nil : { confirmDeleteHost(hostDraft!, fromEditor: true) },
-                    onConnect: isNew ? nil : { connectHostDraft() }
+                    onConnect: { connectHostDraft() }
                 )
             } else if groupDraft != nil {
                 GroupEditorView(
@@ -633,13 +633,7 @@ struct HostsSectionView: View {
     }
 
     private func hostMatches(_ host: SavedHost) -> Bool {
-        let q = filterText
-        guard !q.isEmpty else { return true }
-        if host.displayLabel.lowercased().contains(q) { return true }
-        if host.hostname.lowercased().contains(q)     { return true }
-        if host.username.lowercased().contains(q)     { return true }
-        if host.tags.contains(where: { $0.lowercased().contains(q) }) { return true }
-        return false
+        SearchMatcher.matches(filterText, in: [host.displayLabel, host.hostname, host.username] + host.tags)
     }
 
     private func groupShouldBeVisible(_ group: HostGroup) -> Bool {
@@ -848,7 +842,10 @@ struct HostsSectionView: View {
     }
 
     private func connectHostDraft() {
-        guard let d = hostDraft, d.canConnect else { return }
+        guard var d = hostDraft, d.canConnect else { return }
+        // Normalize exactly like Save so "Save & Connect" persists the same host.
+        if d.label.trimmingCharacters(in: .whitespaces).isEmpty { d.label = d.hostname }
+        if d.port <= 0 || d.port > 65_535 { d.port = 22 }
         hostsStore.upsert(d)
         cancel()
         connect(d)

@@ -136,23 +136,21 @@ final class SavedHostsStore: ObservableObject {
     // MARK: - IO
 
     private func load() {
-        // No file yet = legitimately empty (fresh install), NOT a failure.
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            loadFailed = false
-            return
-        }
-        guard let data = try? Data(contentsOf: fileURL) else {
-            loadFailed = true   // exists but unreadable — treat as unsafe
-            return
-        }
+        // Stored encrypted at rest (AES-256-GCM, Secure-Enclave-protected key).
+        // Legacy plaintext files migrate on first load — the original is backed
+        // up to hosts.pre-encryption.bak before the encrypted file is written.
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        if let decoded = try? decoder.decode([SavedHost].self, from: data) {
-            hosts = decoded
-            sortInPlace()
-            loadFailed = false
-        } else {
-            loadFailed = true   // exists but corrupt — don't let sync treat it as empty
+        switch EncryptedStore.read([SavedHost].self, from: fileURL, decoder: decoder) {
+        case .none:
+            loadFailed = false                 // fresh install
+        case .failed:
+            loadFailed = true                  // exists but unreadable/undecryptable — unsafe to sync
+        case .loaded(let decoded):
+            hosts = decoded; sortInPlace(); loadFailed = false
+        case .migrated(let decoded):
+            hosts = decoded; sortInPlace(); loadFailed = false
+            persist()                          // rewrite encrypted (backup already taken)
         }
     }
 
@@ -161,10 +159,10 @@ final class SavedHostsStore: ObservableObject {
         let url = fileURL
         queue.async {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
-            guard let data = try? encoder.encode(snapshot) else { return }
-            try? data.write(to: url, options: .atomic)
+            // If the key is unavailable, skip the write rather than clobber the
+            // existing file with plaintext/empty data.
+            try? EncryptedStore.write(snapshot, to: url, encoder: encoder)
         }
     }
 

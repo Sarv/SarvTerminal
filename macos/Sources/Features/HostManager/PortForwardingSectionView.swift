@@ -12,11 +12,7 @@ struct PortForwardingSectionView: View {
     @State private var isNew = false
 
     private var filtered: [PortForward] {
-        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return store.forwards }
-        return store.forwards.filter {
-            $0.displayName.lowercased().contains(q) || $0.route.lowercased().contains(q)
-        }
+        SearchMatcher.filter(store.forwards, query: search) { [$0.displayName, $0.route] }
     }
 
     var body: some View {
@@ -44,9 +40,13 @@ struct PortForwardingSectionView: View {
                 hosts: hosts.hosts,
                 onSave: { store.upsert($0); draft = nil },
                 onDelete: isNew ? nil : {
-                    manager.stop(forward.id)
-                    store.delete(forward)
-                    draft = nil
+                    if DeleteConfirmation.confirm(
+                        forward.displayName,
+                        detail: "This stops the tunnel (if running) and removes the saved port forward.") {
+                        manager.stop(forward.id)
+                        store.delete(forward)
+                        draft = nil
+                    }
                 },
                 onCancel: { draft = nil })
         }
@@ -73,7 +73,13 @@ struct PortForwardingSectionView: View {
                         error: manager.errors[forward.id],
                         onToggle: { manager.toggle(forward) },
                         onEdit: { edit(forward) },
-                        onDelete: { manager.stop(forward.id); store.delete(forward) })
+                        onDelete: {
+                            if DeleteConfirmation.confirm(
+                                forward.displayName,
+                                detail: "This stops the tunnel (if running) and removes the saved port forward.") {
+                                manager.stop(forward.id); store.delete(forward)
+                            }
+                        })
                     Divider().padding(.leading, 52)
                 }
             }

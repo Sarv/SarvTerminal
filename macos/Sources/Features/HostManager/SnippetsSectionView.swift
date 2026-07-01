@@ -13,11 +13,7 @@ struct SnippetsSectionView: View {
     @State private var showHistory = false
 
     private var filtered: [Snippet] {
-        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return store.snippets }
-        return store.snippets.filter {
-            $0.displayName.lowercased().contains(q) || $0.command.lowercased().contains(q)
-        }
+        SearchMatcher.filter(store.snippets, query: search) { [$0.displayName, $0.command] }
     }
 
     var body: some View {
@@ -57,7 +53,13 @@ struct SnippetsSectionView: View {
                 snippet: snippet,
                 isNew: isNew,
                 onSave: { store.upsert($0); draft = nil },
-                onDelete: isNew ? nil : { store.delete(snippet); draft = nil },
+                onDelete: isNew ? nil : {
+                    if DeleteConfirmation.confirm(
+                        snippet.displayName,
+                        detail: "This permanently removes the snippet.") {
+                        store.delete(snippet); draft = nil
+                    }
+                },
                 onCancel: { draft = nil })
         }
     }
@@ -82,7 +84,13 @@ struct SnippetsSectionView: View {
                         onSend: { id, execute in send(snippet, toTabID: id, execute: execute) },
                         onCopy: { copy(snippet) },
                         onEdit: { edit(snippet) },
-                        onDelete: { store.delete(snippet) })
+                        onDelete: {
+                            if DeleteConfirmation.confirm(
+                                snippet.displayName,
+                                detail: "This permanently removes the snippet.") {
+                                store.delete(snippet)
+                            }
+                        })
                     Divider().padding(.leading, 52)
                 }
             }

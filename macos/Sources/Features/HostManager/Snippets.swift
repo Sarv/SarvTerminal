@@ -105,16 +105,14 @@ final class SnippetsStore: ObservableObject {
     // MARK: - IO
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { loadFailed = false; return }
-        guard let data = try? Data(contentsOf: fileURL) else { loadFailed = true; return }
+        // Encrypted at rest; legacy plaintext migrated once (original backed up).
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        if let decoded = try? decoder.decode([Snippet].self, from: data) {
-            snippets = decoded
-            sortInPlace()
-            loadFailed = false
-        } else {
-            loadFailed = true
+        switch EncryptedStore.read([Snippet].self, from: fileURL, decoder: decoder) {
+        case .none:    loadFailed = false
+        case .failed:  loadFailed = true
+        case .loaded(let decoded):   snippets = decoded; sortInPlace(); loadFailed = false
+        case .migrated(let decoded): snippets = decoded; sortInPlace(); loadFailed = false; persist()
         }
     }
 
@@ -123,10 +121,8 @@ final class SnippetsStore: ObservableObject {
         let url = fileURL
         queue.async {
             let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
-            guard let data = try? encoder.encode(snapshot) else { return }
-            try? data.write(to: url, options: .atomic)
+            try? EncryptedStore.write(snapshot, to: url, encoder: encoder)
         }
     }
 

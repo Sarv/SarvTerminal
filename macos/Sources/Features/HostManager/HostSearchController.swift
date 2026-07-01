@@ -73,6 +73,10 @@ final class HostSearchController: NSWindowController, NSWindowDelegate {
         installOutsideClickMonitors()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        // Panel is key now — ask the SwiftUI field to take focus so typing lands
+        // there immediately (onAppear only fires on the first show of this reused
+        // panel, so the model token drives focus on every subsequent open).
+        model.requestSearchFocus()
     }
 
     func hide() {
@@ -116,16 +120,26 @@ final class HostSearchController: NSWindowController, NSWindowDelegate {
         removeKeyMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let panel = self.window, panel.isVisible else { return event }
-            // Intercept only events targeted at OUR panel — keystrokes meant
-            // for other windows still flow through.
-            guard event.window === panel else { return event }
+            // While the palette is up it OWNS keyboard input. We deliberately do
+            // NOT require `event.window === panel`: the panel isn't always the
+            // key window (SwiftUI focus in a reused NSPanel is unreliable), and
+            // that check was silently dropping every keystroke — so typing never
+            // reached the search field. The outside-click monitor dismisses the
+            // palette, so capturing keys whenever it's visible is safe.
 
+            // All model mutations are dispatched to the main queue (a fresh
+            // runloop tick) rather than mutated inline in this event-monitor
+            // callback: mutating the @Published state inside the key-event
+            // callback did NOT schedule SwiftUI's re-render (the list stayed
+            // stale and arrows didn't move, even though the model updated —
+            // proven by Enter acting on the typed query). The async hop lets
+            // SwiftUI observe the change and re-render normally.
             switch event.keyCode {
             case 125: // ↓
-                self.model.stepHighlight(+1)
+                DispatchQueue.main.async { self.model.stepHighlight(+1) }
                 return nil
             case 126: // ↑
-                self.model.stepHighlight(-1)
+                DispatchQueue.main.async { self.model.stepHighlight(-1) }
                 return nil
             case 36, 76: // Return / Keypad Enter
                 if let row = self.model.confirmSelection() {
@@ -135,7 +149,26 @@ final class HostSearchController: NSWindowController, NSWindowDelegate {
             case 53: // Esc
                 self.hide()
                 return nil
+            case 51: // Delete / Backspace
+                DispatchQueue.main.async {
+                    if !self.model.search.isEmpty { self.model.search.removeLast() }
+                }
+                return nil
             default:
+                if event.modifierFlags.contains(.command) {
+                    // ⌘V pastes into the query; other ⌘-shortcuts pass through.
+                    if event.charactersIgnoringModifiers == "v",
+                       let pasted = NSPasteboard.general.string(forType: .string) {
+                        DispatchQueue.main.async { self.model.search += pasted }
+                        return nil
+                    }
+                    return event
+                }
+                if let chars = event.characters, !chars.isEmpty,
+                   chars.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) {
+                    DispatchQueue.main.async { self.model.search += chars }
+                    return nil
+                }
                 return event
             }
         }
