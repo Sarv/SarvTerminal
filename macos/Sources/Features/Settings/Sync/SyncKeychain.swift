@@ -91,29 +91,54 @@ enum SyncKeychain {
         cache = secrets
     }
 
-    /// Load the combined item, migrating from the old two-item layout if needed.
-    /// Assumes the lock is held.
+    /// Load the secrets, hitting the Keychain at most once. Assumes the lock is
+    /// held.
+    ///
+    /// Release stores them in the Keychain. Debug stores them in a
+    /// Secure-Enclave-encrypted file under the dev data dir instead: the dev app
+    /// is ad-hoc re-signed on every rebuild, so its Keychain ACL never matches
+    /// and macOS would re-prompt for the login password on every launch. The
+    /// file is sealed with `LocalDataCrypto` (also file-backed in debug), so the
+    /// secrets stay Enclave-protected on disk. On first run we migrate any
+    /// existing Keychain secrets into the file — one final prompt, then silent.
     private static func loadLocked() -> Secrets {
-        if let combined = decodeItem(account: account) { return combined }
-
-        // Migrate: older builds stored two separate items. Fold them into the
-        // combined item and remove the old ones so there's a single ACL prompt.
-        let legacyMaster = rawString(account: "masterPassword")
-        let legacyPAT = rawString(account: "githubPAT")
-        if legacyMaster != nil || legacyPAT != nil {
-            let migrated = Secrets(master: legacyMaster, pat: legacyPAT)
-            try? persistLocked(migrated)
-            SecItemDelete(query(account: "masterPassword") as CFDictionary)
-            SecItemDelete(query(account: "githubPAT") as CFDictionary)
-            // Also clear any biometric/data-protection variant from old builds.
-            var dp = query(account: "masterPassword"); dp[kSecUseDataProtectionKeychain as String] = true
-            SecItemDelete(dp as CFDictionary)
+        #if DEBUG
+        if let fromFile = readEncryptedFile() { return fromFile }
+        if let migrated = keychainSecrets() {
+            try? writeEncryptedFile(migrated)
             return migrated
         }
         return Secrets()
+        #else
+        return keychainSecrets() ?? Secrets()
+        #endif
+    }
+
+    /// Read the secrets from the Keychain — the combined item, or the old
+    /// two-item layout folded together. Returns nil when nothing is stored.
+    /// Assumes the lock is held.
+    private static func keychainSecrets() -> Secrets? {
+        if let combined = decodeItem(account: account) { return combined }
+        let legacyMaster = rawString(account: "masterPassword")
+        let legacyPAT = rawString(account: "githubPAT")
+        guard legacyMaster != nil || legacyPAT != nil else { return nil }
+        let migrated = Secrets(master: legacyMaster, pat: legacyPAT)
+        #if !DEBUG
+        // Fold the old items into the combined item and remove the originals so
+        // there's a single ACL prompt thereafter.
+        try? persistLocked(migrated)
+        SecItemDelete(query(account: "masterPassword") as CFDictionary)
+        SecItemDelete(query(account: "githubPAT") as CFDictionary)
+        var dp = query(account: "masterPassword"); dp[kSecUseDataProtectionKeychain as String] = true
+        SecItemDelete(dp as CFDictionary)
+        #endif
+        return migrated
     }
 
     private static func persistLocked(_ secrets: Secrets) throws {
+        #if DEBUG
+        try writeEncryptedFile(secrets)
+        #else
         let data = (try? JSONEncoder().encode(secrets)) ?? Data()
         SecItemDelete(baseQuery as CFDictionary)
         var attrs: [String: Any] = baseQuery
@@ -126,7 +151,33 @@ enum SyncKeychain {
         attrs[kSecAttrDescription as String] = "Master password and Git token used to encrypt and sync your settings."
         let status = SecItemAdd(attrs as CFDictionary, nil)
         guard status == errSecSuccess else { throw KeychainError.storeFailed(status) }
+        #endif
     }
+
+    #if DEBUG
+    /// The dev build's Secure-Enclave-encrypted secrets file (perms 0600).
+    private static func secretsFileURL() throws -> URL {
+        let dir = AppPaths.configDir.appendingPathComponent("keystore", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        return dir.appendingPathComponent("sync-secrets")
+    }
+
+    private static func readEncryptedFile() -> Secrets? {
+        guard let url = try? secretsFileURL(),
+              let blob = try? Data(contentsOf: url),
+              let plain = try? LocalDataCrypto.open(blob) else { return nil }
+        return try? JSONDecoder().decode(Secrets.self, from: plain)
+    }
+
+    private static func writeEncryptedFile(_ secrets: Secrets) throws {
+        let url = try secretsFileURL()
+        let blob = try LocalDataCrypto.seal(try JSONEncoder().encode(secrets))
+        try blob.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+    #endif
 
     private static func decodeItem(account: String) -> Secrets? {
         var q = query(account: account)
@@ -157,5 +208,7 @@ enum SyncKeychain {
         ]
     }
 
+    #if !DEBUG
     private static var baseQuery: [String: Any] { query(account: account) }
+    #endif
 }
