@@ -308,6 +308,38 @@ final class SSHConnectionController {
         }
     }
 
+    /// The ssh process exited (libghostty posted a surface close). The tab model
+    /// suppresses the tab-close for SSH panes and calls this so the popup stays
+    /// and shows the right state — an error while connecting, or "Session ended"
+    /// (with auto-reconnect) if it had connected. State-guarded, so it's a no-op
+    /// once we're already in a terminal state (e.g. `tick()` beat us to it).
+    func handleProcessExited() {
+        guard let sv = surfaceView else { return }
+        switch model.stage {
+        case .connecting:
+            let text = sv.liveVisibleText()
+            if let f = failure(in: text.lowercased()) {
+                noteAuthenticating()
+                model.addLog("xmark.octagon.fill", .red, failureLine(text) ?? f.title)
+                fail(f)
+            } else {
+                noteAuthenticating()
+                model.addLog("xmark.octagon.fill", .red, "Connection closed")
+                fail(.unknown("The connection closed before a session was established."))
+            }
+        case .connected:
+            model.addLog("xmark.octagon.fill", .red, "Session closed")
+            ActivityLog.shared.log(.connection, "Disconnected from \(activityName)", detail: activityDetail, success: true)
+            let name = activityName
+            Task { @MainActor in SarvNotifications.shared.notify(.sshDisconnected(host: name)) }
+            model.stage = .disconnected
+            stop()
+            scheduleReconnect()
+        default:
+            break
+        }
+    }
+
     // MARK: Heuristics
 
     private func failure(in lower: String) -> SSHFailure? {

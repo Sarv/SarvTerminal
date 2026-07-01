@@ -178,7 +178,7 @@ struct SSHConnectionView: View {
             Text("Connecting…").font(.callout).foregroundStyle(.secondary)
         case .failed(let f):
             VStack(spacing: 6) {
-                Text("Connection failed").font(.subheadline.weight(.semibold)).foregroundStyle(.red)
+                Text(f.title).font(.subheadline.weight(.semibold)).foregroundStyle(.red)
                 Text(f.detail).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 if model.autoReconnecting { reconnectStatusLine }
             }
@@ -264,9 +264,41 @@ struct SSHConnectionView: View {
         }
     }
 
+    /// A prominent, plain-language failure card shown atop the logs (and as the
+    /// collapsed stage content) so the reason is clear at a glance.
+    @ViewBuilder
+    private var failureSummary: some View {
+        switch model.stage {
+        case .failed(let f):
+            summaryCard(title: f.title, detail: f.detail)
+        case .disconnected:
+            summaryCard(title: "Session ended", detail: "The SSH session has closed.")
+        default:
+            EmptyView()
+        }
+    }
+
+    private func summaryCard(title: String, detail: String) -> some View {
+        VStack(spacing: 3) {
+            Label(title, systemImage: "exclamationmark.triangle.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.red)
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8).padding(.horizontal, 12)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.red.opacity(0.12)))
+    }
+
     /// Logs replace the stage content when "Show logs" is on.
     private var logsPanel: some View {
         VStack(spacing: 10) {
+            // A clear, human-readable failure summary above the raw log lines, so
+            // the error is legible without parsing ssh's jargon.
+            failureSummary
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     if model.logEntries.isEmpty {
