@@ -19,6 +19,8 @@ struct VaultsTabStrip: View {
 
     @State private var renamingTab: VaultsTabsModel.TerminalTab?
     @State private var renameText: String = ""
+    @State private var savingTab: VaultsTabsModel.TerminalTab?
+    @State private var saveSessionText: String = ""
 
     private var dashboardActive: Bool {
         tabs.selection == .dashboard
@@ -41,7 +43,8 @@ struct VaultsTabStrip: View {
                                 number: index + 1,
                                 isActive: tabs.selection == .terminal(tab.id),
                                 needsAttention: tabs.attentionTabs.contains(tab.id),
-                                onRename: { renameText = tab.displayName; renamingTab = tab }
+                                onRename: { renameText = tab.displayName; renamingTab = tab },
+                                onSaveSession: { saveSessionText = tab.displayName; savingTab = tab }
                             )
                             .id(tab.id)
                         }
@@ -72,6 +75,22 @@ struct VaultsTabStrip: View {
                 renamingTab = nil
             }
             Button("Cancel", role: .cancel) { renamingTab = nil }
+        }
+        .alert(
+            "Save Session",
+            isPresented: Binding(get: { savingTab != nil }, set: { if !$0 { savingTab = nil } })
+        ) {
+            TextField("Session name", text: $saveSessionText)
+            Button("Save") {
+                if let tab = savingTab,
+                   let session = tabs.makeSavedSession(from: tab, name: saveSessionText) {
+                    SavedSessionsStore.shared.upsert(session)
+                }
+                savingTab = nil
+            }
+            Button("Cancel", role: .cancel) { savingTab = nil }
+        } message: {
+            Text("Save this tab's split layout so you can reopen it later — local panes reopen at their directory and SSH panes reconnect.")
         }
     }
 
@@ -119,12 +138,25 @@ struct VaultsTabStrip: View {
     @ViewBuilder
     private var vaultMenuContent: some View {
         Section("Personal") {
-            Label("Personal", systemImage: syncCloudIcon.0)
-            Text(vaultSyncSummary)
+            // ONE enabled item on a single line (native menus don't render a
+            // multi-line button label): the vault name + its live sync status
+            // (provider, version, time). Enabled so it reads as active. Opens
+            // the Vaults dashboard.
+            Button { tabs.selectDashboard(section: .vaults) } label: {
+                Label("Personal — \(vaultSyncSummary)", systemImage: syncCloudIcon.0)
+            }
         }
         Section {
             Button {} label: { Label("Team — coming soon", systemImage: "person.2") }
                 .disabled(true)
+        }
+    }
+
+    /// Human name of the configured sync backend.
+    private var syncProviderName: String {
+        switch syncSettings.provider {
+        case .github: return "GitHub"
+        case .folder: return "Folder"
         }
     }
 
@@ -133,15 +165,16 @@ struct VaultsTabStrip: View {
         let s = syncSettings
         if !s.enabled { return "Sync is off" }
         if !s.isConfigured { return "Sync not set up" }
+        let via = syncProviderName
         switch s.status {
-        case .syncing: return "Syncing…"
-        case .error(let reason): return "Error: \(reason)"
-        case .remoteNewer: return "Update available · pull to refresh"
+        case .syncing: return "Syncing via \(via)…"
+        case .error(let reason): return "\(via) · error: \(reason)"
+        case .remoteNewer: return "\(via) · update available"
         default:
             if let date = s.lastSyncDate {
-                return "Synced · v\(s.lastSyncedVersion) · \(date.formatted(date: .abbreviated, time: .shortened))"
+                return "Synced · \(via) · v\(s.lastSyncedVersion) · \(date.formatted(date: .abbreviated, time: .shortened))"
             }
-            return "Enabled · not synced yet"
+            return "Enabled · \(via) · not synced yet"
         }
     }
 
@@ -303,8 +336,10 @@ struct VaultsTabStrip: View {
 
 // MARK: - Terminal tab item
 
-/// One embedded terminal tab. Hover reveals an "×" close button; click body
-/// activates the terminal. Drag is attached by the strip (reorder / inject).
+/// Purely-visual tab chip. Interaction (tap/drag/hover/cursor/menu) lives in the
+/// AppKit `TabChipInteraction` layer the wrapper places on top; this view is
+/// non-interactive. Hover reveals a close button, drawn by the wrapper over the
+/// leading icon slot (which is left blank here while hovering).
 private struct TerminalTabItem: View {
     let title: String
     /// 1-based position; shown as a ⌘-shortcut badge for the first 9 tabs.
@@ -314,44 +349,30 @@ private struct TerminalTabItem: View {
     var color: Color?
     /// The tab rang the bell while off-screen (e.g. a Claude Code prompt).
     var needsAttention: Bool = false
-    let onActivate: () -> Void
-    let onClose: () -> Void
-
-    @State private var hovering = false
+    /// Mouse is over the chip — blank the leading slot for the close overlay.
+    let hovering: Bool
 
     private var fillColor: Color {
         if let color { return color.opacity(isActive ? 0.28 : 0.16) }
         return isActive ? Color.primary.opacity(0.12) : Color.secondary.opacity(0.08)
     }
 
-    // NOTE: this is intentionally NOT a `Button`. A `Button` swallows the
-    // press gesture and `.draggable`/`.onDrag` (attached by the strip) never
-    // starts. A plain view with `.onTapGesture` lets tap = select and
-    // press-drag = drag coexist.
     var body: some View {
         HStack(spacing: 6) {
-            if hovering {
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .frame(width: 14, height: 14)
-                        .background(Circle().fill(Color.secondary.opacity(0.20)))
-                        .foregroundStyle(.primary)
+            // Leading slot: attention dot / terminal icon, or blank while
+            // hovering (the wrapper overlays the close button here).
+            Group {
+                if hovering {
+                    Color.clear
+                } else if needsAttention {
+                    Circle().fill(Color.orange).frame(width: 8, height: 8)
+                } else {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(color ?? (isActive ? Color.primary : .secondary.opacity(0.7)))
                 }
-                .buttonStyle(.plain)
-                .help("Close tab")
-            } else if needsAttention {
-                Circle()
-                    .fill(Color.orange)
-                    .frame(width: 8, height: 8)
-                    .frame(width: 14, height: 14)
-                    .help("Waiting for input")
-            } else {
-                Image(systemName: "terminal")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(color ?? (isActive ? Color.primary : .secondary.opacity(0.7)))
-                    .frame(width: 14, height: 14)
             }
+            .frame(width: 14, height: 14)
             Text(title)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -384,10 +405,36 @@ private struct TerminalTabItem: View {
                     .padding(.bottom, 1)
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture { onActivate() }
-        .onHover { hovering = $0 }
-        .help(title)
+    }
+}
+
+/// Reorders tab chips on drop, mirroring the split-pane `SplitDropDelegate`.
+/// Using a `DropDelegate` (rather than the closure-style `.onDrop`) is what
+/// makes the custom `vaultsTabID` type match reliably and drives the green
+/// insertion indicator via `dropEntered`/`dropExited`.
+private struct TabReorderDropDelegate: DropDelegate {
+    let targetID: UUID
+    @Binding var dropTargeted: Bool
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.vaultsTabID])
+    }
+
+    func dropEntered(info: DropInfo) { dropTargeted = true }
+    func dropExited(info: DropInfo) { dropTargeted = false }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dropTargeted = false
+        guard let provider = info.itemProviders(for: [.vaultsTabID]).first else { return false }
+        provider.loadVaultsTabID { dragged in
+            guard let dragged else { return }
+            DispatchQueue.main.async { VaultsTabsModel.shared.moveTab(dragged, before: targetID) }
+        }
+        return true
     }
 }
 
@@ -402,9 +449,32 @@ private struct TabChip: View {
     let isActive: Bool
     var needsAttention: Bool = false
     let onRename: () -> Void
+    let onSaveSession: () -> Void
 
     @State private var showColorPicker = false
+    /// True while a dragged tab is hovering this chip as a drop target — drives
+    /// the green insertion indicator so it's clear where the tab will land.
+    @State private var dropTargeted = false
+    /// Mouse over the chip (from the AppKit interaction layer) — reveals close.
+    @State private var hovering = false
     private var tabs: VaultsTabsModel { .shared }
+
+    /// Leading region (points) that closes on click: left padding (10) + the
+    /// 14pt icon slot the close button occupies. Matches `TabChipInteraction`.
+    private let closeHitWidth: CGFloat = 26
+
+    private var menuItems: [TabChipMenuItem] {
+        [
+            .init(title: "Close Tab", action: { tabs.closeTerminal(tab.id) }),
+            .init(title: "Close Other Tabs", action: { tabs.closeOtherTabs(keep: tab.id) }),
+            .init(title: "Close Tabs to the Right", action: { tabs.closeTabsToRight(of: tab.id) }),
+            .init(title: "Show All Tabs", action: { tabs.showAllTabs = true }),
+            .init(title: "Duplicate Tab", action: { tabs.duplicateTab(tab.id) }),
+            .init(title: "Save Session…", action: onSaveSession),
+            .init(title: "Rename Tab…", action: onRename, separatorBefore: true),
+            .init(title: "Tab Color…", action: { showColorPicker = true }),
+        ]
+    }
 
     var body: some View {
         TerminalTabItem(
@@ -413,28 +483,51 @@ private struct TabChip: View {
             isActive: isActive,
             color: tab.color,
             needsAttention: needsAttention,
-            onActivate: { tabs.selectTerminal(tab.id) },
-            onClose: { tabs.closeTerminal(tab.id) }
+            hovering: hovering
         )
-        .onDrag { NSItemProvider(object: tab.id.uuidString as NSString) }
-        .onDrop(of: [.text], isTargeted: nil) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: NSString.self) { obj, _ in
-                guard let s = obj as? String, let dragged = UUID(uuidString: s) else { return }
-                DispatchQueue.main.async { VaultsTabsModel.shared.moveTab(dragged, before: tab.id) }
+        // Close button, drawn over the leading icon slot on hover. Visual only —
+        // the AppKit layer below handles the click (by location).
+        .overlay(alignment: .leading) {
+            if hovering {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 14, height: 14)
+                    .background(Circle().fill(Color.secondary.opacity(0.20)))
+                    .foregroundStyle(.primary)
+                    .padding(.leading, 10)
+                    .allowsHitTesting(false)
             }
-            return true
         }
-        .contextMenu {
-            Button { tabs.closeTerminal(tab.id) } label: { Label("Close Tab", systemImage: "xmark") }
-            Button { tabs.closeOtherTabs(keep: tab.id) } label: { Label("Close Other Tabs", systemImage: "xmark") }
-            Button { tabs.closeTabsToRight(of: tab.id) } label: { Label("Close Tabs to the Right", systemImage: "xmark") }
-            Button { tabs.showAllTabs = true } label: { Label("Show All Tabs", systemImage: "square.grid.2x2") }
-            Button { tabs.duplicateTab(tab.id) } label: { Label("Duplicate Tab", systemImage: "plus.square.on.square") }
-            Divider()
-            Button { onRename() } label: { Label("Rename Tab…", systemImage: "pencil") }
-            Button { showColorPicker = true } label: { Label("Tab Color…", systemImage: "paintpalette") }
+        // Insertion indicator: a green bar on the leading edge + a faint green
+        // wash show the dragged tab will drop *before* this one.
+        .overlay(alignment: .leading) {
+            if dropTargeted {
+                Capsule()
+                    .fill(Color.green)
+                    .frame(width: 3)
+                    .padding(.vertical, 3)
+                    .offset(x: -5)
+            }
         }
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(dropTargeted ? Color.green.opacity(0.18) : .clear)
+        )
+        // AppKit interaction on top (transparent): tap-select, press-drag with
+        // the open→closed-hand grab cursor, hover, and the right-click menu.
+        .overlay(
+            TabChipInteraction(
+                tabID: tab.id,
+                closeHitWidth: closeHitWidth,
+                onActivate: { tabs.selectTerminal(tab.id) },
+                onClose: { tabs.closeTerminal(tab.id) },
+                onHoverChanged: { hovering = $0 },
+                menuItems: menuItems)
+        )
+        .animation(.easeOut(duration: 0.12), value: dropTargeted)
+        .onDrop(of: [.vaultsTabID], delegate: TabReorderDropDelegate(
+            targetID: tab.id,
+            dropTargeted: $dropTargeted))
         .popover(isPresented: $showColorPicker, arrowEdge: .bottom) {
             TabColorPicker(selected: tab.color) { color in
                 tabs.setColor(color, for: tab.id)
@@ -446,7 +539,8 @@ private struct TabChip: View {
 
 /// A small grid of colored swatches for picking a tab color (visible colors +
 /// a ring on the current selection). Replaces the monochrome context submenu.
-private struct TabColorPicker: View {
+/// Shared by the tab strip and the Saved Sessions list.
+struct TabColorPicker: View {
     let selected: Color?
     let onPick: (Color?) -> Void
 

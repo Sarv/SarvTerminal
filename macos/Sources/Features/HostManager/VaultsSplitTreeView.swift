@@ -147,7 +147,7 @@ private struct VaultsSplitLeaf: View {
                 .background {
                     if !isSelfDragging {
                         Color.clear
-                            .onDrop(of: [.ghosttySurfaceId, .text], delegate: SplitDropDelegate(
+                            .onDrop(of: [.ghosttySurfaceId, .vaultsTabID], delegate: SplitDropDelegate(
                                 dropState: $dropState,
                                 viewSize: geometry.size,
                                 destinationSurface: surfaceView,
@@ -197,13 +197,21 @@ private struct VaultsSplitLeaf: View {
         }
     }
 
+    /// Header label: a sticky override (e.g. the name of a tab dragged into this
+    /// split, or a split-off pane's source name) wins over the surface's live
+    /// title — which for a freshly-split or SSH pane is the generic ghost default.
+    private var paneTitle: String {
+        if let override = tabs.paneTitleOverride(for: surfaceView.id) { return override }
+        return surfaceView.title.isEmpty ? "Terminal" : surfaceView.title
+    }
+
     /// Per-pane header (Termius-style), shown only when a tab has >1 pane.
     private var header: some View {
         HStack(spacing: 6) {
             Image(systemName: "terminal")
                 .font(.system(size: 10))
                 .foregroundStyle(.white.opacity(0.75))
-            Text(surfaceView.title.isEmpty ? "Terminal" : surfaceView.title)
+            Text(paneTitle)
                 .font(.system(size: 11, weight: .semibold))
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -259,15 +267,24 @@ private struct VaultsSplitLeaf: View {
         let destinationSurface: Ghostty.SurfaceView
         let action: (TerminalSplitOperation) -> Void
 
+        /// A tab can't be split into itself — reject (and hide zones) when the
+        /// dragged tab owns this destination surface.
+        private var isSelfTabDrag: Bool {
+            VaultsTabsModel.shared.isSelfTabDrag(over: destinationSurface)
+        }
+
         func validateDrop(info: DropInfo) -> Bool {
-            info.hasItemsConforming(to: [.ghosttySurfaceId, .text])
+            guard !isSelfTabDrag else { return false }
+            return info.hasItemsConforming(to: [.ghosttySurfaceId, .vaultsTabID])
         }
 
         func dropEntered(info: DropInfo) {
+            guard !isSelfTabDrag else { dropState = .idle; return }
             dropState = .dropping(.calculate(at: info.location, in: viewSize))
         }
 
         func dropUpdated(info: DropInfo) -> DropProposal? {
+            if isSelfTabDrag { dropState = .idle; return DropProposal(operation: .forbidden) }
             guard case .dropping = dropState else { return DropProposal(operation: .forbidden) }
             dropState = .dropping(.calculate(at: info.location, in: viewSize))
             return DropProposal(operation: .move)
@@ -278,15 +295,17 @@ private struct VaultsSplitLeaf: View {
         }
 
         func performDrop(info: DropInfo) -> Bool {
-            let zone = TerminalSplitDropZone.calculate(at: info.location, in: viewSize)
             dropState = .idle
+            guard !isSelfTabDrag else { return false }
+            let zone = TerminalSplitDropZone.calculate(at: info.location, in: viewSize)
 
-            // A tab chip dragged from the strip (public.text = its UUID): inject
-            // that tab as a new pane here.
-            let textProviders = info.itemProviders(for: [.text])
-            if let textProvider = textProviders.first {
-                _ = textProvider.loadObject(ofClass: NSString.self) { [weak destinationSurface] obj, _ in
-                    guard let s = obj as? String, let id = UUID(uuidString: s) else { return }
+            // A tab chip dragged from the strip (carries its UUID under the
+            // custom `vaultsTabID` type): inject that tab as a new pane here,
+            // split in the hovered direction.
+            let tabProviders = info.itemProviders(for: [.vaultsTabID])
+            if let tabProvider = tabProviders.first {
+                tabProvider.loadVaultsTabID { [weak destinationSurface] id in
+                    guard let id else { return }
                     DispatchQueue.main.async {
                         guard let destinationSurface else { return }
                         VaultsTabsModel.shared.injectTab(id, into: destinationSurface, zone: zone)
@@ -386,13 +405,11 @@ struct SplitChooserView: View {
             if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
         }
         // Accept a tab chip dropped onto this empty split.
-        .onDrop(of: [.text], isTargeted: $dropTargeted) { providers in
+        .onDrop(of: [.vaultsTabID], isTargeted: $dropTargeted) { providers in
             guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: NSString.self) { obj, _ in
-                guard let s = obj as? String, let id = UUID(uuidString: s) else { return }
-                DispatchQueue.main.async {
-                    onDropTab(id)
-                }
+            provider.loadVaultsTabID { id in
+                guard let id else { return }
+                DispatchQueue.main.async { onDropTab(id) }
             }
             return true
         }

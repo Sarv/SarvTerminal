@@ -13,11 +13,13 @@ import AppKit
 /// - Logs — session logs (later)
 struct VaultsView: View {
     enum Section: Hashable, CaseIterable, Identifiable {
-        case hosts, keychain, portForwarding, snippets, knownHosts, logs
+        case hosts, savedSessions, teams, keychain, portForwarding, snippets, knownHosts, logs
         var id: Self { self }
         var label: String {
             switch self {
             case .hosts: return "Hosts"
+            case .savedSessions: return "Saved Sessions"
+            case .teams: return "Teams"
             case .keychain: return "Keychain"
             case .portForwarding: return "Port Forwarding"
             case .snippets: return "Snippets"
@@ -28,6 +30,8 @@ struct VaultsView: View {
         var icon: String {
             switch self {
             case .hosts: return "server.rack"
+            case .savedSessions: return "rectangle.split.2x2"
+            case .teams: return "person.2"
             case .keychain: return "key"
             case .portForwarding: return "arrow.triangle.swap"
             case .snippets: return "curlybraces"
@@ -52,6 +56,8 @@ struct VaultsView: View {
             Group {
                 switch selection {
                 case .hosts:          HostsSectionView()
+                case .savedSessions:  SavedSessionsSectionView()
+                case .teams:          TeamsSectionView()
                 case .keychain:       KeychainSectionView()
                 case .portForwarding: PortForwardingSectionView()
                 case .snippets:       SnippetsSectionView()

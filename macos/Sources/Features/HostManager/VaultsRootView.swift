@@ -82,6 +82,7 @@ struct VaultsRootView: View {
             // button. The sidebar carries its own "Split view" button to return.
             VaultsBellView()
             VaultsGearView()
+            AccountMenuButton()
                 .padding(.trailing, 6)
         }
         .frame(height: 42)

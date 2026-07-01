@@ -94,6 +94,10 @@ private struct TerminalSplitLeaf: View {
     @State private var dropState: DropState = .idle
     @State private var isSelfDragging: Bool = false
 
+    /// Gap inset around every pane, so panes don't touch each other or the
+    /// window corners (a small breathing margin, Termius-style).
+    private let paneInset: CGFloat = 4
+
     var body: some View {
         GeometryReader { geometry in
             Ghostty.InspectableSurface(
@@ -128,6 +132,7 @@ private struct TerminalSplitLeaf: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Terminal pane")
         }
+        .padding(paneInset)
     }
 
     private enum DropState: Equatable {
@@ -221,7 +226,8 @@ enum TerminalSplitDropZone: String, Equatable {
 
     @ViewBuilder
     func overlay(in geometry: GeometryProxy) -> some View {
-        let overlayColor = Color.accentColor.opacity(0.3)
+        // Termius-style light-green drop block showing where the dragged pane lands.
+        let overlayColor = Color.green.opacity(0.35)
 
         switch self {
         case .top:

@@ -11,6 +11,37 @@ extension UTType {
     static let vaultsTabID = UTType(exportedAs: "com.sarvterminal.vaultsTabID")
 }
 
+extension NSItemProvider {
+    /// A drag payload carrying a tab id under the custom `vaultsTabID` type
+    /// (NOT plain `public.text`). The terminal surface registers for `.string`,
+    /// so a plain-text tab id would be swallowed by the terminal (and pasted!)
+    /// instead of reaching the split drop zones. A custom type the terminal
+    /// doesn't register for passes straight through to our drop targets.
+    static func vaultsTab(_ id: UUID) -> NSItemProvider {
+        let provider = NSItemProvider()
+        let data = Data(id.uuidString.utf8)
+        provider.registerDataRepresentation(
+            forTypeIdentifier: UTType.vaultsTabID.identifier,
+            visibility: .all
+        ) { completion in
+            completion(data, nil)
+            return nil
+        }
+        return provider
+    }
+
+    /// Load a tab id previously registered via `vaultsTab(_:)`.
+    func loadVaultsTabID(_ completion: @escaping (UUID?) -> Void) {
+        _ = loadDataRepresentation(forTypeIdentifier: UTType.vaultsTabID.identifier) { data, _ in
+            guard let data, let s = String(data: data, encoding: .utf8), let id = UUID(uuidString: s) else {
+                completion(nil)
+                return
+            }
+            completion(id)
+        }
+    }
+}
+
 extension Notification.Name {
     /// Posted when the "auto-adjust font weight for low-DPI screens" setting changes.
     static let sarvAutoFontWeightChanged = Notification.Name("com.sarv.terminal.autoFontWeightChanged")
@@ -86,6 +117,13 @@ final class VaultsTabsModel: ObservableObject {
             self.surfaceTree = .init(view: surface)
             self.title = name
         }
+
+        /// Build a tab from a pre-assembled split tree — used when reopening a
+        /// saved session, which recreates the whole layout up front.
+        init(tree: SplitTree<Ghostty.SurfaceView>, name: String) {
+            self.surfaceTree = tree
+            self.title = name
+        }
     }
 
     /// A staged SSH connection bound to a single surface (pane). Stored in
@@ -130,11 +168,20 @@ final class VaultsTabsModel: ObservableObject {
     }
 
     @Published private(set) var terminals: [TerminalTab] = [] {
-        didSet { persistSession() }
+        didSet {
+            observeTabChanges()
+            persistSession()
+        }
     }
+    /// Per-tab `objectWillChange` subscriptions so a change to a tab's OWN state
+    /// (color, custom name, split layout, pane titles) re-persists the session —
+    /// not just adding/removing tabs. Rebuilt whenever `terminals` changes.
+    private var tabObservers: [AnyCancellable] = []
+    /// Coalesce a burst of tab changes into a single write per runloop tick.
+    private var persistScheduled = false
     /// Tabs from the previous run, loaded at init and offered for reopen once
     /// the app finishes launching. Cleared after the popup is answered.
-    private var pendingRestore: [TabSessionEntry] = []
+    private var pendingRestore: [SavedSession] = []
 
     /// Tabs that rang the bell (e.g. a Claude Code prompt) while not on screen,
     /// so the tab chip can show an attention dot. Cleared when the tab is shown.
@@ -200,22 +247,35 @@ final class VaultsTabsModel: ObservableObject {
 
     // MARK: - Session restore
 
-    /// Snapshot the open tabs as restorable entries (one pane per tab).
-    private func sessionSnapshot() -> [TabSessionEntry] {
-        terminals.map { tab in
-            TabSessionEntry(
-                hostID: tab.connectHost?.id,
-                launchCommand: tab.launchCommand,
-                title: tab.title,
-                customName: tab.customName,
-                workingDirectory: (tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf())?.pwd
-            )
-        }
+    /// Snapshot the open tabs as restorable entries. Each tab is captured as a
+    /// full `SavedSession` so its split layout, per-pane working directories /
+    /// SSH hosts, and pane titles all reopen exactly next launch.
+    private func sessionSnapshot() -> [SavedSession] {
+        terminals.compactMap { makeSavedSession(from: $0, name: $0.displayName) }
     }
 
     /// Persist the current open tabs so they can be reopened next launch.
     func persistSession() {
         TabSessionStore.save(sessionSnapshot())
+    }
+
+    /// Subscribe to each open tab so changes to its own state (color, rename,
+    /// split layout, pane titles) re-persist the session immediately.
+    private func observeTabChanges() {
+        tabObservers = terminals.map { tab in
+            tab.objectWillChange.sink { [weak self] in self?.schedulePersist() }
+        }
+    }
+
+    /// Persist on the NEXT runloop (so the snapshot reads post-change values),
+    /// at most once per tick even if several @Published fields changed at once.
+    private func schedulePersist() {
+        guard !persistScheduled else { return }
+        persistScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.persistScheduled = false
+            self?.persistSession()
+        }
     }
 
     /// If the previous run left tabs open, ask whether to reopen them. Call
@@ -242,19 +302,10 @@ final class VaultsTabsModel: ObservableObject {
         }
     }
 
-    private func restoreSession(_ entries: [TabSessionEntry]) {
-        for entry in entries {
-            let host = entry.hostID.flatMap { SavedHostsStore.shared.host(withID: $0) }
-            let isSSH = host != nil && (entry.launchCommand?.hasPrefix("ssh ") ?? false)
-            let tab = newTerminal(
-                command: entry.launchCommand,
-                name: entry.title,
-                host: host,
-                staged: isSSH,
-                workingDirectory: entry.workingDirectory
-            )
-            if let customName = entry.customName { tab?.customName = customName }
-        }
+    private func restoreSession(_ sessions: [SavedSession]) {
+        // Each saved snapshot rebuilds one tab with its full split layout — local
+        // panes respawn at their saved cwd, SSH panes reconnect, titles restore.
+        for session in sessions { openSavedSession(session) }
     }
 
     deinit {
@@ -345,6 +396,18 @@ final class VaultsTabsModel: ObservableObject {
         }
         selection = .terminal(id)   // show the terminal so the result is visible
         return true
+    }
+
+    /// The tab currently being drag-reordered / split (set by the AppKit chip
+    /// drag source). Used to suppress split drop zones over that tab's OWN
+    /// surfaces — you can't split a tab into itself. nil when no drag is active.
+    var draggingTabID: UUID?
+
+    /// True while a tab drag is in progress AND `surface` belongs to that same
+    /// tab, so the split drop zones over it should be hidden.
+    func isSelfTabDrag(over surface: Ghostty.SurfaceView) -> Bool {
+        guard let draggingTabID, let tab = tab(containing: surface) else { return false }
+        return tab.id == draggingTabID
     }
 
     private func tab(containing surface: Ghostty.SurfaceView) -> TerminalTab? {
@@ -718,9 +781,18 @@ final class VaultsTabsModel: ObservableObject {
     }
 
     /// A tab label unique among open tabs: `base`, else `base (1)`, `base (2)`…
+    ///
+    /// Any trailing " (N)" numbering on `base` is stripped first so that
+    /// duplicating an already-numbered tab increments the counter
+    /// ("Terminal (1)" → "Terminal (2)") instead of nesting another suffix
+    /// ("Terminal (1) (1)"). Duplicate Tab passes the source's full
+    /// displayName as the base, so the stripping has to happen here.
     private func uniqueTabName(base: String) -> String {
         let trimmed = base.trimmingCharacters(in: .whitespaces)
-        let name = trimmed.isEmpty ? "Terminal" : trimmed
+        let stem = trimmed
+            .replacingOccurrences(of: #"(\s*\(\d+\))+$"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        let name = stem.isEmpty ? "Terminal" : stem
         let existing = Set(terminals.map { $0.displayName })
         if !existing.contains(name) { return name }
         var n = 1
@@ -801,6 +873,10 @@ final class VaultsTabsModel: ObservableObject {
         if !needsPassword { model.passwordFilePath = passwordFile }
         let controller = SSHConnectionController(model: model, surfaceView: boundSurface, tabsModel: self)
         connections[boundSurface.id] = ActiveConnection(model: model, controller: controller, command: command)
+        // Label the pane with the host name: the live SSH surface title is the
+        // generic ghost default, so without this the split header reads as a bare
+        // ghost. Stored in paneTitleOverrides so it also survives save/restore.
+        tab.paneTitleOverrides[boundSurface.id] = host.displayLabel
         if needsPassword {
             // Let the popup's password field take focus (don't pull it to the pane).
         } else {
@@ -819,6 +895,16 @@ final class VaultsTabsModel: ObservableObject {
     /// Replace an awaiting (chooser) pane with a single-terminal tab dragged
     /// from the strip — the empty split becomes that tab, and it's removed from
     /// the strip.
+    /// The sticky pane-title override for a surface, if one was recorded — a tab
+    /// dragged into a split (or a split-off pane) keeps a meaningful name even
+    /// though the surface's own live title is generic/ghost. nil → live title.
+    func paneTitleOverride(for surfaceID: UUID) -> String? {
+        for tab in terminals {
+            if let name = tab.paneTitleOverrides[surfaceID], !name.isEmpty { return name }
+        }
+        return nil
+    }
+
     func injectTabIntoAwaiting(awaiting: Ghostty.SurfaceView, draggedTabID: UUID) {
         guard let destTab = tab(containing: awaiting),
               let awaitingNode = destTab.surfaceTree.root?.node(view: awaiting),
@@ -830,6 +916,11 @@ final class VaultsTabsModel: ObservableObject {
         guard let newTree = try? destTab.surfaceTree.replacing(
             node: awaitingNode, with: .leaf(view: draggedSurface)) else { return }
         awaitingChoice.remove(awaiting.id)
+        // Preserve the dragged tab's name as the new pane's header title. The
+        // moved surface keeps its own live title (for an SSH tab that's the
+        // ghost default), so without this the pane header would drop the tab's
+        // name (e.g. "Local SSH 3333") and show a bare ghost.
+        destTab.paneTitleOverrides[draggedSurface.id] = srcTab.displayName
         // The surface moves into the split. Its SSH connection (popup) follows
         // automatically — it's keyed by surface id, not by tab — so an in-flight
         // password prompt / connecting state keeps showing over the new pane.
@@ -1274,6 +1365,14 @@ final class VaultsTabsModel: ObservableObject {
 
     // MARK: - libghostty notification handling
 
+    /// True when `id` is the selected terminal tab AND the app is frontmost —
+    /// i.e. the user can actually see it, so it needs no attention dot or banner.
+    /// When the app is in the background, even the selected tab isn't visible, so
+    /// we still flag it (the user notices it on return).
+    private func isTabOnScreen(_ id: UUID) -> Bool {
+        selection == .terminal(id) && NSApp.isActive
+    }
+
     /// A surface rang the bell — Claude Code (and most TUIs) ring it when they
     /// finish a turn or need a yes/no answer. If the ringing tab isn't the one
     /// on screen, flag it and post a notification so the user can find which of
@@ -1281,13 +1380,16 @@ final class VaultsTabsModel: ObservableObject {
     private func handleBell(_ note: Notification) {
         guard let surface = note.object as? Ghostty.SurfaceView,
               let tab = tab(containing: surface) else { return }
-        let isActiveTab = selection == .terminal(tab.id)
         let name = tab.displayName
         let id = tab.id
         Task { @MainActor in
-            // Don't nag about the tab that's on screen — UNLESS the app is in the
-            // background (you're in another app and can't see it).
-            if isActiveTab && NSApp.isActive { return }
+            // Re-check on the main actor: the user may have switched to this tab
+            // between the bell firing and this running. Claude Code fires a bell
+            // AND an OSC notification, so a late task could otherwise re-flag a tab
+            // the user just opened (selection's didSet already cleared it) — which
+            // is what put a stray attention dot on the current tab. Never flag or
+            // banner the tab that's actually on screen.
+            guard !self.isTabOnScreen(id) else { return }
             self.attentionTabs.insert(id)
             SarvNotifications.shared.notify(.tabAttention(tab: name, tabID: id))
         }
@@ -1301,11 +1403,13 @@ final class VaultsTabsModel: ObservableObject {
               let tab = tab(containing: surface) else { return }
         let body = (note.userInfo?["body"] as? String) ?? (note.userInfo?["title"] as? String) ?? ""
         guard !body.isEmpty else { return }
-        let isActiveTab = selection == .terminal(tab.id)
         let name = tab.displayName
         let id = tab.id
         Task { @MainActor in
-            if isActiveTab && NSApp.isActive { return }
+            // Same rule as the bell: never flag or banner the tab that's on screen,
+            // re-checked here because the selection may have changed since the OSC
+            // notification arrived.
+            guard !self.isTabOnScreen(id) else { return }
             self.attentionTabs.insert(id)
             SarvNotifications.shared.notify(.tabMessage(tab: name, message: body, tabID: id))
         }
@@ -1492,6 +1596,18 @@ final class VaultsTabsModel: ObservableObject {
         guard let surface = note.object as? Ghostty.SurfaceView,
               let tab = tab(containing: surface),
               let node = tab.surfaceTree.root?.node(view: surface) else { return }
+        // An SSH pane must NEVER auto-close when its ssh PROCESS exits — e.g. ssh
+        // quitting after a wrong password, or a session that dropped. Keep the
+        // surface so its connection popup shows the error / "Session ended" and
+        // offers reconnect. `process_alive == false` means the process died on
+        // its own (not a user close); an explicit user close arrives with the
+        // process still alive and is allowed to fall through. Only the tab × or
+        // the card's Close button (via closeTerminal / closePane) tears it down.
+        let processAlive = (note.userInfo?["process_alive"] as? Bool) ?? false
+        if !processAlive, let conn = connections[surface.id] {
+            conn.controller.handleProcessExited()
+            return
+        }
         awaitingChoice.remove(surface.id)
         let remaining = tab.surfaceTree.removing(node)
         if remaining.isEmpty {
@@ -1529,6 +1645,166 @@ final class VaultsTabsModel: ObservableObject {
             tab.surfaceTree = SplitTree(root: tab.surfaceTree.root, zoomed: nil)
         } else {
             tab.surfaceTree = SplitTree(root: tab.surfaceTree.root, zoomed: node)
+        }
+    }
+}
+
+// MARK: - Saved sessions
+
+extension VaultsTabsModel {
+    /// Map a tab color back to its preset option id (for persistence).
+    private func colorOptionID(for color: Color) -> String? {
+        Self.tabColorOptions.first { $0.color == color }?.id
+    }
+
+    /// Resolve a preset color option id back to its `Color`.
+    private func color(forOptionID id: String) -> Color? {
+        Self.tabColorOptions.first { $0.id == id }?.color
+    }
+
+    // MARK: Snapshot (save)
+
+    /// Build a `SavedSession` snapshot of a tab's live split layout. Captures the
+    /// tree shape + ratios and, per pane, whether it's a local shell (with its
+    /// cwd) or an SSH session (its saved-host id and/or command).
+    func makeSavedSession(from tab: TerminalTab, name: String) -> SavedSession? {
+        guard let root = tab.surfaceTree.root else { return nil }
+        let now = Date()
+        return SavedSession(
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            createdAt: now,
+            updatedAt: now,
+            colorID: tab.color.flatMap { colorOptionID(for: $0) },
+            layout: savedNode(from: root, tab: tab))
+    }
+
+    private func savedNode(
+        from node: SplitTree<Ghostty.SurfaceView>.Node,
+        tab: TerminalTab
+    ) -> SavedSession.PaneNode {
+        switch node {
+        case .leaf(let view):
+            return .leaf(savedPane(for: view, tab: tab))
+        case .split(let split):
+            let direction: SavedSession.PaneNode.Direction =
+                split.direction == .horizontal ? .horizontal : .vertical
+            return .split(.init(
+                direction: direction,
+                ratio: split.ratio,
+                left: savedNode(from: split.left, tab: tab),
+                right: savedNode(from: split.right, tab: tab)))
+        }
+    }
+
+    private func savedPane(for view: Ghostty.SurfaceView, tab: TerminalTab) -> SavedSession.Pane {
+        let title = tab.paneTitleOverrides[view.id]
+            ?? (view.title.isEmpty ? nil : view.title)
+        // A pane with a live SSH connection is saved as SSH; everything else
+        // (plain shells, unresolved choosers) is saved as a local shell.
+        if let conn = connections[view.id] {
+            return .init(
+                kind: .ssh,
+                workingDirectory: nil,
+                hostID: conn.model.host?.id,
+                command: conn.command,
+                // Fall back to the host label so an SSH pane keeps its name even
+                // if no explicit override was recorded (the live title is ghost).
+                title: title ?? conn.model.host?.displayLabel)
+        }
+        // A single-pane tab launched as a quick-connect `ssh …` with no staged
+        // connection registered — preserve it as SSH so it reconnects on restore
+        // rather than falling back to a bare local shell.
+        if case .leaf(let rootView)? = tab.surfaceTree.root,
+           rootView.id == view.id,
+           let cmd = tab.launchCommand, cmd.hasPrefix("ssh ") {
+            return .init(
+                kind: .ssh,
+                workingDirectory: nil,
+                hostID: tab.connectHost?.id,
+                command: cmd,
+                title: title)
+        }
+        return .init(
+            kind: .local,
+            workingDirectory: view.pwd,
+            hostID: nil,
+            command: nil,
+            title: title)
+    }
+
+    // MARK: Restore (open)
+
+    /// Reopen a saved session as a new tab, recreating its split layout: each
+    /// local pane respawns at its saved cwd and each SSH pane auto-connects.
+    func openSavedSession(_ session: SavedSession) {
+        guard let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+
+        // Build the surface tree up front. Local panes spawn directly in their
+        // saved cwd; SSH panes start as blank placeholders we connect once the
+        // tab is mounted (so the per-surface connection registry can find them).
+        var sshPanes: [(surface: Ghostty.SurfaceView, pane: SavedSession.Pane)] = []
+        var titleOverrides: [UUID: String] = [:]
+        let root = buildNode(session.layout, app: app, sshPanes: &sshPanes, titleOverrides: &titleOverrides)
+
+        let tab = TerminalTab(tree: SplitTree(root: root, zoomed: nil),
+                              name: uniqueTabName(base: session.name))
+        tab.paneTitleOverrides = titleOverrides
+        tab.color = session.colorID.flatMap { color(forOptionID: $0) }
+        terminals.append(tab)
+        selection = .terminal(tab.id)
+        HostManagerController.shared.show()
+        if let first = tab.surfaceTree.root?.leftmostLeaf() {
+            Ghostty.moveFocus(to: first)
+        }
+
+        // Kick off SSH connections after the tree is mounted.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            for (surface, pane) in sshPanes {
+                if let hostID = pane.hostID,
+                   let host = SavedHostsStore.shared.host(withID: hostID) {
+                    self.connectSavedHostInPane(host: host, surface: surface)
+                } else if let command = pane.command, !command.isEmpty {
+                    // No saved host (or it was deleted): run the raw ssh command
+                    // in the placeholder shell; ssh prompts on the TTY as needed.
+                    self.send(command, to: surface)
+                }
+            }
+        }
+    }
+
+    private func buildNode(
+        _ node: SavedSession.PaneNode,
+        app: ghostty_app_t,
+        sshPanes: inout [(surface: Ghostty.SurfaceView, pane: SavedSession.Pane)],
+        titleOverrides: inout [UUID: String]
+    ) -> SplitTree<Ghostty.SurfaceView>.Node {
+        switch node {
+        case .leaf(let pane):
+            let surface: Ghostty.SurfaceView
+            switch pane.kind {
+            case .local:
+                if let cwd = pane.workingDirectory, !cwd.isEmpty {
+                    var cfg = Ghostty.SurfaceConfiguration()
+                    cfg.workingDirectory = cwd
+                    surface = Ghostty.SurfaceView(app, baseConfig: cfg)
+                } else {
+                    surface = Ghostty.SurfaceView(app)
+                }
+            case .ssh:
+                // Blank placeholder; connected after the tab mounts.
+                surface = Ghostty.SurfaceView(app)
+                sshPanes.append((surface, pane))
+            }
+            if let title = pane.title { titleOverrides[surface.id] = title }
+            return .leaf(view: surface)
+
+        case .split(let split):
+            let direction: SplitTree<Ghostty.SurfaceView>.Direction =
+                split.direction == .horizontal ? .horizontal : .vertical
+            let left = buildNode(split.left, app: app, sshPanes: &sshPanes, titleOverrides: &titleOverrides)
+            let right = buildNode(split.right, app: app, sshPanes: &sshPanes, titleOverrides: &titleOverrides)
+            return .split(.init(direction: direction, ratio: split.ratio, left: left, right: right))
         }
     }
 }
