@@ -16,9 +16,11 @@ cp -R zig-out/SarvTerminal.app "$DEV_APP"
 # ad-hoc re-sign the copy so it launches cleanly
 codesign --force --deep --sign - "$DEV_APP" >/dev/null 2>&1 || true
 
-# Restart ONLY the dev instance (match by its /tmp path; the release app in
-# /Applications is left running).
-pkill -f "SarvTerminal_Dev.app/Contents/MacOS/ghostty" 2>/dev/null || true
+# Restart ONLY the dev instance. Match by the full /tmp path so the release
+# app in /Applications is never touched. The debug binary is named
+# `SarvTerminalDev` (release is `SarvTerminal`), so even a name-only pkill of
+# the dev build can't collide with the release app.
+pkill -f "SarvTerminal_Dev.app/Contents/MacOS/SarvTerminalDev" 2>/dev/null || true
 sleep 0.5
 open -n "$DEV_APP"
 echo "launched dev: $DEV_APP"

@@ -69,10 +69,11 @@ enum KeybindParser {
         return entries
     }
 
-    /// Locate the `ghostty` binary inside our running app bundle.
+    /// Locate our running app's own executable. Uses `executableURL` so this
+    /// stays correct regardless of the binary's name (it differs across the
+    /// release `SarvTerminal` and debug `SarvTerminalDev` builds).
     private static func locateBinary() -> URL? {
-        let path = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/MacOS/ghostty")
+        guard let path = Bundle.main.executableURL else { return nil }
         return FileManager.default.isExecutableFile(atPath: path.path) ? path : nil
     }
 
