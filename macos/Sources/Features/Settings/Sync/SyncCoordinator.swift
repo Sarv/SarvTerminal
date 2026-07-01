@@ -99,7 +99,7 @@ final class SyncCoordinator {
             guard SyncSettings.shared.canSync, !isApplyingRemote else { return false }
             if isPushing { pendingPush = true; return false }
             isPushing = true
-            SyncSettings.shared.isSyncing = true
+            SyncSettings.shared.beginSyncing()
             return true
         }
         guard canStart else { return }
@@ -122,7 +122,7 @@ final class SyncCoordinator {
 
         let runAgain = await MainActor.run { () -> Bool in
             isPushing = false
-            SyncSettings.shared.isSyncing = false
+            SyncSettings.shared.endSyncing()
             if pendingPush { pendingPush = false; return true }
             return false
         }
@@ -135,8 +135,8 @@ final class SyncCoordinator {
     /// synced — so we never clobber our own just-pushed state.
     func pullIfRemoteNewer() async {
         guard SyncSettings.shared.canSync else { return }
-        await MainActor.run { SyncSettings.shared.isSyncing = true }
-        defer { Task { @MainActor in SyncSettings.shared.isSyncing = false } }
+        await MainActor.run { SyncSettings.shared.beginSyncing() }
+        defer { Task { @MainActor in SyncSettings.shared.endSyncing() } }
         do {
             let remote = try await SyncEngine.checkRemote()
             guard let remote, remote > SyncSettings.shared.lastSyncedVersion else { return }

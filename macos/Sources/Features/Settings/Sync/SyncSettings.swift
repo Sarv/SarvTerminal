@@ -85,6 +85,15 @@ final class SyncSettings: ObservableObject {
     // MARK: Transient runtime state (not persisted)
     @Published var isSyncing = false
     @Published var lastError: String?
+
+    /// When the current syncing indicator began, and a monotonically-increasing
+    /// token so a delayed clear from an old sync can't switch off a newer one.
+    private var syncingSince: Date?
+    private var syncGeneration = 0
+    /// Minimum time the "syncing" indicator stays visible. A cloud-folder push is
+    /// a near-instant local file write, so without a floor the spinner would flip
+    /// on and off faster than it can be seen.
+    private let minVisibleSyncing: TimeInterval = 0.8
     /// Version of the remote manifest seen on the last check, if greater than
     /// `lastSyncedVersion`. Drives the "remote is newer — Pull?" banner.
     @Published var remoteNewerVersion: Int?
@@ -156,6 +165,35 @@ final class SyncSettings: ObservableObject {
         if let err = lastError { return .error(err) }
         if let rv = remoteNewerVersion, rv > lastSyncedVersion { return .remoteNewer }
         return .idle
+    }
+
+    /// Start showing the syncing indicator. Pairs with `endSyncing()`.
+    @MainActor
+    func beginSyncing() {
+        syncGeneration += 1
+        syncingSince = Date()
+        isSyncing = true
+    }
+
+    /// Stop the syncing indicator, but keep it up for at least `minVisibleSyncing`
+    /// so a near-instant (cloud-folder) sync is still perceptible. A later
+    /// `beginSyncing()` bumps the generation, so this clear no-ops if a newer
+    /// sync has already started.
+    @MainActor
+    func endSyncing() {
+        let generation = syncGeneration
+        let elapsed = syncingSince.map { Date().timeIntervalSince($0) } ?? minVisibleSyncing
+        let remaining = minVisibleSyncing - elapsed
+        guard remaining > 0 else {
+            isSyncing = false
+            syncingSince = nil
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
+            guard let self, self.syncGeneration == generation else { return }
+            self.isSyncing = false
+            self.syncingSince = nil
+        }
     }
 
     /// Record a successful push/pull, including the host/group high-water mark.

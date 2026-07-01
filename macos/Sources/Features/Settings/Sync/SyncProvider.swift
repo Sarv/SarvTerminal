@@ -206,8 +206,16 @@ struct FolderSyncProvider: SyncProvider {
     /// Max version snapshots to keep under `history/`. `nil` = keep all.
     var historyLimit: Int? = 20
 
-    /// Resolve the bookmark to a directory URL, starting security-scoped access.
-    /// Caller must `stopAccessingSecurityScopedResource()` when done.
+    /// All payloads live inside a dedicated `SarvTerminal/` subfolder of the
+    /// folder the user chose — so pointing sync at a shared/busy location
+    /// (Desktop, Documents, a Drive root) never scatters our files among the
+    /// user's own. Created on demand; legacy root-level files are migrated in.
+    static let storageFolderName = "SarvTerminal"
+
+    /// Resolve the bookmark to the user-selected directory URL, starting
+    /// security-scoped access. Caller must `stopAccessingSecurityScopedResource()`
+    /// on the returned URL when done. (The `SarvTerminal/` subfolder we actually
+    /// read/write lives within this URL's security scope.)
     private func resolve() throws -> URL {
         var stale = false
         let url = try URL(
@@ -225,14 +233,55 @@ struct FolderSyncProvider: SyncProvider {
         return url
     }
 
-    func testConnection() async throws {
-        let dir = try resolve()
-        defer { dir.stopAccessingSecurityScopedResource() }
+    /// The `SarvTerminal/` subfolder of `base` where every payload lives. Created
+    /// if missing; legacy root-level files (written by older builds) are migrated
+    /// into it the first time it's created.
+    private func storageDir(in base: URL) throws -> URL {
+        let dir = base.appendingPathComponent(Self.storageFolderName, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            throw SyncProviderError(message: "Couldn't create the SarvTerminal folder in the sync location.")
+        }
+        migrateLegacyLayout(base: base, storage: dir)
+        return dir
+    }
+
+    /// One-time move of payloads written by older builds at the folder root into
+    /// the new `SarvTerminal/` subfolder, so an already-configured sync keeps
+    /// working seamlessly. Runs only when the subfolder has no manifest yet but
+    /// the root does.
+    private func migrateLegacyLayout(base: URL, storage: URL) {
+        let fm = FileManager.default
+        let manifestInStorage = storage.appendingPathComponent(SyncManifest.manifestFile)
+        let manifestAtRoot = base.appendingPathComponent(SyncManifest.manifestFile)
+        guard !fm.fileExists(atPath: manifestInStorage.path),
+              fm.fileExists(atPath: manifestAtRoot.path) else { return }
+        for name in [SyncManifest.manifestFile, SyncManifest.settingsFile, SyncManifest.hostsFile, "README.md"] {
+            let src = base.appendingPathComponent(name)
+            let dst = storage.appendingPathComponent(name)
+            guard fm.fileExists(atPath: src.path), !fm.fileExists(atPath: dst.path) else { continue }
+            try? fm.moveItem(at: src, to: dst)
+        }
+        let srcHistory = base.appendingPathComponent("history", isDirectory: true)
+        let dstHistory = storage.appendingPathComponent("history", isDirectory: true)
         var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else {
+        if fm.fileExists(atPath: srcHistory.path, isDirectory: &isDir), isDir.boolValue,
+           !fm.fileExists(atPath: dstHistory.path) {
+            try? fm.moveItem(at: srcHistory, to: dstHistory)
+        }
+    }
+
+    func testConnection() async throws {
+        let base = try resolve()
+        defer { base.stopAccessingSecurityScopedResource() }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: base.path, isDirectory: &isDir), isDir.boolValue else {
             throw SyncProviderError(message: "The sync folder no longer exists.")
         }
-        // Write + remove a probe to confirm writability.
+        // Creating the SarvTerminal subfolder + a probe inside it confirms we can
+        // both create the folder and write to it.
+        let dir = try storageDir(in: base)
         let probe = dir.appendingPathComponent(".sarv-sync-probe")
         do {
             try Data("ok".utf8).write(to: probe)
@@ -247,16 +296,17 @@ struct FolderSyncProvider: SyncProvider {
     }
 
     func readFile(_ name: String) async throws -> Data? {
-        let dir = try resolve()
-        defer { dir.stopAccessingSecurityScopedResource() }
-        let file = dir.appendingPathComponent(name)
+        let base = try resolve()
+        defer { base.stopAccessingSecurityScopedResource() }
+        let file = try storageDir(in: base).appendingPathComponent(name)
         guard FileManager.default.fileExists(atPath: file.path) else { return nil }
         return try Data(contentsOf: file)
     }
 
     func writeFiles(_ files: [String: Data]) async throws {
-        let dir = try resolve()
-        defer { dir.stopAccessingSecurityScopedResource() }
+        let base = try resolve()
+        defer { base.stopAccessingSecurityScopedResource() }
+        let dir = try storageDir(in: base)
         let ordered = files.sorted { a, _ in a.key != SyncManifest.manifestFile }
         for (name, bytes) in ordered {
             try bytes.write(to: dir.appendingPathComponent(name), options: .atomic)
