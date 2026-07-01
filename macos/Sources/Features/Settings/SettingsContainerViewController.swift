@@ -38,8 +38,7 @@ final class SettingsContainerViewController: NSViewController {
     /// sidebar toggle + title + close.
     private lazy var headerHosting: NSHostingView<SettingsHeaderBar> = {
         NSHostingView(rootView: SettingsHeaderBar(
-            onToggleSidebar: { [weak self] in self?.toggleSidebar(nil) },
-            onClose: { SettingsController.shared.hide() }
+            onToggleSidebar: { [weak self] in self?.toggleSidebar(nil) }
         ))
     }()
 

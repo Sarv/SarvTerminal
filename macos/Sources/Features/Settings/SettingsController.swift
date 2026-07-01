@@ -28,22 +28,28 @@ class SettingsController: NSWindowController, NSWindowDelegate {
     private weak var presenter: NSWindow?
 
     private init() {
-        // Borderless takeover: no titlebar, no traffic lights, covers the whole
-        // presenting window. Dismissed only via the in-content ✕ (or Esc).
+        // A standard, large, movable window with a NATIVE title bar: the three
+        // traffic lights on the left and "Settings" as the title. Non-modal, so
+        // clicking the terminal sends it behind and the user sees their changes
+        // live; the toolbar / File-menu button brings it back.
         let window = SettingsOverlayWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1080, height: 720),
-            styleMask: [.borderless],
+            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 760),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
+        window.title = "Settings"
+        window.titleVisibility = .visible
         window.isReleasedWhenClosed = false
-        window.isMovable = false
         window.isOpaque = true
         window.backgroundColor = NSColor.windowBackgroundColor
         // Let AppKit maintain the key-view loop so Tab / Shift-Tab move focus
         // between the hosted SwiftUI text fields instead of doing nothing.
         window.autorecalculatesKeyViewLoop = true
         window.contentViewController = containerVC
+        // Never let it shrink so small the body is clipped (the bug where the
+        // window opened as a short slab).
+        window.contentMinSize = NSSize(width: 900, height: 640)
 
         super.init(window: window)
 
@@ -75,11 +81,27 @@ class SettingsController: NSWindowController, NSWindowDelegate {
         // full-screen terminal — so Settings never yanks the user to another
         // Space and closing it lands them right back where they were.
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-        // Cover the presenting window's full frame so nothing (e.g. the tab
-        // strip) is left exposed behind or clickable.
+        // Always open CENTERED at a comfortable size — ignore any prior dragged
+        // position, per request. (Keeps a larger size if the user grew it, but
+        // never smaller than the minimum, and always re-centers.)
+        let minSize = NSSize(width: 900, height: 640)
+        let defaultSize = NSSize(width: 1100, height: 760)
+        var size = window.frame.size
+        if size.width < defaultSize.width { size.width = defaultSize.width }
+        if size.height < defaultSize.height { size.height = defaultSize.height }
+        size.width = max(size.width, minSize.width)
+        size.height = max(size.height, minSize.height)
+        let origin: NSPoint
         if let host, host !== window {
-            window.setFrame(host.frame, display: true)
+            origin = NSPoint(x: host.frame.midX - size.width / 2,
+                             y: host.frame.midY - size.height / 2)
+        } else if let screen = NSScreen.main {
+            origin = NSPoint(x: screen.visibleFrame.midX - size.width / 2,
+                             y: screen.visibleFrame.midY - size.height / 2)
+        } else {
+            origin = window.frame.origin
         }
+        window.setFrame(NSRect(origin: origin, size: size), display: false)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -109,43 +131,26 @@ class SettingsController: NSWindowController, NSWindowDelegate {
     }
 }
 
-/// In-content header for the borderless Settings window: sidebar toggle on the
-/// leading edge, centered title, and the close (✕) button trailing. Replaces the
-/// titlebar accessories a titled window would use.
+/// Slim in-content bar holding just the sidebar toggle. The window now has a
+/// native title bar (traffic lights + "Settings" title), so the title and close
+/// button that used to live here are gone.
 struct SettingsHeaderBar: View {
     let onToggleSidebar: () -> Void
-    let onClose: () -> Void
 
     var body: some View {
-        ZStack {
-            Text("Settings")
-                .font(.headline)
-
-            HStack(spacing: 0) {
-                Button(action: onToggleSidebar) {
-                    Image(systemName: "sidebar.left")
-                        .font(.system(size: 14, weight: .regular))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.plain)
-                .help("Toggle Sidebar")
-
-                Spacer(minLength: 0)
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 24, height: 24)
-                        .background(Circle().fill(Color.white.opacity(0.18)))
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
-                .help("Close settings (Esc)")
+        HStack(spacing: 0) {
+            Button(action: onToggleSidebar) {
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
             }
+            .buttonStyle(.plain)
+            .help("Toggle Sidebar")
+
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
-        .frame(height: 44)
+        .frame(height: 36)
     }
 }
