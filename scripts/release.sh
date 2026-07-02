@@ -107,22 +107,15 @@ echo "=== Building release (ReleaseFast) ==="
 # into the SAME zig-out with different EXECUTABLE_NAMEs, so stale binaries
 # (`ghostty`, `SarvTerminalDev`) pile up in Contents/MacOS and break
 # `codesign --deep --strict`.
-rm -rf zig-out/SarvTerminal.app
+rm -rf "zig-out/Sarv Terminal.app"
 zig build -Doptimize=ReleaseFast
-APP="zig-out/SarvTerminal.app"
+APP="zig-out/Sarv Terminal.app"
 [[ -d "$APP" ]] || { echo "✗ $APP not found after build"; exit 1; }
 
 # Belt-and-suspenders: keep only the declared main executable in MacOS/.
 EXE=$(/usr/libexec/PlistBuddy -c "Print CFBundleExecutable" "$APP/Contents/Info.plist")
 find "$APP/Contents/MacOS" -maxdepth 1 -type f ! -name "$EXE" -delete
 echo "✓ Bundle executable: $EXE"
-
-# Branding: GENERATE_INFOPLIST_FILE derives CFBundleName from PRODUCT_NAME
-# (SarvTerminal), which drives the menu bar / Dock name. Patch it to the spaced
-# brand name — before signing so the signature covers it. The bundle FILE stays
-# SarvTerminal.app (PRODUCT_NAME unchanged) so paths/scripts are unaffected.
-/usr/libexec/PlistBuddy -c "Set :CFBundleName Sarv Terminal" "$APP/Contents/Info.plist"
-echo "✓ Bundle name: Sarv Terminal"
 
 # ── Sign inside-out (Sparkle first, app last) ──────────────────────────
 sign(){ codesign --force --timestamp --options runtime --keychain "$BUILD_KC" --sign "$SIGN_ID" "$@"; }
@@ -143,10 +136,10 @@ echo "✓ Signed: $(codesign -dv "$APP" 2>&1 | grep '^Authority' | head -1)"
 # ── Package DMG ────────────────────────────────────────────────────────
 echo "=== Packaging DMG ==="
 STAGE=$(mktemp -d)
-cp -R "$APP" "$STAGE/SarvTerminal.app"
+cp -R "$APP" "$STAGE/Sarv Terminal.app"
 ln -s /Applications "$STAGE/Applications"
 rm -f "$DMG_OUT"
-hdiutil create -volname "SarvTerminal" -srcfolder "$STAGE" -ov -format UDZO "$DMG_OUT" >/dev/null
+hdiutil create -volname "Sarv Terminal" -srcfolder "$STAGE" -ov -format UDZO "$DMG_OUT" >/dev/null
 rm -rf "$STAGE"
 sign "$DMG_OUT"
 

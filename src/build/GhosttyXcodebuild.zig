@@ -49,7 +49,7 @@ pub fn init(
     };
 
     const env = try std.process.getEnvMap(b.allocator);
-    const app_path = b.fmt("macos/build/{s}/SarvTerminal.app", .{xc_config});
+    const app_path = b.fmt("macos/build/{s}/Sarv Terminal.app", .{xc_config});
 
     // Our step to build the Ghostty macOS app.
     const build = build: {
