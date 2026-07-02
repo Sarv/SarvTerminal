@@ -20,7 +20,7 @@ final class KnownHostsStore: ObservableObject {
     @Published private(set) var entries: [KnownHostEntry] = []
 
     private var fileURL: URL {
-        AppPaths.sshDir.appendingPathComponent("known_hosts")
+        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".ssh/known_hosts")
     }
 
     private init() { reload() }
