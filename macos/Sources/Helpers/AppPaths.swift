@@ -7,11 +7,21 @@ import Foundation
 /// dev build can never read or clobber the data your daily (release) app relies
 /// on. Release builds keep using the original `~/.config/sarvterminal`.
 enum AppPaths {
-    /// `~/.config/sarvterminal` (release) or `~/.config/sarvterminal-dev` (debug).
-    /// The directory is created if it doesn't exist.
+    #if DEBUG
+    /// True when running the demo build (scripts/demo.sh copies the bundle to
+    /// `/tmp/SarvTerminal_Demo.app`). We key off the bundle PATH rather than a
+    /// launch argument because the Ghostty engine parses `--flags` as config and
+    /// would reject an unknown one. Demo mode uses a fully isolated data dir +
+    /// `.ssh` seeded with sample data for README screenshots — it never reads or
+    /// writes your dev/release data.
+    static let isDemo = Bundle.main.bundlePath.contains("SarvTerminal_Demo")
+    #endif
+
+    /// `~/.config/sarvterminal` (release), `~/.config/sarvterminal-dev` (debug),
+    /// or `~/.config/sarvterminal-demo` (debug `--demo`). Created if missing.
     static var configDir: URL {
         #if DEBUG
-        let name = "sarvterminal-dev"
+        let name = isDemo ? "sarvterminal-demo" : "sarvterminal-dev"
         #else
         let name = "sarvterminal"
         #endif
@@ -20,6 +30,22 @@ enum AppPaths {
             .appendingPathComponent(name, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// The user's `~/.ssh` — except in demo mode, where it's an isolated
+    /// `<configDir>/.ssh` so seeded sample keys/known_hosts never touch the real
+    /// `~/.ssh`. Created (0700) if missing when isolated.
+    static var sshDir: URL {
+        #if DEBUG
+        if isDemo {
+            let dir = configDir.appendingPathComponent(".ssh", isDirectory: true)
+            try? FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            return dir
+        }
+        #endif
+        return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".ssh", isDirectory: true)
     }
 
     /// One-time migration of preferences from the old `com.mitchellh.ghostty*`

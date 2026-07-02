@@ -53,8 +53,8 @@ final class SSHKeyManager: ObservableObject {
     @Published private(set) var loading = false
     @Published var error: String?
 
-    /// `~/.ssh`.
-    let sshDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".ssh", isDirectory: true)
+    /// `~/.ssh` (or an isolated demo dir when launched with `--demo`).
+    let sshDir = AppPaths.sshDir
 
     /// Files in `~/.ssh` that are never private keys.
     private let ignored: Set<String> = [

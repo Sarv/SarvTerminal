@@ -232,6 +232,13 @@ class AppDelegate: NSObject,
         // auto-push on change + hourly pull.
         SyncCoordinator.shared.start()
 
+        #if DEBUG
+        // Demo mode (scripts/demo.sh): when launched with `--demo`, seed an
+        // isolated workspace with sample hosts/keys/snippets/logs for capturing
+        // README screenshots. No-op otherwise, and only seeds once.
+        DemoSeeder.seedIfNeeded()
+        #endif
+
         // Register our service provider. This must happen after everything is initialized.
         NSApp.servicesProvider = ServiceProvider()
 
