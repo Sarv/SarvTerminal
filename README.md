@@ -1,4 +1,8 @@
-# Sarv Terminal
+<p align="center">
+  <img src="assets/logo.png" alt="Sarv Terminal logo" width="128" height="128">
+</p>
+
+<h1 align="center">Sarv Terminal</h1>
 
 **An open-source, full-fledged terminal _and_ SSH connection manager for macOS.**
 Fast GPU-accelerated terminal, a built-in host vault, SFTP/SCP file manager, SSH key & tunnel
