@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SarvTerminal 1.4.0</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>SarvTerminal 1.4.0</h1>
+  <div class="meta">Improvements &amp; fixes</div>
+  <h2>Branding</h2>
+  <ul>
+    <li>ship the app bundle as "Sarv Terminal.app"</li>
+    <li>rename app display name to Sarv Terminal</li>
+  </ul>
+  <h2>About</h2>
+  <ul>
+    <li>rebrand About window to Sarv Terminal with single static logo</li>
+  </ul>
+  <h2>Update</h2>
+  <ul>
+    <li>add update checker, appcast feed, and release pipeline</li>
+    <li>center logo in Sparkle update fallback dialogs</li>
+  </ul>
+  <h2>Icon</h2>
+  <ul>
+    <li>add custom app/dock icons and brand icon in alert dialogs</li>
+  </ul>
+  <h2>Alert</h2>
+  <ul>
+    <li>center logo in delete and permission dialogs</li>
+    <li>add SarvAlert centered-logo modal card</li>
+  </ul>
+  <h2>Tabs</h2>
+  <ul>
+    <li>drag-drop reorder/split with grab cursor, preserve pane titles, fix attention dot</li>
+    <li>open new local terminal (⌘L) at a configurable directory, default home</li>
+    <li>restore working directory and name with the reopened session</li>
+    <li>duplicate opens in the source working directory</li>
+    <li>restore focused pane on tab switch and keep one cursor per split</li>
+    <li>reopen last session's tabs on launch</li>
+  </ul>
+  <h2>SSH</h2>
+  <ul>
+    <li>keep failed SSH tabs open showing a clear error</li>
+    <li>make connection popup and split chooser scroll in small panes</li>
+    <li>add reconnect-all across dropped connection popups</li>
+    <li>add pre-flight host-key trust prompt</li>
+  </ul>
+  <h2>Sessions</h2>
+  <ul>
+    <li>add saved sessions with color and full split/cwd/ssh session restore</li>
+  </ul>
+  <h2>Hosts</h2>
+  <ul>
+    <li>add shared search matcher, delete confirmations, and Save &amp; Connect</li>
+    <li>connect every host in a group from its context menu</li>
+  </ul>
+  <h2>Settings</h2>
+  <ul>
+    <li>present settings as a centered native-title-bar window</li>
+    <li>present settings as a full-cover borderless modal</li>
+    <li>add a toggle to disable session restore on launch</li>
+    <li>add a preview button for the notification sound</li>
+    <li>add Notifications preferences (enable, sound, per-category)</li>
+    <li>add terminal progress-bar toggle</li>
+    <li>add searchable index across all settings</li>
+    <li>show in-titlebar close button on the chromeless settings window</li>
+    <li>replace save with per-section revert, reset-to-default, and live-saved indicator</li>
+    <li>add rebindable keybinds editor</li>
+    <li>add settings UI for appearance, font, cursor, general, window, shell</li>
+  </ul>
+  <h2>Security</h2>
+  <ul>
+    <li>store key material in files for debug builds to avoid keychain re-prompts</li>
+  </ul>
+  <h2>Terminal</h2>
+  <ul>
+    <li>increase default window padding to 8px</li>
+    <li>start a selection on click then shift-click</li>
+  </ul>
+  <h2>Notifications</h2>
+  <ul>
+    <li>drop false "needs input" wording for tab bell attention</li>
+    <li>surface tab prompts (bell/OSC) with sound, count badge and click-to-open</li>
+    <li>add macOS notifications, in-app inbox bell and git update check</li>
+  </ul>
+  <h2>Sync</h2>
+  <ul>
+    <li>skip push when nothing actually changed</li>
+    <li>isolate dev keychain and skip settings migration in debug</li>
+    <li>write all files to GitHub in a single commit via the Git Data API</li>
+    <li>add end-to-end encrypted settings and hosts sync</li>
+  </ul>
+  <h2>Keybind</h2>
+  <ul>
+    <li>delete previous word with option-backspace on macOS</li>
+  </ul>
+  <h2>Font</h2>
+  <ul>
+    <li>auto-adjust weight to display density</li>
+  </ul>
+  <h2>App</h2>
+  <ul>
+    <li>separate dev and release config directories with settings migration</li>
+    <li>route ⌘C/⌘V/⌘X/⌘A/⌘Z to focused controls instead of terminal bindings</li>
+  </ul>
+  <h2>Search</h2>
+  <ul>
+    <li>add grep-style "only matching lines" filter with context, regex and case options</li>
+  </ul>
+  <h2>Serial</h2>
+  <ul>
+    <li>add macOS serial console connect with issue-report helper</li>
+  </ul>
+  <h2>Snippets</h2>
+  <ul>
+    <li>add Shell History panel to save past commands as snippets</li>
+  </ul>
+  <h2>Vaults</h2>
+  <ul>
+    <li>persist sub-section and drilled group across terminal switches</li>
+    <li>enable Keychain and Port Forwarding sections</li>
+    <li>add snippets library with run-in-terminal and sync</li>
+    <li>import hosts from CSV, ssh config, PuTTY, MobaXterm, and SecureCRT</li>
+    <li>add reusable section toolbar, known-hosts manager, and section scaffolds</li>
+    <li>add persistent activity log with Logs section</li>
+    <li>per-host terminal theme with image-aware contrast and an in-app edit-host side panel</li>
+    <li>hide the app on window close instead of swallowing the red button</li>
+    <li>add arrow-key and Enter navigation to the split chooser</li>
+    <li>include saved hosts in command palette and split chooser via staged connect</li>
+    <li>open a local terminal from the dashboard Terminal button</li>
+    <li>disable surface tear-off into native windows</li>
+    <li>add staged SSH connection popup with askpass, auto-reconnect, and per-pane drag/split</li>
+    <li>embed terminals in one window with tabs, splits, and focus mode</li>
+    <li>add Vaults/SFTP/SCP dashboard and host management</li>
+  </ul>
+  <h2>Port-forwarding</h2>
+  <ul>
+    <li>add SSH tunnel manager</li>
+  </ul>
+  <h2>Keychain</h2>
+  <ul>
+    <li>add SSH key manager</li>
+  </ul>
+  <h2>Sftp</h2>
+  <ul>
+    <li>add transfer progress with cancel and two-way permissions editor</li>
+    <li>add direct server-to-server transfer with relay fallback</li>
+    <li>add in-app file viewer and editor for remote and config files</li>
+    <li>add preferences section for auto-save, confirm delete, and hidden files</li>
+    <li>add dual-pane SFTP file manager (local⇄remote SFTP, server⇄server SCP) replacing the SFTP/SCP tabs</li>
+  </ul>
+  <h2>Keybinds</h2>
+  <ul>
+    <li>move Show SFTP shortcut to ⌘⇧S</li>
+    <li>add Show Vaults (⌘⇧V) and Show SFTP (⌘⇧F) dashboard shortcuts</li>
+    <li>list only working shortcuts and lock fixed ones from edits</li>
+    <li>bind command palette to ⌘P and keep ⌘K as Ghostty clear screen</li>
+  </ul>
+  <h2>Input</h2>
+  <ul>
+    <li>add reopen closed tab keybind (⌘⇧T)</li>
+  </ul>
+  <h2>Macos</h2>
+  <ul>
+    <li>rebrand to SarvTerminal (about, terminal window, build)</li>
+  </ul>
+</body>
+</html>
