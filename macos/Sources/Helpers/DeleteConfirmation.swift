@@ -9,12 +9,13 @@ import AppKit
 enum DeleteConfirmation {
     @MainActor
     static func confirm(_ itemName: String, detail: String) -> Bool {
-        let alert = NSAlert()
-        alert.messageText = "Delete \u{201C}\(itemName)\u{201D}?"
-        alert.informativeText = detail
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
+        let result = SarvAlert.runModal(
+            title: "Delete \u{201C}\(itemName)\u{201D}?",
+            message: detail,
+            buttons: [
+                .init("Delete", isDefault: true, isDestructive: true),
+                .init("Cancel", isCancel: true),
+            ])
+        return result.buttonIndex == 0
     }
 }

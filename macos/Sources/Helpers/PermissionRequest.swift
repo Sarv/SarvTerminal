@@ -41,37 +41,29 @@ class PermissionRequest {
             return
         }
 
-        let alert = NSAlert()
-        alert.messageText = message
-        alert.informativeText = informative
-        alert.alertStyle = .informational
+        let rememberTitle = rememberDuration.map { formatRememberText(for: $0) }
+        let buttons: [SarvAlert.Button] = [
+            .init(allowText, isDefault: true),
+            .init("Don't Allow", isCancel: true),
+        ]
 
-        // Add buttons (they appear in reverse order)
-        alert.addButton(withTitle: allowText)
-        alert.addButton(withTitle: "Don't Allow")
-
-        // Create checkbox for remembering if duration is provided
-        var checkbox: NSButton?
-        if let rememberDuration = rememberDuration {
-            let checkboxTitle = formatRememberText(for: rememberDuration)
-            checkbox = NSButton(
-                checkboxWithTitle: checkboxTitle,
-                target: nil,
-                action: nil)
-            checkbox!.state = .off
-
-            // Set checkbox as accessory view
-            alert.accessoryView = checkbox
-        }
-
-        // Show the alert
+        // Show the alert (centered, branded). Button index 0 == allow.
         if let window = window {
-            alert.beginSheetModal(for: window) { response in
-                handleResponse(response, rememberDecision: checkbox?.state == .on, key: key, allowDuration: allowDuration, rememberDuration: rememberDuration, completion: completion)
-            }
+            SarvAlert.beginSheet(
+                for: window,
+                title: message,
+                message: informative,
+                buttons: buttons,
+                rememberTitle: rememberTitle) { result in
+                    handleResponse(allowed: result.buttonIndex == 0, rememberDecision: result.rememberChecked, key: key, allowDuration: allowDuration, rememberDuration: rememberDuration, completion: completion)
+                }
         } else {
-            let response = alert.runModal()
-            handleResponse(response, rememberDecision: checkbox?.state == .on, key: key, allowDuration: allowDuration, rememberDuration: rememberDuration, completion: completion)
+            let result = SarvAlert.runModal(
+                title: message,
+                message: informative,
+                buttons: buttons,
+                rememberTitle: rememberTitle)
+            handleResponse(allowed: result.buttonIndex == 0, rememberDecision: result.rememberChecked, key: key, allowDuration: allowDuration, rememberDuration: rememberDuration, completion: completion)
         }
     }
 
@@ -84,22 +76,12 @@ class PermissionRequest {
     ///   - rememberDuration: Optional duration for the remember checkbox
     ///   - completion: Completion handler to call with the result
     private static func handleResponse(
-        _ response: NSApplication.ModalResponse,
+        allowed result: Bool,
         rememberDecision: Bool,
         key: String,
         allowDuration: AllowDuration,
         rememberDuration: Duration?,
         completion: @escaping (Bool) -> Void) {
-
-        let result: Bool
-        switch response {
-        case .alertFirstButtonReturn: // Allow
-            result = true
-        case .alertSecondButtonReturn: // Don't Allow
-            result = false
-        default:
-            result = false
-        }
 
         // Store the result if checkbox is checked or if "Allow" was selected and allowDuration is set
         if rememberDecision, let rememberDuration = rememberDuration {
