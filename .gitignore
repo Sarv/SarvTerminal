@@ -10,6 +10,9 @@
 zig-cache/
 .zig-cache/
 zig-out/
+# Release DMGs are built into dist/ and uploaded to the GitHub release page,
+# never committed (large binaries).
+dist/
 build-cmake/
 CMakeCache.txt
 CMakeFiles/
