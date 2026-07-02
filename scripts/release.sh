@@ -263,14 +263,20 @@ $BODY
       git log $RANGE --no-merges --pretty=format:'%s' | sed 's/^/general\t/' > "$PARSED"
     fi
 
+    # HTML body (Sparkle web page) + a Markdown copy (GitHub release body, which
+    # renders Markdown — feeding it HTML shows raw <tags>).
     BODY=""
+    MD_NOTES=$(mktemp)
     for scope in $(cut -f1 "$PARSED" | awk '!seen[$0]++'); do
       BODY+="  <h2>$(prettify "$scope")</h2>"$'\n'"  <ul>"$'\n'
+      printf '### %s\n\n' "$(prettify "$scope")" >> "$MD_NOTES"
       while IFS=$'\t' read -r sc desc; do
         [[ "$sc" == "$scope" ]] || continue
         BODY+="    <li>$(printf '%s' "$desc" | esc)</li>"$'\n'
+        printf -- '- %s\n' "$desc" >> "$MD_NOTES"
       done < "$PARSED"
       BODY+="  </ul>"$'\n'
+      printf '\n' >> "$MD_NOTES"
     done
     rm -f "$PARSED"
 
@@ -327,14 +333,21 @@ if [[ -n "${1:-}" && "$VERSION" != "$CUR" ]] || [[ "${FORCE_RELEASE_COMMIT:-}" =
 
       echo "=== Publishing GitHub release v$VERSION (uploading DMG) ==="
       if command -v gh >/dev/null 2>&1; then
+        # GitHub renders the release body as Markdown — use the generated .md,
+        # falling back to a link if this run reused existing notes.
+        if [[ -n "${MD_NOTES:-}" && -f "${MD_NOTES:-}" ]]; then
+          NOTES_ARG=(--notes-file "$MD_NOTES")
+        else
+          NOTES_ARG=(--notes "Release notes: https://sarv.github.io/SarvTerminal/release-notes/$VERSION.html")
+        fi
         gh release create "v$VERSION" "$DMG_OUT" \
-          --repo "$REPO" --title "SarvTerminal $VERSION" --notes-file "$NOTES_FILE"
+          --repo "$REPO" --title "Sarv Terminal $VERSION" "${NOTES_ARG[@]}"
         echo "✓ Pushed + published release v$VERSION with the DMG attached"
       else
         echo "⚠︎ 'gh' CLI not found — commit + tag are pushed, but the DMG was NOT uploaded."
         echo "   Install gh (brew install gh) then run:"
         echo "     gh release create v$VERSION \"$DMG_OUT\" --repo $REPO \\"
-        echo "       --title \"SarvTerminal $VERSION\" --notes-file \"$NOTES_FILE\""
+        echo "       --title \"Sarv Terminal $VERSION\" --notes \"Release notes: https://sarv.github.io/SarvTerminal/release-notes/$VERSION.html\""
       fi
     fi
   fi
