@@ -117,6 +117,13 @@ EXE=$(/usr/libexec/PlistBuddy -c "Print CFBundleExecutable" "$APP/Contents/Info.
 find "$APP/Contents/MacOS" -maxdepth 1 -type f ! -name "$EXE" -delete
 echo "✓ Bundle executable: $EXE"
 
+# Branding: GENERATE_INFOPLIST_FILE derives CFBundleName from PRODUCT_NAME
+# (SarvTerminal), which drives the menu bar / Dock name. Patch it to the spaced
+# brand name — before signing so the signature covers it. The bundle FILE stays
+# SarvTerminal.app (PRODUCT_NAME unchanged) so paths/scripts are unaffected.
+/usr/libexec/PlistBuddy -c "Set :CFBundleName Sarv Terminal" "$APP/Contents/Info.plist"
+echo "✓ Bundle name: Sarv Terminal"
+
 # ── Sign inside-out (Sparkle first, app last) ──────────────────────────
 sign(){ codesign --force --timestamp --options runtime --keychain "$BUILD_KC" --sign "$SIGN_ID" "$@"; }
 SP="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
