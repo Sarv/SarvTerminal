@@ -6,13 +6,19 @@
 set -e
 cd "$(dirname "$0")/.."
 
-zig build "$@"
+# Pass the version explicitly (skips git detection, which panics when HEAD is on
+# a release tag). "$@" still lets you add flags like -Dtest-filter.
+zig build -Dversion-string="$(cat VERSION)" "$@"
 
 # No space in the filename so the path is shell-friendly (`open /tmp/...`).
 # The in-app display name stays "Sarv Terminal Dev" (set in Info.plist).
 DEV_APP="/tmp/SarvTerminal_Dev.app"
 rm -rf "$DEV_APP"
 cp -R "zig-out/Sarv Terminal.app" "$DEV_APP"
+# Stamp the version from ./VERSION so About shows the real version instead of the
+# hardcoded MARKETING_VERSION placeholder (0.1). Before signing so it's covered.
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(cat VERSION)" "$DEV_APP/Contents/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(cat VERSION)" "$DEV_APP/Contents/Info.plist" 2>/dev/null || true
 # ad-hoc re-sign the copy so it launches cleanly
 codesign --force --deep --sign - "$DEV_APP" >/dev/null 2>&1 || true
 

@@ -108,7 +108,10 @@ echo "=== Building release (ReleaseFast) ==="
 # (`ghostty`, `SarvTerminalDev`) pile up in Contents/MacOS and break
 # `codesign --deep --strict`.
 rm -rf "zig-out/Sarv Terminal.app"
-zig build -Doptimize=ReleaseFast
+# Pass the version explicitly so the build never falls back to git detection —
+# otherwise building right after a release (HEAD sitting on the previous vX.Y.Z
+# tag) panics with "tagged releases must match build.zig".
+zig build -Doptimize=ReleaseFast -Dversion-string="$VERSION"
 APP="zig-out/Sarv Terminal.app"
 [[ -d "$APP" ]] || { echo "✗ $APP not found after build"; exit 1; }
 
@@ -116,6 +119,15 @@ APP="zig-out/Sarv Terminal.app"
 EXE=$(/usr/libexec/PlistBuddy -c "Print CFBundleExecutable" "$APP/Contents/Info.plist")
 find "$APP/Contents/MacOS" -maxdepth 1 -type f ! -name "$EXE" -delete
 echo "✓ Bundle executable: $EXE"
+
+# Stamp the version from ./VERSION into the built app. The Xcode project's
+# MARKETING_VERSION is a hardcoded placeholder (0.1), so without this the app
+# reports 0.1 in About AND — because Sparkle compares CFBundleVersion against the
+# appcast's sparkle:version — it would re-offer the same update forever. Done
+# before signing so the signature covers it.
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
+echo "✓ Bundle version: $VERSION"
 
 # ── Sign inside-out (Sparkle first, app last) ──────────────────────────
 sign(){ codesign --force --timestamp --options runtime --keychain "$BUILD_KC" --sign "$SIGN_ID" "$@"; }
