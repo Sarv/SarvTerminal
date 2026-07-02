@@ -3,8 +3,7 @@ import SwiftUI
 struct AboutView: View {
     @Environment(\.openURL) var openURL
 
-    private let githubURL = URL(string: "https://github.com/ghostty-org/ghostty")
-    private let docsURL = URL(string: "https://ghostty.org/docs")
+    private let githubURL = URL(string: "https://github.com/Sarv/SarvTerminal")
 
     /// Read the commit from the bundle.
     private var build: String? { Bundle.main.infoDictionary?["CFBundleVersion"] as? String }
@@ -33,8 +32,7 @@ struct AboutView: View {
         var url: URL? {
             switch self {
             case .stable(let version):
-                let slug = version.replacingOccurrences(of: ".", with: "-")
-                return URL(string: "https://ghostty.org/docs/install/release-notes/\(slug)")
+                return URL(string: "https://sarv.github.io/SarvTerminal/release-notes/\(version).html")
             default:
                 return nil
             }
@@ -76,11 +74,16 @@ struct AboutView: View {
 
     var body: some View {
         VStack(alignment: .center) {
-            CyclingIconView()
+            // Our single brand logo — no cycling icon variants.
+            Image("AppIconImage")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(height: 128)
+                .accessibilityLabel("Sarv Terminal Application Icon")
 
             VStack(alignment: .center, spacing: 32) {
                 VStack(alignment: .center, spacing: 8) {
-                    Text("SarvTerminal")
+                    Text("Sarv Terminal")
                         .bold()
                         .font(.title)
                     Text("Fast, native, feature-rich terminal \nemulator pushing modern features.")
@@ -114,11 +117,6 @@ struct AboutView: View {
                 .frame(maxWidth: .infinity)
 
                 HStack(spacing: 8) {
-                    if let url = docsURL {
-                        Button("Docs") {
-                            openURL(url)
-                        }
-                    }
                     if let url = githubURL {
                         Button("GitHub") {
                             openURL(url)
