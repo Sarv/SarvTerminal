@@ -1,4 +1,4 @@
-# SarvTerminal
+# Sarv Terminal
 
 **An open-source, full-fledged terminal _and_ SSH connection manager for macOS.**
 Fast GPU-accelerated terminal, a built-in host vault, SFTP/SCP file manager, SSH key & tunnel
@@ -13,10 +13,10 @@ manager, and end-to-end-encrypted settings sync — in one native app.
 ---
 
 > ### Built on Ghostty 👻
-> SarvTerminal is a **fork of [Ghostty](https://github.com/ghostty-org/ghostty)** by
+> Sarv Terminal is a **fork of [Ghostty](https://github.com/ghostty-org/ghostty)** by
 > [Mitchell Hashimoto](https://github.com/mitchellh) and the Ghostty contributors. The blazing-fast,
 > GPU-accelerated terminal engine at the heart of this app is entirely their work, and we are deeply
-> grateful for it. SarvTerminal layers a **connection-manager workflow** (hosts, SFTP, keys, tunnels,
+> grateful for it. Sarv Terminal layers a **connection-manager workflow** (hosts, SFTP, keys, tunnels,
 > encrypted sync) on top of that engine. **Huge thanks to the Ghostty team** — please consider
 > [supporting the upstream project](https://github.com/ghostty-org/ghostty). See
 > [Credits & License](#credits--license).
@@ -24,7 +24,7 @@ manager, and end-to-end-encrypted settings sync — in one native app.
 ## About
 
 Most terminals make you choose: a *fast native terminal* **or** a *connection manager* (like the
-commercial SSH clients). SarvTerminal aims to be both — a single, native macOS app where your
+commercial SSH clients). Sarv Terminal aims to be both — a single, native macOS app where your
 terminal, your saved servers, your SSH keys, your tunnels, and your file transfers all live together,
 with your whole setup optionally synced between machines under your own end-to-end encryption.
 
@@ -33,7 +33,7 @@ It is built for developers and operators who live in the terminal and manage mor
 ## Features
 
 Everything Ghostty gives you — fast GPU rendering, ligatures, true color, native macOS feel — **plus
-the SarvTerminal layer.** Each section below shows the feature in action.
+the Sarv Terminal layer.** Each section below shows the feature in action.
 
 ### 🗄️ Connection Manager (Vaults)
 - **Saved hosts** with a full SSH profile: user, port, identity file, agent forwarding, compression,
@@ -115,7 +115,7 @@ the SarvTerminal layer.** Each section below shows the feature in action.
 
 ## Security & Privacy
 
-SarvTerminal is **local-first**. Your hosts, keys, snippets, and tunnel rules are stored on your
+Sarv Terminal is **local-first**. Your hosts, keys, snippets, and tunnel rules are stored on your
 machine under `~/.config/sarvterminal/`; nothing is sent anywhere unless you explicitly enable sync.
 
 ### 🔐 End-to-end-encrypted settings sync
@@ -173,7 +173,7 @@ For deeper build details and the core engine internals, see [HACKING.md](HACKING
 
 - ✅ **macOS app** — actively developed; all features above work today.
 - 🐧 **Linux UI — the big open item.** The terminal *engine* (from Ghostty) is cross-platform, but
-  the SarvTerminal experience (Vaults, SFTP, Keychain, Port Forwarding, Sync) is currently built in
+  the Sarv Terminal experience (Vaults, SFTP, Keychain, Port Forwarding, Sync) is currently built in
   **SwiftUI for macOS only**. **A Linux UI is not yet built, and this is where we'd love help most.**
   If you know GTK/Qt (or have ideas for a shared cross-platform UI), please jump in — see
   [Contributing](#contributing).
@@ -204,17 +204,17 @@ Be kind and constructive — we want this to be a friendly community.
 
 ## Credits & License
 
-SarvTerminal stands on the shoulders of **[Ghostty](https://github.com/ghostty-org/ghostty)**. The
+Sarv Terminal stands on the shoulders of **[Ghostty](https://github.com/ghostty-org/ghostty)**. The
 core terminal engine, rendering, and `libghostty` are the work of **Mitchell Hashimoto and the
-Ghostty contributors**, and SarvTerminal would not exist without them. 🙏
+Ghostty contributors**, and Sarv Terminal would not exist without them. 🙏
 
-This project — both the inherited Ghostty code and the SarvTerminal additions — is released under the
+This project — both the inherited Ghostty code and the Sarv Terminal additions — is released under the
 **[MIT License](LICENSE)**.
 
 ```
-Ghostty:      Copyright (c) Mitchell Hashimoto, Ghostty contributors
-SarvTerminal: Copyright (c) SarvTerminal contributors
+Ghostty:       Copyright (c) Mitchell Hashimoto, Ghostty contributors
+Sarv Terminal: Copyright (c) Sarv Terminal contributors
 ```
 
-If you find SarvTerminal useful, please ⭐ the repo, contribute, and consider supporting upstream
+If you find Sarv Terminal useful, please ⭐ the repo, contribute, and consider supporting upstream
 Ghostty as well.
