@@ -7,33 +7,72 @@
 # avoids the repeated login-keychain password prompts entirely (the build
 # keychain is unlocked, partition-listed for codesign, and deleted afterward).
 #
-# Usage:  ./scripts/release.sh
-# Credentials are entered once and cached in ~/.sarvterminal-release-env.
+# Usage:  ./scripts/release.sh [major|minor|patch|X.Y.Z]
+#   A bump arg advances the version in ./VERSION (e.g. `minor`: 1.0.0 -> 1.1.0),
+#   builds + signs + notarizes the DMG into ./dist (gitignored), updates the
+#   in-repo update feed under docs/ (appcast.xml served via GitHub Pages), and
+#   GENERATES release notes freshly from the git commits since the last tag —
+#   grouped by scope, so a release never ships blank or stale notes.
+#   It then creates ONE release commit + a `vX.Y.Z` tag, PUSHES both, and uploads
+#   the DMG to the GitHub release (needs the `gh` CLI). Set NO_PUSH=1 to stop
+#   after the local commit/tag and push by hand.
+#   With no arg it just builds the current ./VERSION (no commit/tag/push).
+#
+# Credentials are kept in your macOS Keychain — never written to disk, never
+# seen by anyone but you:
+#   • Notarization: a notarytool Keychain profile you create ONCE (see below).
+#   • .p12 password: read from the login Keychain (prompted + stored first run).
 set -e
 cd "$(dirname "$0")/.."
 
-DMG_OUT="$HOME/Downloads/SarvTerminal.dmg"
-ENV_FILE="$HOME/.sarvterminal-release-env"
-[[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
-
-ask_and_save() {
-  local var="$1" prompt="$2" secret="$3"
-  if [[ -z "${!var}" ]]; then
-    if [[ "$secret" == "secret" ]]; then read -rsp "$prompt: " v; echo; else read -rp "$prompt: " v; fi
-    [[ -z "$v" ]] && { echo "✗ $var is required"; exit 1; }
-    export "$var=$v"; echo "export $var=\"$v\"" >> "$ENV_FILE"; chmod 600 "$ENV_FILE"
-  fi
+# ── Version (optional first arg: major|minor|patch|X.Y.Z) ───────────────
+# ./VERSION is the source of truth build.zig reads; release.sh bumps it.
+VERSION_FILE="VERSION"
+bump_version() {
+  local IFS=.; read -r ma mi pa <<<"$1"; ma=${ma:-0}; mi=${mi:-0}; pa=${pa:-0}
+  case "$2" in
+    major) echo "$((ma + 1)).0.0" ;;
+    minor) echo "$ma.$((mi + 1)).0" ;;
+    patch) echo "$ma.$mi.$((pa + 1))" ;;
+  esac
 }
+CUR=$(cat "$VERSION_FILE" 2>/dev/null || echo "1.0.0")
+case "${1:-}" in
+  "")                   VERSION="$CUR" ;;
+  major | minor | patch) VERSION=$(bump_version "$CUR" "$1") ;;
+  [0-9]*.[0-9]*.[0-9]*) VERSION="$1" ;;
+  *) echo "✗ usage: ./scripts/release.sh [major|minor|patch|X.Y.Z]"; exit 1 ;;
+esac
+echo "$VERSION" > "$VERSION_FILE"
+echo "✓ Release version: $VERSION (was $CUR)"
 
-# ── Credentials (cached) ───────────────────────────────────────────────
+# DMG is written into the repo under dist/ (gitignored — see .gitignore) so it
+# sits next to the release commit, ready to upload as a GitHub release asset.
+DIST_DIR="dist"
+mkdir -p "$DIST_DIR"
+DMG_OUT="$DIST_DIR/SarvTerminal-$VERSION.dmg"
+
+# ── Credentials — Keychain only, nothing written to disk ─────────────────
 : "${SARV_P12_PATH:=$HOME/Downloads/sarv-developerID-application.p12}"
-grep -q SARV_P12_PATH "$ENV_FILE" 2>/dev/null || echo "export SARV_P12_PATH=\"$SARV_P12_PATH\"" >> "$ENV_FILE"
 [[ -f "$SARV_P12_PATH" ]] || { echo "✗ .p12 not found at $SARV_P12_PATH (set SARV_P12_PATH)"; exit 1; }
-ask_and_save SARV_P12_PASSWORD "Password for the .p12 ($SARV_P12_PATH)" secret
-ask_and_save APPLE_ID "Apple ID (notarization email)"
-ask_and_save APPLE_APP_SPECIFIC_PASSWORD "App-specific password (appleid.apple.com)" secret
-: "${APPLE_TEAM_ID:=LV54AA5562}"
-grep -q APPLE_TEAM_ID "$ENV_FILE" 2>/dev/null || echo "export APPLE_TEAM_ID=\"$APPLE_TEAM_ID\"" >> "$ENV_FILE"
+
+# .p12 password: read from the login Keychain. If it's not there yet, prompt once
+# and store it in the Keychain (protected + never in a plaintext file).
+P12_KC_SERVICE="sarv-terminal-p12"
+SARV_P12_PASSWORD=$(security find-generic-password -a "$USER" -s "$P12_KC_SERVICE" -w 2>/dev/null || true)
+if [[ -z "$SARV_P12_PASSWORD" ]]; then
+  read -rsp "Password for the .p12 ($SARV_P12_PATH): " SARV_P12_PASSWORD; echo
+  [[ -z "$SARV_P12_PASSWORD" ]] && { echo "✗ .p12 password required"; exit 1; }
+  security add-generic-password -a "$USER" -s "$P12_KC_SERVICE" -w "$SARV_P12_PASSWORD" -U >/dev/null 2>&1 \
+    && echo "✓ Saved .p12 password to your login Keychain (service: $P12_KC_SERVICE)"
+fi
+
+# Notarization uses a notarytool Keychain profile you create ONCE — this script
+# only references the profile NAME and never sees your Apple ID / password:
+#   xcrun notarytool store-credentials "sarv-notary" \
+#     --apple-id "you@sarv.com" --team-id "LV54AA5562" --password "<app-specific-pw>"
+NOTARY_PROFILE="${NOTARY_PROFILE:-sarv-notary}"
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-LV54AA5562}"   # not secret; only used in the setup hint
 
 # ── Ephemeral signing keychain (no prompts) ────────────────────────────
 BUILD_KC="$HOME/Library/Keychains/sarv-build.keychain-db"
@@ -64,9 +103,19 @@ echo "✓ Signing identity (ephemeral keychain): $SIGN_ID"
 
 # ── Build the release app ──────────────────────────────────────────────
 echo "=== Building release (ReleaseFast) ==="
+# Start from a clean bundle: dev.sh (Debug) and this script (ReleaseLocal) build
+# into the SAME zig-out with different EXECUTABLE_NAMEs, so stale binaries
+# (`ghostty`, `SarvTerminalDev`) pile up in Contents/MacOS and break
+# `codesign --deep --strict`.
+rm -rf zig-out/SarvTerminal.app
 zig build -Doptimize=ReleaseFast
 APP="zig-out/SarvTerminal.app"
 [[ -d "$APP" ]] || { echo "✗ $APP not found after build"; exit 1; }
+
+# Belt-and-suspenders: keep only the declared main executable in MacOS/.
+EXE=$(/usr/libexec/PlistBuddy -c "Print CFBundleExecutable" "$APP/Contents/Info.plist")
+find "$APP/Contents/MacOS" -maxdepth 1 -type f ! -name "$EXE" -delete
+echo "✓ Bundle executable: $EXE"
 
 # ── Sign inside-out (Sparkle first, app last) ──────────────────────────
 sign(){ codesign --force --timestamp --options runtime --keychain "$BUILD_KC" --sign "$SIGN_ID" "$@"; }
@@ -96,9 +145,9 @@ sign "$DMG_OUT"
 
 # ── Notarize + staple ──────────────────────────────────────────────────
 echo "=== Notarizing (a few minutes) ==="
-xcrun notarytool submit "$DMG_OUT" \
-  --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-  --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait
+echo "  (using Keychain profile '$NOTARY_PROFILE' — if this fails, run once:"
+echo "     xcrun notarytool store-credentials $NOTARY_PROFILE --apple-id <you@…> --team-id $APPLE_TEAM_ID --password <app-specific-pw>)"
+xcrun notarytool submit "$DMG_OUT" --keychain-profile "$NOTARY_PROFILE" --wait
 xcrun stapler staple "$DMG_OUT"
 xcrun stapler staple "$APP"
 
@@ -108,3 +157,170 @@ echo "  Signed + notarized DMG:"
 echo "  $DMG_OUT"
 echo "════════════════════════════════════════"
 spctl --assess --type open --context context:primary-signature -v "$DMG_OUT" 2>&1 || true
+
+# ── Update the appcast + changelog ──────────────────────────────────────
+# The update feed lives in THIS repo under docs/ and is served via GitHub Pages
+# (https://sarv.github.io/SarvTerminal/appcast.xml). Optional:
+#   SARV_DMG_URL         public DMG URL → adds a Sparkle <enclosure> (auto-download)
+#   SPARKLE_SIGN_UPDATE  path to Sparkle's `sign_update` tool → adds edSignature
+#   APPCAST_PUSH=1       commit + push docs/appcast.xml + release notes automatically
+APPCAST="docs/appcast.xml"
+NOTES_DIR="docs/release-notes"
+if [[ -f "$APPCAST" ]]; then
+  if grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" "$APPCAST"; then
+    echo "=== Appcast already lists $VERSION — not adding a duplicate item ==="
+  else
+  echo "=== Updating $APPCAST ==="
+  PUBDATE=$(date -u +'%a, %d %b %Y %H:%M:%S +0000')
+  NOTES_URL="https://sarv.github.io/SarvTerminal/release-notes/$VERSION.html"
+  # Direct DMG download on the public GitHub release (uploaded via `gh release
+  # create` below). The app's update notification opens this link directly.
+  DL_URL="https://github.com/Sarv/SarvTerminal/releases/download/v$VERSION/SarvTerminal-$VERSION.dmg"
+
+  if [[ -n "${SARV_DMG_URL:-}" ]]; then
+    LEN=$(stat -f%z "$DMG_OUT")
+    EDSIG=""
+    if [[ -n "${SPARKLE_SIGN_UPDATE:-}" && -x "$SPARKLE_SIGN_UPDATE" ]]; then
+      EDSIG=$("$SPARKLE_SIGN_UPDATE" "$DMG_OUT" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')
+    fi
+    BODY="      <enclosure url=\"$SARV_DMG_URL\" sparkle:version=\"$VERSION\" sparkle:shortVersionString=\"$VERSION\" length=\"$LEN\" type=\"application/octet-stream\"${EDSIG:+ sparkle:edSignature=\"$EDSIG\"}/>"
+  else
+    # No public DMG yet → informational item (app notifies + links to the page).
+    BODY="      <sparkle:informationalUpdate></sparkle:informationalUpdate>"
+  fi
+
+  ITEM="    <item>
+      <title>Version $VERSION</title>
+      <link>$DL_URL</link>
+      <sparkle:version>$VERSION</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:releaseNotesLink>$NOTES_URL</sparkle:releaseNotesLink>
+      <sparkle:minimumSystemVersion>13.0.0</sparkle:minimumSystemVersion>
+      <pubDate>$PUBDATE</pubDate>
+$BODY
+    </item>"
+
+  # Insert the new item right after <title>SarvTerminal</title> (newest first).
+  awk -v item="$ITEM" '
+    /<title>SarvTerminal<\/title>/ && !done { print; print item; done=1; next }
+    { print }
+  ' "$APPCAST" > "$APPCAST.tmp" \
+    && mv "$APPCAST.tmp" "$APPCAST"
+
+  mkdir -p "$NOTES_DIR"
+  NOTES_FILE="$NOTES_DIR/$VERSION.html"
+  if [[ ! -f "$NOTES_FILE" ]]; then
+    # Build the notes FRESHLY from the git commits since the last release tag —
+    # never copied from a previous version (that shipped stale, wrong notes).
+    # We keep user-facing conventional commits (feat/fix/perf) and group them by
+    # scope (tabs, ssh, sessions…) so sections match how features are organised.
+    # Shared styling is in docs/release-notes/style.css; each file just links it.
+    BASE_TAG=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)
+    if [[ -n "$BASE_TAG" ]]; then RANGE="$BASE_TAG..HEAD"; else RANGE="HEAD"; fi
+    echo "=== Generating $VERSION notes from commits (${BASE_TAG:-repo start}..HEAD) ==="
+
+    esc(){ sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+    prettify(){ case "$1" in
+        ssh|ssl|api|ui|dmg|url) tr '[:lower:]' '[:upper:]' <<<"$1" ;;
+        general) echo "General" ;;
+        *) echo "$(tr '[:lower:]' '[:upper:]' <<<"${1:0:1}")${1:1}" ;;
+      esac; }
+
+    # scope<TAB>description, one per kept commit (newest first).
+    PARSED=$(mktemp)
+    re='^(feat|fix|perf)(\(([^)]+)\))?!?:[[:space:]]+(.+)$'
+    git log $RANGE --no-merges --pretty=format:'%s' | while IFS= read -r subj; do
+      if [[ "$subj" =~ $re ]]; then
+        printf '%s\t%s\n' "${BASH_REMATCH[3]:-general}" "${BASH_REMATCH[4]}"
+      fi
+    done > "$PARSED"
+
+    # Never blank: if no conventional feat/fix/perf commits exist in range, fall
+    # back to every commit subject so the notes still describe real, current work.
+    if [[ ! -s "$PARSED" ]]; then
+      git log $RANGE --no-merges --pretty=format:'%s' | sed 's/^/general\t/' > "$PARSED"
+    fi
+
+    BODY=""
+    for scope in $(cut -f1 "$PARSED" | awk '!seen[$0]++'); do
+      BODY+="  <h2>$(prettify "$scope")</h2>"$'\n'"  <ul>"$'\n'
+      while IFS=$'\t' read -r sc desc; do
+        [[ "$sc" == "$scope" ]] || continue
+        BODY+="    <li>$(printf '%s' "$desc" | esc)</li>"$'\n'
+      done < "$PARSED"
+      BODY+="  </ul>"$'\n'
+    done
+    rm -f "$PARSED"
+
+    cat > "$NOTES_FILE" <<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SarvTerminal $VERSION</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>SarvTerminal $VERSION</h1>
+  <div class="meta">Improvements &amp; fixes</div>
+$BODY</body>
+</html>
+HTML
+  fi
+  echo "✓ Appcast item added and $NOTES_FILE generated from commits — review/tidy the wording before publishing."
+
+  fi
+fi
+
+# ── Release commit + tag → push → upload DMG to the GitHub release ───────
+# Only when this run actually set a new version (a bump arg or explicit X.Y.Z);
+# a bare rebuild of the current VERSION must not create a commit/tag.
+NOTES_FILE="$NOTES_DIR/$VERSION.html"
+REPO="Sarv/SarvTerminal"
+if [[ -n "${1:-}" && "$VERSION" != "$CUR" ]] || [[ "${FORCE_RELEASE_COMMIT:-}" == "1" ]]; then
+  if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+    echo "⚠︎ Tag v$VERSION already exists — skipping commit/tag/push."
+  else
+    # The generated notes are your entry point — edit them now so they land in
+    # the single release commit before it's pushed (interactive shells pause).
+    echo ""
+    echo "→ Release notes generated at: $NOTES_FILE"
+    echo "  Edit them now if you want; they're the starting point, never blank/stale."
+    if [[ -t 0 && "${NO_PUSH:-}" != "1" ]]; then
+      read -rp "  Press Enter to commit + tag + PUSH v$VERSION and publish (Ctrl-C to abort)… " _
+    fi
+    git add "$VERSION_FILE" "$APPCAST" "$NOTES_FILE"
+    git commit -q -m "release: SarvTerminal $VERSION"
+    git tag -a "v$VERSION" -m "SarvTerminal $VERSION"
+    echo "✓ Created release commit + tag v$VERSION"
+
+    if [[ "${NO_PUSH:-}" == "1" ]]; then
+      echo "  (NO_PUSH=1 — not pushing. Push by hand: git push && git push origin v$VERSION)"
+    else
+      BRANCH=$(git rev-parse --abbrev-ref HEAD)
+      echo "=== Pushing $BRANCH + tag v$VERSION ==="
+      git push origin "$BRANCH"
+      git push origin "v$VERSION"
+
+      echo "=== Publishing GitHub release v$VERSION (uploading DMG) ==="
+      if command -v gh >/dev/null 2>&1; then
+        gh release create "v$VERSION" "$DMG_OUT" \
+          --repo "$REPO" --title "SarvTerminal $VERSION" --notes-file "$NOTES_FILE"
+        echo "✓ Pushed + published release v$VERSION with the DMG attached"
+      else
+        echo "⚠︎ 'gh' CLI not found — commit + tag are pushed, but the DMG was NOT uploaded."
+        echo "   Install gh (brew install gh) then run:"
+        echo "     gh release create v$VERSION \"$DMG_OUT\" --repo $REPO \\"
+        echo "       --title \"SarvTerminal $VERSION\" --notes-file \"$NOTES_FILE\""
+      fi
+    fi
+  fi
+fi
+
+echo ""
+echo "════════════════════════════════════════"
+echo "  Release v$VERSION complete."
+echo "  DMG:   $DMG_OUT"
+echo "  Notes: $NOTES_FILE"
+echo "════════════════════════════════════════"

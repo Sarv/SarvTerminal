@@ -13,14 +13,17 @@ import OSLog
 final class SarvUpdateChecker {
     static let shared = SarvUpdateChecker()
 
-    /// TODO: point at the public repo once it exists, e.g.
-    /// `https://api.github.com/repos/<owner>/SarvTerminal/releases/latest`
-    /// (uses the JSON `tag_name`), or a raw `VERSION` file URL.
-    private static let latestVersionURL: URL? = nil
+    /// The Sparkle appcast, served from this repo's `docs/` via GitHub Pages.
+    /// Shared with Sparkle's own feed so both the download popup and this
+    /// notification poll the same source.
+    static let appcastURLString = "https://sarv.github.io/SarvTerminal/appcast.xml"
 
-    /// TODO: the page to open when the user clicks the notification, e.g.
-    /// `https://github.com/<owner>/SarvTerminal/releases/latest`.
-    private static let releasesPageURL: URL? = nil
+    /// Polled for the latest `<sparkle:shortVersionString>`.
+    private static let latestVersionURL = URL(string: appcastURLString)
+
+    /// The page the "update available" notification opens ("click here") — where
+    /// the user downloads the new version.
+    private static let releasesPageURL = URL(string: "https://sarv.com/sarv-terminal")
 
     /// How often to re-check while the app is running.
     private static let interval: TimeInterval = 60 * 60 // 1 hour
@@ -69,7 +72,10 @@ final class SarvUpdateChecker {
             }
             guard let current = Self.currentVersion else { return }
             if Self.isNewer(remote, than: current) {
-                SarvNotifications.shared.notify(.updateAvailable(version: remote, url: Self.releasesPageURL))
+                // Open the newest item's <link> (a direct DMG download) when the
+                // appcast provides one; otherwise fall back to the releases page.
+                let target = Self.parseDownloadURL(from: data) ?? Self.releasesPageURL
+                SarvNotifications.shared.notify(.updateAvailable(version: remote, url: target))
             }
         } catch {
             Self.logger.warning("update check failed error=\(error.localizedDescription, privacy: .public)")
@@ -82,17 +88,41 @@ final class SarvUpdateChecker {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
     }
 
-    /// Accept either a GitHub releases JSON (`tag_name`) or a plain version body.
+    /// Accept a Sparkle appcast (first `<sparkle:shortVersionString>` = latest,
+    /// since the newest item is listed first), a GitHub releases JSON
+    /// (`tag_name`), or a plain version body.
     private static func parseVersion(from data: Data) -> String? {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let tag = json["tag_name"] as? String {
             return normalize(tag)
         }
-        if let body = String(data: data, encoding: .utf8) {
-            let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty, trimmed.count < 40 { return normalize(trimmed) }
+        guard let body = String(data: data, encoding: .utf8) else { return nil }
+        if let v = firstMatch(in: body,
+                              pattern: #"<sparkle:shortVersionString>\s*([^<\s]+)\s*</sparkle:shortVersionString>"#) {
+            return normalize(v)
         }
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed.count < 40 { return normalize(trimmed) }
         return nil
+    }
+
+    /// The direct download link for the newest appcast item (its `<link>`, the
+    /// first `<link>` in the feed since newest is listed first). Used as the
+    /// notification target so "click here" goes straight to the DMG.
+    private static func parseDownloadURL(from data: Data) -> URL? {
+        guard let body = String(data: data, encoding: .utf8),
+              let link = firstMatch(in: body, pattern: #"<link>\s*([^<\s]+)\s*</link>"#)
+        else { return nil }
+        return URL(string: link)
+    }
+
+    /// First capture group of `pattern` in `text`, or nil.
+    private static func firstMatch(in text: String, pattern: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              m.numberOfRanges > 1,
+              let r = Range(m.range(at: 1), in: text) else { return nil }
+        return String(text[r])
     }
 
     private static func normalize(_ v: String) -> String {

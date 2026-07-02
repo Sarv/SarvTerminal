@@ -1,0 +1,18 @@
+/* Shared styling for SarvTerminal release notes (Sparkle web view + web). */
+:root { color-scheme: light dark; }
+body {
+  font: 14px/1.55 -apple-system, "SF Pro Text", system-ui, sans-serif;
+  margin: 18px 20px; color: #1d1d1f; background: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  body { color: #e8e8ea; background: #1c1c1e; }
+  h1 { color: #fff; }
+}
+h1 { font-size: 20px; margin: 0 0 2px; }
+p { margin: 6px 0 12px; }
+.meta { color: #86868b; font-size: 12px; margin-bottom: 16px; }
+h2 { font-size: 14px; margin: 18px 0 6px; letter-spacing: .02em; text-transform: uppercase; color: #86868b; }
+ul { margin: 0 0 4px; padding-left: 20px; }
+li { margin: 3px 0; }
+code { font: 12px/1 ui-monospace, "SF Mono", Menlo, monospace; padding: 1px 5px; border-radius: 4px; background: rgba(127,127,127,.15); }
+.tag { font-size: 11px; color: #86868b; border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; margin-left: 4px; opacity: .8; }

@@ -3,17 +3,11 @@ import Cocoa
 
 extension UpdateDriver: SPUUpdaterDelegate {
     func feedURLString(for updater: SPUUpdater) -> String? {
-        guard let appDelegate = NSApplication.shared.delegate as? AppDelegate else {
-            return nil
-        }
-
-        // Sparkle supports a native concept of "channels" but it requires that
-        // you share a single appcast file. We don't want to do that so we
-        // do this instead.
-        switch appDelegate.ghostty.config.autoUpdateChannel {
-        case .tip: return "https://tip.files.ghostty.org/appcast.xml"
-        case .stable: return "https://release.files.ghostty.org/appcast.xml"
-        }
+        // SarvTerminal ships a single appcast (public GitHub Pages), shared with
+        // the polling `SarvUpdateChecker`. The "Check for Updates" button and the
+        // download popup read this; the popup installs from the appcast's DMG
+        // enclosure once the release repo is public.
+        SarvUpdateChecker.appcastURLString
     }
 
     /// Called when an update is scheduled to install silently,
