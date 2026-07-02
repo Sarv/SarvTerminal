@@ -97,7 +97,7 @@ struct KeybindsSectionView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Configure keyboard shortcuts")
                 .font(.title3.weight(.semibold))
-            Text("Click the + on any action to record a shortcut. Multiple shortcuts can map to the same action. SarvTerminal's own shortcuts (command palette, local terminal) are rebindable too — e.g. you can swap ⌘T and ⌘L.")
+            Text("Click the + on any action to record a shortcut. Multiple shortcuts can map to the same action. Sarv Terminal's own shortcuts (command palette, local terminal) are rebindable too — e.g. you can swap ⌘T and ⌘L.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }

@@ -96,7 +96,7 @@ class UpdateDriver: NSObject, SPUUserDriver {
         if !hasUnobtrusiveTarget {
             SarvAlert.runModal(
                 title: "You're Up to Date",
-                message: "You're already running the latest version of SarvTerminal.",
+                message: "You're already running the latest version of Sarv Terminal.",
                 buttons: [.init("OK", isDefault: true, isCancel: true)])
             viewModel.state = .idle
             acknowledgement()

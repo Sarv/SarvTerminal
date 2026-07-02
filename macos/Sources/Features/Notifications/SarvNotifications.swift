@@ -316,7 +316,7 @@ final class SarvNotifications {
         case let .updateAvailable(version, url):
             return Copy(
                 title: "Update available",
-                body: "SarvTerminal \(version) is available.",
+                body: "Sarv Terminal \(version) is available.",
                 route: .update,
                 url: url,
                 dedupe: version

@@ -62,7 +62,7 @@ private struct PermissionRequestView: View {
                 Text("Enable automatic updates?")
                     .font(.system(size: 13, weight: .semibold))
 
-                Text("SarvTerminal can automatically check for updates in the background.")
+                Text("Sarv Terminal can automatically check for updates in the background.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

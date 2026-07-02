@@ -150,7 +150,7 @@ struct GitHubSyncProvider: SyncProvider {
         }
 
         // 5. One commit.
-        var commitBody: [String: Any] = ["message": "Sync SarvTerminal settings", "tree": treeSHA]
+        var commitBody: [String: Any] = ["message": "Sync Sarv Terminal settings", "tree": treeSHA]
         if let parentCommit { commitBody["parents"] = [parentCommit] }
         let (rcCm, commitJSON) = try await gh("/git/commits", method: "POST",
                                               body: try JSONSerialization.data(withJSONObject: commitBody))

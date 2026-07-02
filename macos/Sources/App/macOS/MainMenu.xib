@@ -78,11 +78,11 @@
         <customObject id="YLy-65-1bz" customClass="NSFontManager"/>
         <menu title="Main Menu" systemMenu="main" id="AYu-sK-qS6">
             <items>
-                <menuItem title="SarvTerminal" id="1Xt-HY-uBw">
+                <menuItem title="Sarv Terminal" id="1Xt-HY-uBw">
                     <modifierMask key="keyEquivalentModifierMask"/>
-                    <menu key="submenu" title="SarvTerminal" systemMenu="apple" id="uQy-DD-JDr">
+                    <menu key="submenu" title="Sarv Terminal" systemMenu="apple" id="uQy-DD-JDr">
                         <items>
-                            <menuItem title="About SarvTerminal" id="5kV-Vb-QxS">
+                            <menuItem title="About Sarv Terminal" id="5kV-Vb-QxS">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="showAbout:" target="-1" id="tGt-68-tLn"/>
@@ -118,7 +118,7 @@
                                     <action selector="toggleSecureInput:" target="bbz-4X-AYv" id="vWx-z8-5Sy"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Make SarvTerminal the Default Terminal" id="b1t-oB-7MI" userLabel="Set SarvTerminal as Default Terminal App">
+                            <menuItem title="Make Sarv Terminal the Default Terminal" id="b1t-oB-7MI" userLabel="Set Sarv Terminal as Default Terminal App">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="setAsDefaultTerminal:" target="bbz-4X-AYv" id="QHh-CA-Qho"/>
@@ -130,7 +130,7 @@
                                 <menu key="submenu" title="Services" id="aQe-vS-j8Q"/>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="qno-yg-pur"/>
-                            <menuItem title="Hide SarvTerminal" keyEquivalent="h" id="Olw-nP-bQN">
+                            <menuItem title="Hide Sarv Terminal" keyEquivalent="h" id="Olw-nP-bQN">
                                 <connections>
                                     <action selector="hide:" target="-1" id="PnN-Uc-m68"/>
                                 </connections>
@@ -148,7 +148,7 @@
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="kCx-OE-vgT"/>
-                            <menuItem title="Quit SarvTerminal" id="4sb-4s-VLi">
+                            <menuItem title="Quit Sarv Terminal" id="4sb-4s-VLi">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="terminate:" target="-1" id="Te7-pn-YzF"/>
@@ -537,7 +537,7 @@
                     <modifierMask key="keyEquivalentModifierMask"/>
                     <menu key="submenu" title="Help" systemMenu="help" id="F2S-fz-NVQ">
                         <items>
-                            <menuItem title="SarvTerminal Help" keyEquivalent="?" id="FKE-Sm-Kum">
+                            <menuItem title="Sarv Terminal Help" keyEquivalent="?" id="FKE-Sm-Kum">
                                 <connections>
                                     <action selector="showHelp:" target="bbz-4X-AYv" id="tiy-ow-xSw"/>
                                 </connections>

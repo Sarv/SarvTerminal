@@ -10,7 +10,7 @@ struct ErrorView: View {
 
             VStack(alignment: .leading) {
                 Text("Oh, no. 😭").font(.title)
-                Text("Something went fatally wrong.\nCheck the logs and restart SarvTerminal.")
+                Text("Something went fatally wrong.\nCheck the logs and restart Sarv Terminal.")
             }
         }
         .padding()

@@ -806,7 +806,7 @@ struct HostsSectionView: View {
         let alert = NSAlert()
         alert.icon = .sarvBrandIcon
         alert.messageText = "Delete \"\(host.displayLabel)\"?"
-        alert.informativeText = "This removes the saved host from SarvTerminal. The remote server isn't affected."
+        alert.informativeText = "This removes the saved host from Sarv Terminal. The remote server isn't affected."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
