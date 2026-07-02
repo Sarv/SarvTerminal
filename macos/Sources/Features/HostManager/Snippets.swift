@@ -6,6 +6,8 @@ struct Snippet: Identifiable, Codable, Hashable {
     var id: UUID
     var name: String
     var command: String
+    /// Pinned snippets sort to the top of lists.
+    var pinned: Bool
     var createdAt: Date
     var updatedAt: Date
 
@@ -21,12 +23,13 @@ struct Snippet: Identifiable, Codable, Hashable {
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         command = try c.decodeIfPresent(String.self, forKey: .command) ?? ""
+        pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? now
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? now
     }
 
-    init(id: UUID, name: String, command: String, createdAt: Date, updatedAt: Date) {
-        self.id = id; self.name = name; self.command = command
+    init(id: UUID, name: String, command: String, pinned: Bool = false, createdAt: Date, updatedAt: Date) {
+        self.id = id; self.name = name; self.command = command; self.pinned = pinned
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 
