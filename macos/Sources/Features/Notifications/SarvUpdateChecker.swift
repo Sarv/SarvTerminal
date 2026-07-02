@@ -72,10 +72,9 @@ final class SarvUpdateChecker {
             }
             guard let current = Self.currentVersion else { return }
             if Self.isNewer(remote, than: current) {
-                // Open the newest item's <link> (a direct DMG download) when the
-                // appcast provides one; otherwise fall back to the releases page.
-                let target = Self.parseDownloadURL(from: data) ?? Self.releasesPageURL
-                SarvNotifications.shared.notify(.updateAvailable(version: remote, url: target))
+                // Opening the notification takes the user to the Sarv Terminal
+                // web page (not the raw DMG), as agreed.
+                SarvNotifications.shared.notify(.updateAvailable(version: remote, url: Self.releasesPageURL))
             }
         } catch {
             Self.logger.warning("update check failed error=\(error.localizedDescription, privacy: .public)")
@@ -104,16 +103,6 @@ final class SarvUpdateChecker {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty, trimmed.count < 40 { return normalize(trimmed) }
         return nil
-    }
-
-    /// The direct download link for the newest appcast item (its `<link>`, the
-    /// first `<link>` in the feed since newest is listed first). Used as the
-    /// notification target so "click here" goes straight to the DMG.
-    private static func parseDownloadURL(from data: Data) -> URL? {
-        guard let body = String(data: data, encoding: .utf8),
-              let link = firstMatch(in: body, pattern: #"<link>\s*([^<\s]+)\s*</link>"#)
-        else { return nil }
-        return URL(string: link)
     }
 
     /// First capture group of `pattern` in `text`, or nil.
