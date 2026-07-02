@@ -61,7 +61,22 @@ class UpdateDriver: NSObject, SPUUserDriver {
                          reply: @escaping @Sendable (SPUUserUpdateChoice) -> Void) {
         viewModel.state = .updateAvailable(.init(appcastItem: appcastItem, reply: reply))
         if !hasUnobtrusiveTarget {
-            standard.showUpdateFound(with: appcastItem, state: state, reply: reply)
+            // No terminal window to anchor the popover — show our own centered
+            // card instead of Sparkle's top-left-icon alert.
+            let choice = SarvAlert.runModal(
+                title: "Update Available",
+                message: "Version \(appcastItem.displayVersionString) is available. Would you like to install it now?",
+                buttons: [
+                    .init("Install and Relaunch", isDefault: true),
+                    .init("Later", isCancel: true),
+                    .init("Skip This Version"),
+                ])
+            viewModel.state = .idle
+            switch choice.buttonIndex {
+            case 0: reply(.install)
+            case 2: reply(.skip)
+            default: reply(.dismiss)
+            }
         }
     }
 
@@ -79,7 +94,12 @@ class UpdateDriver: NSObject, SPUUserDriver {
         viewModel.state = .notFound(.init(acknowledgement: acknowledgement))
 
         if !hasUnobtrusiveTarget {
-            standard.showUpdateNotFoundWithError(error, acknowledgement: acknowledgement)
+            SarvAlert.runModal(
+                title: "You're Up to Date",
+                message: "You're already running the latest version of SarvTerminal.",
+                buttons: [.init("OK", isDefault: true, isCancel: true)])
+            viewModel.state = .idle
+            acknowledgement()
         }
     }
 
@@ -100,7 +120,22 @@ class UpdateDriver: NSObject, SPUUserDriver {
             }))
 
         if !hasUnobtrusiveTarget {
-            standard.showUpdaterError(error, acknowledgement: acknowledgement)
+            let choice = SarvAlert.runModal(
+                title: "Update Error",
+                message: error.localizedDescription,
+                buttons: [
+                    .init("Retry", isDefault: true),
+                    .init("Cancel", isCancel: true),
+                ])
+            viewModel.state = .idle
+            acknowledgement()
+            if choice.buttonIndex == 0 {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          let delegate = NSApp.delegate as? AppDelegate else { return }
+                    delegate.checkForUpdates(self)
+                }
+            }
         } else {
             acknowledgement()
         }
