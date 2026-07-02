@@ -289,6 +289,7 @@ final class VaultsTabsModel: ObservableObject {
         guard UserDefaults.standard.object(forKey: "SarvRestoreSession") as? Bool ?? true else { return }
 
         let alert = NSAlert()
+        alert.icon = .sarvBrandIcon
         alert.messageText = "Reopen your last session?"
         let n = entries.count
         alert.informativeText = "Reopen the \(n) tab\(n == 1 ? "" : "s") you had open when you last quit."

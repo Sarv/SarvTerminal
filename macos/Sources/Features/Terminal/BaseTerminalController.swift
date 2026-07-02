@@ -334,6 +334,7 @@ class BaseTerminalController: NSWindowController,
         // If we need confirmation by any, show one confirmation for all windows
         // in the tab group.
         let alert = NSAlert()
+        alert.icon = .sarvBrandIcon
         alert.messageText = messageText
         alert.informativeText = informativeText
         alert.addButton(withTitle: confirmButtonTitle)
@@ -372,6 +373,7 @@ class BaseTerminalController: NSWindowController,
         guard let window else { return }
 
         let alert = NSAlert()
+        alert.icon = .sarvBrandIcon
         alert.messageText = "Change Tab Title"
         alert.informativeText = "Leave blank to restore the default."
         alert.alertStyle = .informational

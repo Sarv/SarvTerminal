@@ -611,6 +611,7 @@ extension Ghostty {
         func promptTitle() {
             // Create an alert dialog
             let alert = NSAlert()
+            alert.icon = .sarvBrandIcon
             alert.messageText = "Change Terminal Title"
             alert.informativeText = "Leave blank to restore the default."
             alert.alertStyle = .informational

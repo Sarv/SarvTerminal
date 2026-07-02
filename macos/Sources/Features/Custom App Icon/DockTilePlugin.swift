@@ -51,13 +51,10 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
     private func resetIcon(dockTile: NSDockTile) {
         let appIcon: NSImage?
         if #available(macOS 26.0, *) {
-            #if DEBUG
-            // Use the `Blueprint` icon to distinguish Debug from Release builds.
-            appIcon = pluginBundle.image(forResource: "BlueprintImage")!
-            #else
-            // Reset to Ghostty.icon
+            // Reset to the bundle icon. Debug and Release ship different app
+            // icons (AppIconDebug carries a DEV badge), so the bundle already
+            // distinguishes the two — no need to override with Blueprint.
             appIcon = nil
-            #endif
         } else {
             // Use the bundled icon to keep the corner radius consistent with pre-Tahoe apps.
             appIcon = pluginBundle.image(forResource: "AppIconImage")!

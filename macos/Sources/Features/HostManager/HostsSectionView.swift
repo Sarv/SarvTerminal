@@ -804,6 +804,7 @@ struct HostsSectionView: View {
 
     private func confirmDeleteHost(_ host: SavedHost, fromEditor: Bool) {
         let alert = NSAlert()
+        alert.icon = .sarvBrandIcon
         alert.messageText = "Delete \"\(host.displayLabel)\"?"
         alert.informativeText = "This removes the saved host from SarvTerminal. The remote server isn't affected."
         alert.alertStyle = .warning
@@ -819,6 +820,7 @@ struct HostsSectionView: View {
         let inGroup = hostsStore.recursiveCount(in: group.id, groupsStore: groupsStore)
         let subGroups = groupsStore.descendants(of: group.id).count
         let alert = NSAlert()
+        alert.icon = .sarvBrandIcon
         alert.messageText = "Delete group \"\(group.displayName)\"?"
         var detail: [String] = []
         if inGroup > 0 {
@@ -900,6 +902,7 @@ struct HostsSectionView: View {
             added += 1
         }
         let alert = NSAlert()
+        alert.icon = .sarvBrandIcon
         alert.messageText = added == 0 ? "Nothing to import"
                                         : "Imported \(added) host\(added == 1 ? "" : "s")"
         alert.informativeText = added == 0

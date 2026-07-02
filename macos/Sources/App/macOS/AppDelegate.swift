@@ -527,6 +527,7 @@ class AppDelegate: NSObject,
             // may want to show this as a sheet on the focused window (especially if we're
             // opening a tab). I'm not sure.
             let alert = NSAlert()
+            alert.icon = .sarvBrandIcon
             alert.messageText = "Allow Ghostty to execute \"\(filename)\"?"
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Cancel")
@@ -1464,6 +1465,7 @@ extension AppDelegate {
             guard let error else { return }
             Task { @MainActor in
                 let alert = NSAlert()
+                alert.icon = .sarvBrandIcon
                 alert.messageText = "Failed to Set Default Terminal"
                 alert.informativeText = """
                 Ghostty could not be set as the default terminal application.
@@ -1543,6 +1545,7 @@ extension AppDelegate {
             return .terminateLater
         } else {
             let alert = NSAlert()
+            alert.icon = .sarvBrandIcon
             alert.messageText = "You have \(controllersNeedConfirmation.count) windows with running processes. Do you want to review these windows before quitting?"
             alert.informativeText = "If you don't review your windows, any running processes will be terminated"
             alert.addButton(withTitle: "Review Windows...")

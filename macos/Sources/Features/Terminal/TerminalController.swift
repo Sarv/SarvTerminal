@@ -439,6 +439,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         if let fullscreenStyle = parentController.fullscreenStyle,
            fullscreenStyle.isFullscreen && !fullscreenStyle.supportsTabs {
             let alert = NSAlert()
+            alert.icon = .sarvBrandIcon
             alert.messageText = "Cannot Create New Tab"
             alert.informativeText = "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again."
             alert.addButton(withTitle: "OK")
@@ -972,6 +973,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
 
         let alert = NSAlert()
+        alert.icon = .sarvBrandIcon
         alert.messageText = "Close All Windows?"
         alert.informativeText = "All terminal sessions will be terminated."
         alert.addButton(withTitle: "Close All Windows")
