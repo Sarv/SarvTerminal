@@ -399,6 +399,62 @@ final class VaultsTabsModel: ObservableObject {
         return true
     }
 
+    /// The tab command-sidebar Run/Paste act on: the active tab, else the most
+    /// recent, else any.
+    private var commandTargetTab: TerminalTab? {
+        if let t = activeTerminal { return t }
+        if let id = lastTerminalID, let t = terminals.first(where: { $0.id == id }) { return t }
+        return terminals.last
+    }
+
+    /// Panes a command targets: EVERY broadcast-eligible pane when the tab is
+    /// broadcasting, otherwise just the focused pane (fallback: first leaf).
+    private func commandTargetPanes(in tab: TerminalTab) -> [Ghostty.SurfaceView] {
+        let leaves = tab.surfaceTree.root?.leaves() ?? []
+        if tab.broadcasting {
+            let eligible = leaves.filter { paneAcceptsBroadcast($0) }
+            return eligible.isEmpty ? leaves : eligible
+        }
+        if let focused = tab.focusedSurface, leaves.contains(where: { $0 === focused }) {
+            return [focused]
+        }
+        return leaves.first.map { [$0] } ?? []
+    }
+
+    /// Run a command in the FOCUSED pane of the active tab (or every pane when
+    /// broadcasting). Pastes then submits with a REAL Enter — same mechanism as
+    /// `sendSnippet`. Used by the command sidebar's Run button.
+    @MainActor @discardableResult
+    func runInTargetTerminal(_ command: String) -> Bool {
+        guard let tab = commandTargetTab else { return false }
+        var text = command
+        while text.hasSuffix("\n") || text.hasSuffix("\r") { text.removeLast() }
+        var sent = false
+        for pane in commandTargetPanes(in: tab) {
+            guard let model = pane.surfaceModel else { continue }
+            model.sendText(text)
+            model.sendKeyEvent(Ghostty.Input.KeyEvent(key: .enter, action: .press))
+            sent = true
+        }
+        if sent { selection = .terminal(tab.id) }
+        return sent
+    }
+
+    /// Paste text into the focused pane of the active tab (or every pane when
+    /// broadcasting) WITHOUT running it. Used by the command sidebar's Paste button.
+    @MainActor @discardableResult
+    func pasteToTargetTerminal(_ command: String) -> Bool {
+        guard let tab = commandTargetTab else { return false }
+        var sent = false
+        for pane in commandTargetPanes(in: tab) {
+            guard let model = pane.surfaceModel else { continue }
+            model.sendText(command)
+            sent = true
+        }
+        if sent { selection = .terminal(tab.id) }
+        return sent
+    }
+
     /// The tab currently being drag-reordered / split (set by the AppKit chip
     /// drag source). Used to suppress split drop zones over that tab's OWN
     /// surfaces — you can't split a tab into itself. nil when no drag is active.

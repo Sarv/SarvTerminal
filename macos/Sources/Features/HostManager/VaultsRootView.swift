@@ -7,6 +7,9 @@ import SwiftUI
 struct VaultsRootView: View {
     @ObservedObject var tabs: VaultsTabsModel = .shared
     @ObservedObject var background: BackgroundDisplayStore = .shared
+    /// Termius-style right command sidebar (Search / Snippets / History / Themes).
+    @State private var sidebarVisible = false
+    @State private var sidebarTab: VaultsCommandSidebar.Tab = .snippets
     /// The shared libghostty app. Non-nil in practice (set post-launch); if it
     /// were ever nil we fall back to a dashboard-only window rather than
     /// constructing a second libghostty instance.
@@ -26,24 +29,32 @@ struct VaultsRootView: View {
                 .zIndex(1)
             Divider()
                 .zIndex(1)
-            Group {
-                if let ghostty {
-                    content(ghostty).environmentObject(ghostty)
-                } else {
-                    HostManagerView()
+            HStack(spacing: 0) {
+                Group {
+                    if let ghostty {
+                        content(ghostty).environmentObject(ghostty)
+                    } else {
+                        HostManagerView()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // In shared mode the content area is CLEAR so the translucent panes
+                // blend against the window's NSImageView backing (the shared image,
+                // drawn by HostManagerController). Otherwise it's the opaque window
+                // background.
+                .background(background.useShared
+                            ? Color.clear
+                            : Color(NSColor.windowBackgroundColor))
+                // Confine the content (and any overlay it hosts, e.g. the SSH
+                // connection popup) so it can't bleed up over the tab strip.
+                .clipped()
+
+                if sidebarVisible {
+                    VaultsCommandSidebar(tab: $sidebarTab)
+                        .transition(.move(edge: .trailing))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // In shared mode the content area is CLEAR so the translucent panes
-            // blend against the window's NSImageView backing (the shared image,
-            // drawn by HostManagerController). Otherwise it's the opaque window
-            // background.
-            .background(background.useShared
-                        ? Color.clear
-                        : Color(NSColor.windowBackgroundColor))
-            // Confine the content (and any overlay it hosts, e.g. the SSH
-            // connection popup) so it can't bleed up over the tab strip.
-            .clipped()
             .zIndex(0)
         }
         .frame(minWidth: 900, minHeight: 560)
@@ -80,6 +91,17 @@ struct VaultsRootView: View {
             VaultsTabStrip(newTabAction: newTabAction)
             // Focus mode (the pane sidebar) is opened with ⌘⇧M — no top-bar
             // button. The sidebar carries its own "Split view" button to return.
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { sidebarVisible.toggle() }
+            } label: {
+                Image(systemName: "sidebar.right")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(sidebarVisible ? Color.accentColor : .secondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Command sidebar (snippets, history, themes, search)")
             VaultsBellView()
             VaultsGearView()
             AccountMenuButton()
