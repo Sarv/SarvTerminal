@@ -196,16 +196,27 @@ if [[ -f "$APPCAST" ]]; then
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
       <sparkle:releaseNotesLink>$NOTES_URL</sparkle:releaseNotesLink>
       <sparkle:minimumSystemVersion>13.0.0</sparkle:minimumSystemVersion>
-      <pubDate>$PUBDATE</pubDate>
 $BODY
     </item>"
 
-  # Insert the new item right after <title>SarvTerminal</title> (newest first).
-  awk -v item="$ITEM" '
-    /<title>SarvTerminal<\/title>/ && !done { print; print item; done=1; next }
+  # Insert the new item right after the channel <title> (newest first). The item
+  # is read from a temp file inside awk because macOS awk (BWK) aborts on a
+  # newline in a -v value ("newline in string") — which silently produced an
+  # empty appcast and dropped the release from the feed.
+  ITEM_FILE=$(mktemp)
+  printf '%s\n' "$ITEM" > "$ITEM_FILE"
+  awk -v itemfile="$ITEM_FILE" '
+    /<title>Sarv Terminal<\/title>/ && !done {
+      print
+      while ((getline line < itemfile) > 0) print line
+      close(itemfile)
+      done = 1
+      next
+    }
     { print }
   ' "$APPCAST" > "$APPCAST.tmp" \
     && mv "$APPCAST.tmp" "$APPCAST"
+  rm -f "$ITEM_FILE"
 
   mkdir -p "$NOTES_DIR"
   NOTES_FILE="$NOTES_DIR/$VERSION.html"
@@ -258,11 +269,11 @@ $BODY
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SarvTerminal $VERSION</title>
+<title>Sarv Terminal $VERSION</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <h1>SarvTerminal $VERSION</h1>
+  <h1>Sarv Terminal $VERSION</h1>
   <div class="meta">Improvements &amp; fixes</div>
 $BODY</body>
 </html>

@@ -1,7 +1,16 @@
 <?xml version="1.0" standalone="yes"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
-    <title>SarvTerminal</title>
+    <title>Sarv Terminal</title>
+    <item>
+      <title>Version 1.4.0</title>
+      <link>https://github.com/Sarv/SarvTerminal/releases/download/v1.4.0/SarvTerminal-1.4.0.dmg</link>
+      <sparkle:version>1.4.0</sparkle:version>
+      <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
+      <sparkle:releaseNotesLink>https://sarv.github.io/SarvTerminal/release-notes/1.4.0.html</sparkle:releaseNotesLink>
+      <sparkle:minimumSystemVersion>13.0.0</sparkle:minimumSystemVersion>
+      <sparkle:informationalUpdate></sparkle:informationalUpdate>
+    </item>
     <item>
       <title>Version 1.3.0</title>
       <link>https://github.com/Sarv/SarvTerminal/releases/download/v1.3.0/SarvTerminal-1.3.0.dmg</link>
