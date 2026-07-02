@@ -177,17 +177,16 @@ if [[ -f "$APPCAST" ]]; then
   # create` below). The app's update notification opens this link directly.
   DL_URL="https://github.com/Sarv/SarvTerminal/releases/download/v$VERSION/SarvTerminal-$VERSION.dmg"
 
-  if [[ -n "${SARV_DMG_URL:-}" ]]; then
-    LEN=$(stat -f%z "$DMG_OUT")
-    EDSIG=""
-    if [[ -n "${SPARKLE_SIGN_UPDATE:-}" && -x "$SPARKLE_SIGN_UPDATE" ]]; then
-      EDSIG=$("$SPARKLE_SIGN_UPDATE" "$DMG_OUT" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')
-    fi
-    BODY="      <enclosure url=\"$SARV_DMG_URL\" sparkle:version=\"$VERSION\" sparkle:shortVersionString=\"$VERSION\" length=\"$LEN\" type=\"application/octet-stream\"${EDSIG:+ sparkle:edSignature=\"$EDSIG\"}/>"
-  else
-    # No public DMG yet → informational item (app notifies + links to the page).
-    BODY="      <sparkle:informationalUpdate></sparkle:informationalUpdate>"
-  fi
+  # A SIGNED <enclosure> so Sparkle auto-downloads + installs (an
+  # <sparkle:informationalUpdate> only offers "Learn More"). The enclosure URL is
+  # the GitHub release asset uploaded later in this script. The EdDSA signature
+  # requires the private key in your Keychain (created once via `generate_keys`).
+  LEN=$(stat -f%z "$DMG_OUT")
+  SIGN_UPDATE="${SPARKLE_SIGN_UPDATE:-$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*artifacts/sparkle/Sparkle/bin/sign_update' 2>/dev/null | head -1)}"
+  [[ -x "$SIGN_UPDATE" ]] || { echo "✗ Sparkle sign_update not found — build once so the Sparkle SPM artifacts exist, or set SPARKLE_SIGN_UPDATE"; exit 1; }
+  EDSIG=$("$SIGN_UPDATE" "$DMG_OUT" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')
+  [[ -n "$EDSIG" ]] || { echo "✗ Could not produce an EdDSA signature — is the Sparkle private key in your Keychain? (run generate_keys)"; exit 1; }
+  BODY="      <enclosure url=\"$DL_URL\" sparkle:version=\"$VERSION\" sparkle:shortVersionString=\"$VERSION\" length=\"$LEN\" type=\"application/octet-stream\" sparkle:edSignature=\"$EDSIG\"/>"
 
   ITEM="    <item>
       <title>Version $VERSION</title>
