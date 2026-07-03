@@ -1,0 +1,108 @@
+using Gtk 4.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 520;
+  content-height: 640;
+  title: _("Host");
+  closed => $closed();
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      show-end-title-buttons: false;
+      show-start-title-buttons: false;
+
+      [start]
+      Gtk.Button {
+        label: _("Cancel");
+        clicked => $cancel_clicked();
+      }
+
+      [end]
+      Gtk.Button save_button {
+        label: _("Save");
+        clicked => $save_clicked();
+
+        styles [
+          "suggested-action",
+        ]
+      }
+    }
+
+    Adw.PreferencesPage {
+      Adw.PreferencesGroup {
+        title: _("Connection");
+
+        Adw.EntryRow label_row {
+          title: _("Label");
+        }
+
+        Adw.EntryRow hostname_row {
+          title: _("Hostname or IP");
+        }
+
+        Adw.EntryRow username_row {
+          title: _("Username");
+        }
+
+        Adw.SpinRow port_row {
+          title: _("Port");
+
+          adjustment: Gtk.Adjustment {
+            lower: 1;
+            upper: 65535;
+            step-increment: 1;
+            value: 22;
+          };
+        }
+      }
+
+      Adw.PreferencesGroup {
+        title: _("Authentication");
+
+        Adw.ComboRow auth_row {
+          title: _("Method");
+
+          model: Gtk.StringList {
+            strings [
+              _("Password"),
+              _("Public key"),
+              _("SSH agent"),
+              _("Ask"),
+            ]
+          };
+        }
+
+        Adw.EntryRow identity_row {
+          title: _("Identity file");
+        }
+
+        Adw.PasswordEntryRow password_row {
+          title: _("Password");
+        }
+      }
+
+      Adw.PreferencesGroup {
+        title: _("Notes");
+
+        Adw.EntryRow note_row {
+          title: _("Note");
+        }
+      }
+
+      Adw.PreferencesGroup delete_group {
+        Gtk.Button delete_button {
+          label: _("Delete Host");
+          halign: center;
+          clicked => $delete_clicked();
+
+          styles [
+            "destructive-action",
+            "pill",
+          ]
+        }
+      }
+    }
+  }
+}

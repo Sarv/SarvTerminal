@@ -17,6 +17,20 @@ Adw.Dialog dialog {
         placeholder-text: _("Search hosts…");
         search-changed => $search_changed();
       }
+
+      [end]
+      Gtk.Button {
+        icon-name: "list-add-symbolic";
+        tooltip-text: _("Add host");
+        clicked => $add_clicked();
+      }
+
+      [end]
+      Gtk.Button {
+        icon-name: "document-edit-symbolic";
+        tooltip-text: _("Edit selected host");
+        clicked => $edit_clicked();
+      }
     }
 
     Gtk.ScrolledWindow {
@@ -87,15 +101,11 @@ Adw.Dialog dialog {
                 }
               }
 
-              Gtk.Button {
+              Gtk.Image {
                 icon-name: "media-playback-start-symbolic";
                 valign: center;
-                tooltip-text: _("Connect");
-                clicked => $connect_clicked();
-
-                styles [
-                  "flat",
-                ]
+                tooltip-text: _("Double-click to connect");
+                opacity: 0.55;
               }
             };
           }

@@ -22,6 +22,7 @@ const WeakRef = @import("../weak_ref.zig").WeakRef;
 const Common = @import("../class.zig").Common;
 const Application = @import("application.zig").Application;
 const Window = @import("window.zig").Window;
+const SarvHostEditor = @import("sarv_host_editor.zig").SarvHostEditor;
 
 const log = std.log.scoped(.gtk_sarv_hosts_dialog);
 
@@ -126,8 +127,48 @@ pub const SarvHostsDialog = extern struct {
         self.connectAt(pos);
     }
 
-    fn connectClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
-        self.connectAt(self.private().model.getSelected());
+    fn addClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const editor = SarvHostEditor.new();
+        defer editor.unref();
+        self.connectEditorSaved(editor);
+        editor.presentNew(self.private().dialog.as(gtk.Widget));
+    }
+
+    fn editClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
+        const priv = self.private();
+        const object_ = priv.model.as(gio.ListModel).getObject(priv.model.getSelected());
+        defer if (object_) |o| o.unref();
+        const wrapper = gobject.ext.cast(SarvHost, object_ orelse return) orelse return;
+        const id = wrapper.getId() orelse return;
+
+        // Reload the full host by id so the form has every field, not just the
+        // display strings the list wrapper keeps.
+        const gpa = Application.default().allocator();
+        var hosts = sarv.vault.loadHosts(gpa) catch return;
+        defer hosts.deinit();
+        const host = for (hosts.items) |*h| {
+            if (std.mem.eql(u8, h.id, id)) break h;
+        } else return;
+
+        const editor = SarvHostEditor.new();
+        defer editor.unref();
+        self.connectEditorSaved(editor);
+        editor.presentEdit(priv.dialog.as(gtk.Widget), host);
+    }
+
+    /// Reload the list whenever the editor reports a successful save/delete.
+    fn connectEditorSaved(self: *Self, editor: *SarvHostEditor) void {
+        _ = SarvHostEditor.signals.saved.connect(
+            editor,
+            *Self,
+            editorSaved,
+            self,
+            .{},
+        );
+    }
+
+    fn editorSaved(_: *SarvHostEditor, self: *Self) callconv(.c) void {
+        self.reload();
     }
 
     /// Open an SSH tab for the host at visible position `pos`.
@@ -191,7 +232,8 @@ pub const SarvHostsDialog = extern struct {
             class.bindTemplateCallback("closed", &closed);
             class.bindTemplateCallback("search_changed", &searchChanged);
             class.bindTemplateCallback("row_activated", &rowActivated);
-            class.bindTemplateCallback("connect_clicked", &connectClicked);
+            class.bindTemplateCallback("add_clicked", &addClicked);
+            class.bindTemplateCallback("edit_clicked", &editClicked);
 
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);
         }
@@ -241,6 +283,7 @@ const SarvHost = extern struct {
 
     const Private = struct {
         arena: ArenaAllocator,
+        id: ?[:0]const u8 = null,
         label: ?[:0]const u8 = null,
         subtitle: ?[:0]const u8 = null,
         search_text: ?[:0]const u8 = null,
@@ -253,6 +296,8 @@ const SarvHost = extern struct {
         errdefer self.unref();
         const priv = self.private();
         const alloc = priv.arena.allocator();
+
+        priv.id = try alloc.dupeZ(u8, host.id);
 
         const label = if (host.label.len > 0) host.label else host.hostname;
         priv.label = try alloc.dupeZ(u8, label);
@@ -293,6 +338,9 @@ const SarvHost = extern struct {
         gobject.Object.virtual_methods.finalize.call(Class.parent, self.as(Parent));
     }
 
+    pub fn getId(self: *Self) ?[:0]const u8 {
+        return self.private().id;
+    }
     pub fn getLabel(self: *Self) ?[:0]const u8 {
         return self.private().label;
     }
