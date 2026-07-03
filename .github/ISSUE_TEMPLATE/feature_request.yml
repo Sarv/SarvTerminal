@@ -1,0 +1,32 @@
+name: 💡 Feature Request
+description: Suggest an idea or improvement for Sarv Terminal.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping make Sarv Terminal better! Please search
+        [existing issues](https://github.com/Sarv/SarvTerminal/issues?q=is%3Aissue) first —
+        someone may have already suggested it (add a 👍 there instead).
+  - type: textarea
+    attributes:
+      label: What problem does this solve?
+      description: |
+        Describe the problem or workflow gap you're hitting. This helps us understand
+        the motivation even if we implement it differently.
+      placeholder: |
+        When I manage many servers across teams, I'd like to...
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed solution
+      description: How would you like it to work? Mockups and examples are welcome.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives / additional context
+      description: Any workarounds you use today, or other apps that do this well.
+    validations:
+      required: false

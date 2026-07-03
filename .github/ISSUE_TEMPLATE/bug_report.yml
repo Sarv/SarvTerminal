@@ -1,0 +1,59 @@
+name: 🐞 Bug Report
+description: Something in Sarv Terminal isn't working right? Tell us and we'll fix it.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please search
+        [existing issues](https://github.com/Sarv/SarvTerminal/issues?q=is%3Aissue) first —
+        your problem may already be reported or fixed.
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: |
+        A clear description of the bug. Screenshots or screen recordings help a lot.
+      placeholder: |
+        When I connect to a saved host with a proxy jump configured, the connection popup shows...
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+      description: Step-by-step instructions so we can reproduce the issue.
+      placeholder: |
+        1. Open Sarv Terminal.
+        2. Go to Vaults → Hosts and open a host with a proxy jump.
+        3. Click Connect.
+        4. See the error.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Sarv Terminal version
+      description: Shown in Sarv Terminal → About.
+      placeholder: "1.4.2"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: macOS version
+      placeholder: "macOS 15.5 (Sequoia)"
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Logs / additional context
+      description: |
+        Anything else that helps: Activity Logs entries (Vaults → Logs), crash reports,
+        terminal output, your relevant configuration, or hardware details
+        (e.g. USB-serial adapter/chipset for serial-console issues).
+      render: text
+    validations:
+      required: false
