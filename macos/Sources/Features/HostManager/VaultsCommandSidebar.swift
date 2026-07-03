@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Termius-style right command sidebar for the tabbed terminal window. Four
 /// tabs — Search (⌘F in the active view), Snippets, History, Themes/Font — that
@@ -34,7 +35,7 @@ struct VaultsCommandSidebar: View {
                 switch tab {
                 case .snippets: SnippetsTab()
                 case .history:  HistoryTab()
-                case .theme:    ThemeTabPlaceholder()
+                case .theme:    ThemeTab()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -382,8 +383,222 @@ private struct HistoryTab: View {
 
 // MARK: - Placeholders (pass 2: Themes/Font + Search)
 
-private struct ThemeTabPlaceholder: View {
-    var body: some View { emptyState("Themes & font — coming here next.") }
+// MARK: - Themes & Font tab
+
+/// Reads/writes the global theme + font by editing the Ghostty config file and
+/// reloading — the SAME mechanism the Settings window uses (ConfigFileEditor +
+/// ghostty.reloadConfig), so changes apply live to every open terminal.
+@MainActor
+private final class SidebarAppearance: ObservableObject {
+    @Published var themeName = ""
+    @Published var fontFamily = ""
+    @Published var fontSize: Double = 13
+
+    private var token: NSObjectProtocol?
+
+    init() {
+        reload()
+        token = NotificationCenter.default.addObserver(
+            forName: .sarvConfigDidCommit, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.reload() }
+            }
+    }
+    deinit { if let token { NotificationCenter.default.removeObserver(token) } }
+
+    private var config: Ghostty.Config? { (NSApp.delegate as? AppDelegate)?.ghostty.config }
+
+    func reload() {
+        themeName = config?.themeName ?? ""
+        fontFamily = config?.fontFamily ?? ""
+        fontSize = config?.fontSize ?? 13
+    }
+
+    func apply(theme: String) {
+        themeName = theme
+        commit { editor in
+            if theme.isEmpty { editor.remove("theme") } else { editor.set("theme", theme) }
+            // Selecting a theme resets the background so the theme shows cleanly:
+            // opaque, with the theme's own background (no leftover translucency /
+            // color override). Adding a background image later re-enables the
+            // translucent look via Appearance settings.
+            editor.set("background-opacity", "1")
+            editor.remove("background")
+            // Keep the window CHROME on the system appearance so a light terminal
+            // theme doesn't flip the toolbar to white and hide our light icons.
+            editor.set("window-theme", "system")
+        }
+    }
+    func setFontFamily(_ family: String) {
+        fontFamily = family
+        commit { family.isEmpty ? $0.remove("font-family") : $0.set("font-family", family) }
+    }
+    func nudgeFontSize(_ delta: Double) {
+        fontSize = min(64, max(6, fontSize + delta))
+        commit { $0.set("font-size", String(format: "%g", fontSize)) }
+    }
+
+    private func commit(_ mutate: (ConfigFileEditor) -> Void) {
+        guard let editor = try? ConfigFileEditor() else { return }
+        mutate(editor)
+        try? editor.commit()
+        // App-level reload re-derives each open surface's config (background
+        // color + opacity + font) and repaints live terminals.
+        (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
+        NotificationCenter.default.post(name: .sarvConfigDidCommit, object: nil)
+    }
+}
+
+private struct ThemeTab: View {
+    @StateObject private var appearance = SidebarAppearance()
+    @State private var themes: [ThemeEntry] = []
+    @State private var previews: [String: ThemePreview] = [:]
+    @State private var query = ""
+    @State private var fontExpanded = false
+
+    private var filtered: [ThemeEntry] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return themes }
+        return themes.filter { SearchMatcher.matches(q, in: [$0.name]) }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            fontSection
+            Divider()
+            SidebarSearchField(placeholder: "Search themes", text: $query)
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    themeRow(name: "", preview: nil, isDefault: true)
+                    ForEach(filtered, id: \.name) { entry in
+                        themeRow(name: entry.name, preview: previews[entry.name], isDefault: false)
+                    }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 8)
+            }
+        }
+        .onAppear(perform: load)
+    }
+
+    // MARK: Font (collapsible)
+
+    private var fontSection: some View {
+        VStack(spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { fontExpanded.toggle() }
+            } label: {
+                HStack {
+                    Text("Font").font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Image(systemName: fontExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+
+            if fontExpanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    FontFamilyPicker(family: Binding(
+                        get: { appearance.fontFamily },
+                        set: { appearance.setFontFamily($0) }))
+                    HStack {
+                        Text("Text Size").font(.system(size: 12))
+                        Spacer()
+                        stepper("minus") { appearance.nudgeFontSize(-1) }
+                        Text("\(Int(appearance.fontSize.rounded()))")
+                            .font(.system(size: 12, design: .monospaced))
+                            .frame(minWidth: 26)
+                        stepper("plus") { appearance.nudgeFontSize(1) }
+                    }
+                }
+                .padding(.horizontal, 12).padding(.bottom, 10)
+            }
+        }
+    }
+
+    private func stepper(_ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 26, height: 24)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.1)))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Theme rows
+
+    private func themeRow(name: String, preview: ThemePreview?, isDefault: Bool) -> some View {
+        let selected = appearance.themeName == name
+        return Button {
+            appearance.apply(theme: name)
+        } label: {
+            HStack(spacing: 10) {
+                if isDefault {
+                    Image(systemName: "circle.dashed")
+                        .frame(width: 34, height: 22).foregroundStyle(.secondary)
+                } else {
+                    ThemeSwatch(preview: preview)
+                }
+                Text(isDefault ? "Default (no theme)" : name)
+                    .font(.system(size: 12)).lineLimit(1)
+                Spacer(minLength: 4)
+                if selected { Image(systemName: "checkmark").font(.system(size: 11)).foregroundStyle(.tint) }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(selected ? Color.accentColor.opacity(0.18) : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func load() {
+        guard themes.isEmpty else { return }
+        let entries = ThemePicker.discover()
+        themes = entries
+        Task.detached(priority: .userInitiated) {
+            var parsed: [String: ThemePreview] = [:]
+            for e in entries { if let p = ThemePicker.parsePreview(at: e.url) { parsed[e.name] = p } }
+            await MainActor.run { self.previews = parsed }
+        }
+    }
+}
+
+/// Termius-style mini-terminal thumbnail: the theme's background with a few
+/// rows of colored "text" bars (using the palette + foreground) and a cursor,
+/// so each theme reads at a glance.
+private struct ThemeSwatch: View {
+    let preview: ThemePreview?
+
+    var body: some View {
+        let bg = preview?.background ?? Color.black
+        let fg = preview?.foreground ?? Color.white
+        func c(_ i: Int, _ fallback: Color) -> Color { preview?.palette[i] ?? fallback }
+
+        return RoundedRectangle(cornerRadius: 5, style: .continuous)
+            .fill(bg)
+            .frame(width: 48, height: 34)
+            .overlay(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 3) { bar(c(2, .green), 9); bar(fg, 18) }       // prompt + command
+                    HStack(spacing: 3) { bar(c(4, .blue), 7); bar(c(6, .cyan), 14) }
+                    HStack(spacing: 3) {
+                        bar(c(3, .yellow), 6); bar(fg.opacity(0.8), 9)
+                        RoundedRectangle(cornerRadius: 1).fill(fg).frame(width: 4, height: 5) // cursor
+                    }
+                }
+                .padding(6)
+            }
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.25), lineWidth: 0.5))
+    }
+
+    private func bar(_ color: Color, _ width: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+            .fill(color)
+            .frame(width: width, height: 3)
+    }
 }
 
 @ViewBuilder

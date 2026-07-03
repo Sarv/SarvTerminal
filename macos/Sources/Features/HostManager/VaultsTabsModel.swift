@@ -492,44 +492,43 @@ final class VaultsTabsModel: ObservableObject {
     /// each host can carry its own look (empty `themeName` inherits the global
     /// theme). Deferred to the next runloop tick so the surface is initialized.
     private func applyHostTheme(_ host: SavedHost?, to surface: Ghostty.SurfaceView) {
-        guard let host, !host.themeName.trimmingCharacters(in: .whitespaces).isEmpty,
-              let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { return }
+        guard let host, !host.themeName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         let theme = host.themeName
-        DispatchQueue.main.async {
-            guard let s = surface.surface else { return }
-            // Decide on the fly whether the theme's TEXT will be readable over the
-            // background image. Keep the image (translucent) when the theme's
-            // foreground contrasts with the image; otherwise fall back to the
-            // theme's own solid background so text is never washed out. This
-            // handles every combo (light image + dark theme, dark image + dark
-            // theme, etc.), not just light-vs-dark themes.
-            guard let colors = ghostty.themeColors(theme) else {
-                ghostty.applyTheme(theme, to: s, backgroundHex: nil, opacity: ghostty.config.backgroundOpacity)
-                return
-            }
-            let store = BackgroundDisplayStore.shared
-            // What the text actually sits over if the image stays visible: the
-            // image blended toward the dark window backing by its visibility.
-            let windowBacking = 0.12
-            let backdrop: Double
-            if let imageLum = store.imageAverageLuminance {
-                backdrop = imageLum * store.imageVisibility + windowBacking * (1 - store.imageVisibility)
-            } else {
-                backdrop = windowBacking
-            }
-            if abs(colors.fgLum - backdrop) >= 0.4 {
-                // Readable over the image → keep it (image visible behind text).
-                ghostty.applyTheme(theme, to: s, backgroundHex: nil, opacity: ghostty.config.backgroundOpacity)
-            } else {
-                // Text would wash out over the image → use a solid backing. Use
-                // the theme's own background ONLY if it actually contrasts with
-                // the (possibly grey) text; otherwise force a contrasting backing
-                // so the text is never blank.
-                let solidHex = abs(colors.fgLum - colors.bgLum) >= 0.4
-                    ? colors.bgHex
-                    : (colors.fgLum < 0.5 ? "#FFFFFF" : "#1E1E1E")
-                ghostty.applyTheme(theme, to: s, backgroundHex: solidHex, opacity: 1)
-            }
+        // Deferred to the next runloop tick so the surface is initialized.
+        DispatchQueue.main.async { self.applyThemeSmart(theme, to: surface) }
+    }
+
+    /// Apply a theme to ONE surface, choosing the background the SAME way for
+    /// host themes and the command-sidebar global theme. Decide on the fly
+    /// whether the theme's TEXT is readable over the background image: keep the
+    /// (translucent) image when it contrasts, otherwise pin the theme's own
+    /// SOLID background so text is never washed out — and so a light theme's
+    /// light background actually shows instead of only the text recoloring.
+    /// The base config (loaded from the user's config file) carries the current
+    /// font, so this applies font changes too.
+    @MainActor
+    func applyThemeSmart(_ theme: String, to surface: Ghostty.SurfaceView) {
+        guard let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty,
+              let s = surface.surface else { return }
+        guard let colors = ghostty.themeColors(theme) else {
+            ghostty.applyTheme(theme, to: s, backgroundHex: nil, opacity: ghostty.config.backgroundOpacity)
+            return
+        }
+        let store = BackgroundDisplayStore.shared
+        let windowBacking = 0.12
+        let backdrop: Double
+        if let imageLum = store.imageAverageLuminance {
+            backdrop = imageLum * store.imageVisibility + windowBacking * (1 - store.imageVisibility)
+        } else {
+            backdrop = windowBacking
+        }
+        if abs(colors.fgLum - backdrop) >= 0.4 {
+            ghostty.applyTheme(theme, to: s, backgroundHex: nil, opacity: ghostty.config.backgroundOpacity)
+        } else {
+            let solidHex = abs(colors.fgLum - colors.bgLum) >= 0.4
+                ? colors.bgHex
+                : (colors.fgLum < 0.5 ? "#FFFFFF" : "#1E1E1E")
+            ghostty.applyTheme(theme, to: s, backgroundHex: solidHex, opacity: 1)
         }
     }
 
