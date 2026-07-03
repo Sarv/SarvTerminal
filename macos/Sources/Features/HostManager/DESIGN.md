@@ -1,9 +1,9 @@
-# Ghostty Host Manager — Design Document
+# Sarv Terminal Host Manager — Design Document
 
 **Status:** Draft v1 — pre-implementation
-**Owner:** Ankur Dubey (Ghostty fork)
+**Owner:** Ankur Dubey (Sarv Terminal, a Ghostty fork)
 **Platform priority:** macOS first, GTK/Linux second
-**Goal:** Bring Termius-class SSH host management *inside* Ghostty's window without subscriptions or vendor lock-in.
+**Goal:** Bring Termius-class SSH host management *inside* Sarv Terminal's window without subscriptions or vendor lock-in.
 
 ---
 
@@ -20,7 +20,7 @@
 9. [UI Specification](#9-ui-specification)
     - 9.5 [Master Password UX](#95-master-password-ux)
 10. [Settings & First-Run Wizard](#10-settings--first-run-wizard)
-11. [Ghostty Core (Zig) Touchpoints](#11-ghostty-core-zig-touchpoints)
+11. [Terminal Engine Core (Zig) Touchpoints](#11-terminal-engine-core-zig-touchpoints)
 12. [Phased Implementation Plan](#12-phased-implementation-plan)
 13. [Security Threat Model](#13-security-threat-model)
 14. [Open Decisions](#14-open-decisions)
@@ -32,9 +32,9 @@
 
 ### Goals
 
-- **Termius-equivalent host management UI** inside Ghostty's main window: sidebar listing hosts, click-to-connect, form-based editor, groups, tags, drag-reorder.
-- **Self-hosted sync** via the user's own private Git repo + PAT (no Ghostty cloud service, no subscription).
-- **Two-way sync with `~/.ssh/config`** so non-Ghostty tools (VS Code Remote, `scp`, `ssh` CLI, `rsync`) keep working.
+- **Termius-equivalent host management UI** inside Sarv Terminal's main window: sidebar listing hosts, click-to-connect, form-based editor, groups, tags, drag-reorder.
+- **Self-hosted sync** via the user's own private Git repo + PAT (no Sarv Terminal cloud service, no subscription).
+- **Two-way sync with `~/.ssh/config`** so non-Sarv Terminal tools (VS Code Remote, `scp`, `ssh` CLI, `rsync`) keep working.
 - **Encrypted secrets** with a master password the user controls; secrets never in plaintext on disk and never in Git history unencrypted.
 - **Biometric unlock** (Touch ID) via macOS Keychain for the master password after first entry on a device.
 - **Resumable, conflict-tolerant Git sync** that doesn't silently drop changes.
@@ -55,7 +55,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                       Ghostty macOS App                          │
+│                    Sarv Terminal macOS App                       │
 │                                                                  │
 │  ┌────────────────────┐    ┌──────────────────────────────────┐  │
 │  │  Host Sidebar      │    │  Terminal Surface(s)             │  │
@@ -444,7 +444,7 @@ Host bastion
     IdentityFile ~/.ssh/keys/bastion_ed25519
 ```
 
-**Round-tripping Ghostty-only fields:** the `# Ghostty: {…}` JSON comment immediately before each `Host` block carries data ssh_config can't natively express (tags, group membership, color, notes, port-forward labels, etc.). Our parser reads these; non-Ghostty tools ignore them.
+**Round-tripping Sarv Terminal-only fields:** the `# Ghostty: {…}` JSON comment immediately before each `Host` block carries data ssh_config can't natively express (tags, group membership, color, notes, port-forward labels, etc.). Our parser reads these; non-Sarv Terminal tools ignore them.
 
 ### Field mapping
 
@@ -477,7 +477,7 @@ This keeps the user in control. Silent two-way overwrite is too dangerous when t
 
 ### What if the user edits `~/.ssh/ghostty.conf` directly?
 
-Detect via FSEvents → on next emission, our changes overwrite theirs. We show a one-time warning the first time this happens, suggesting they make the change via Ghostty instead.
+Detect via FSEvents → on next emission, our changes overwrite theirs. We show a one-time warning the first time this happens, suggesting they make the change via Sarv Terminal instead.
 
 ---
 
@@ -519,7 +519,7 @@ For key passphrases: `ssh-add` the key on first use (passphrase from Keychain), 
 User preference (settings):
 - Always new tab
 - Always new split (with direction)
-- New window if no Ghostty window open, else new tab
+- New window if no Sarv Terminal window open, else new tab
 - Per-host override
 
 Bonus: cmd-click → new split; opt-click → new window.
@@ -532,7 +532,7 @@ Bonus: cmd-click → new split; opt-click → new window.
 
 ```
 ┌────────────────────────────┐
-│ ╔══ Ghostty ══════════╗ ⌘N │  ← title bar (existing)
+│ ╔══ Sarv Terminal ════╗ ⌘N │  ← title bar (existing)
 ├────────────────────────────┤
 │ 🔍 Filter hosts…           │  ← search field, filters by label/hostname/tags
 │                            │
@@ -633,7 +633,7 @@ A multi-step sheet:
 
 ### Settings pane
 
-A new tab in Ghostty's existing settings UI:
+A new tab in Sarv Terminal's existing settings UI:
 - Master password (change / test)
 - Git sync (URL, PAT, branch, "Sync now", history)
 - SSH config integration (toggle Include line, regenerate now, file path)
@@ -717,7 +717,7 @@ Triggered when: `vault/meta.enc` exists on disk but Keychain has no master pw en
 User types nothing.
 
 1. App launch → `HostManagerStore.unlock()` reads master pw from Keychain.
-2. macOS shows the standard Touch ID prompt: *"Ghostty wants to use your password to unlock the Host Vault."*
+2. macOS shows the standard Touch ID prompt: *"Sarv Terminal wants to use your password to unlock the Host Vault."*
 3. Fingerprint succeeds → vault unlocks transparently. Time: ~500ms.
 4. Sidebar populates.
 
@@ -729,11 +729,11 @@ User types nothing.
 
 #### 9.5.4 — Settings → Security (rotation, lock, disable)
 
-A new section under Ghostty's existing Settings window, accessible at `Settings → Host Manager → Security`.
+A new section under Sarv Terminal's existing Settings window, accessible at `Settings → Host Manager → Security`.
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│ Ghostty Settings  →  Host Manager  →  Security         │
+│ Sarv Terminal Settings  →  Host Manager  →  Security   │
 ├────────────────────────────────────────────────────────┤
 │ Vault status            │ 🔓 Unlocked                  │
 │                         │ [ Lock now ]                 │
@@ -781,13 +781,13 @@ A new section under Ghostty's existing Settings window, accessible at `Settings 
 
 **Lock now:** Wipes the in-memory derived key. Sidebar enters locked state. Keychain entry untouched (next unlock attempt is just Touch ID).
 
-**Auto-lock when idle:** Timer based on app-level activity (no key/mouse in any Ghostty surface). On expiry → same as Lock now.
+**Auto-lock when idle:** Timer based on app-level activity (no key/mouse in any Sarv Terminal surface). On expiry → same as Lock now.
 
 **Reset vault and start fresh:** Big-red-button confirmation. Deletes local `host-manager/` directory, removes Keychain entries, leaves Git repo on remote untouched. User has to re-clone or set up fresh.
 
 #### 9.5.5 — The graceful-lock pattern
 
-**Critical UX choice: a locked vault does not block Ghostty.** The terminal is fully usable; only host-list features are gated.
+**Critical UX choice: a locked vault does not block Sarv Terminal.** The terminal is fully usable; only host-list features are gated.
 
 When the vault is locked, the sidebar shows:
 
@@ -871,7 +871,7 @@ Sidebar binds to `vaultUnlocker.state` and renders the appropriate view.
 
 ---
 
-## 11. Ghostty Core (Zig) Touchpoints
+## 11. Terminal Engine Core (Zig) Touchpoints
 
 Most work is Swift. Zig side needs only these:
 
@@ -953,7 +953,7 @@ Each phase = a committable, usable milestone.
 - `Include` injection into `~/.ssh/config` (with consent)
 - FSEvents watcher on user's ssh_config
 - Inbound merge UI
-- **Usable: yes.** Other tools (vscode, scp) see Ghostty hosts seamlessly.
+- **Usable: yes.** Other tools (vscode, scp) see Sarv Terminal hosts seamlessly.
 
 ### Phase 5 — Git sync (4–5 days)
 - Git CLI integration

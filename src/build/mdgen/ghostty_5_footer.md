@@ -31,7 +31,7 @@ precedence over the XDG environment locations.
 
 # BUGS
 
-See GitHub issues: <https://github.com/ghostty-org/ghostty/issues>
+See GitHub issues: <https://github.com/Sarv/SarvTerminal/issues>
 
 # AUTHOR
 

@@ -1,6 +1,6 @@
 # Inspector Subsystem
 
-The inspector is a feature of Ghostty that works similar to a
+The inspector is a feature of the terminal that works similar to a
 browser's developer tools. It allows the user to inspect and modify the
 terminal state.
 

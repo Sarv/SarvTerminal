@@ -52,7 +52,7 @@ destinations. Setting `GHOSTTY_LOG` to `false` will disable all destinations.
 
 # BUGS
 
-See GitHub issues: <https://github.com/ghostty-org/ghostty/issues>
+See GitHub issues: <https://github.com/Sarv/SarvTerminal/issues>
 
 # AUTHOR
 

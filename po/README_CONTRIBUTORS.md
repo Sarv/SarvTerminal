@@ -1,6 +1,6 @@
-# Localizing Ghostty: The Contributors' Guide
+# Localizing Sarv Terminal: The Contributors' Guide
 
-Ghostty uses the `gettext` library/framework for localization, which has the
+Sarv Terminal uses the `gettext` library/framework for localization, which has the
 distinct benefit of being able to be consumed directly by our two main
 app runtimes: macOS and GTK (Linux). The core would ideally remain agnostic
 to localization efforts, as not all consumers of libghostty would be interested
