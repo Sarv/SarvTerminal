@@ -1,0 +1,94 @@
+# Builds the Linux (GTK) app across major distros so we can develop from
+# macOS with confidence: every push to a linux branch compiles the GTK app in
+# Ubuntu, Fedora and Arch containers, runs the Zig tests, launches the app
+# under Xvfb, and uploads a screenshot as an artifact for visual verification.
+name: linux
+
+on:
+  push:
+    branches: [main, "feat/linux-ui"]
+    paths-ignore: ["docs/**", "*.md", "macos/**"]
+  pull_request:
+    paths-ignore: ["docs/**", "*.md", "macos/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: fedora
+            image: fedora:42
+            setup: >-
+              dnf install -y gtk4-devel gtk4-layer-shell-devel libadwaita-devel blueprint-compiler
+              gettext libX11-devel wayland-devel wayland-protocols-devel
+              pkg-config gcc gcc-c++ git curl xz findutils python3
+              xorg-x11-server-Xvfb dbus-daemon mesa-dri-drivers
+              ImageMagick
+          - distro: ubuntu
+            image: ubuntu:25.04
+            setup: >-
+              apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
+              libgtk-4-dev libgtk4-layer-shell-dev libadwaita-1-dev blueprint-compiler gettext
+              libx11-dev libwayland-dev wayland-protocols pkg-config
+              gcc g++ git curl xz-utils python3
+              xvfb dbus imagemagick
+          - distro: arch
+            image: archlinux:latest
+            setup: >-
+              pacman -Syu --noconfirm gtk4 gtk4-layer-shell libadwaita blueprint-compiler
+              gettext libx11 wayland wayland-protocols pkgconf gcc git
+              curl xz python xorg-server-xvfb dbus mesa imagemagick
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install system dependencies
+        run: ${{ matrix.setup }}
+        shell: bash
+
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        shell: bash
+        run: |
+          ZIG_VERSION="$(grep -o 'minimum_zig_version = "[^"]*"' build.zig.zon | cut -d'"' -f2)"
+          ARCH="$(uname -m)"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ARCH}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz \
+            || curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ARCH}-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p /opt/zig
+          tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+          echo "/opt/zig" >> "$GITHUB_PATH"
+
+      - name: Build
+        shell: bash
+        run: zig build -Dversion-string="$(cat VERSION)"
+
+      - name: Zig tests
+        shell: bash
+        run: zig build test -Dversion-string="$(cat VERSION)"
+
+      - name: Screenshot under Xvfb
+        shell: bash
+        run: |
+          export XDG_RUNTIME_DIR=/tmp/xdg && mkdir -p "$XDG_RUNTIME_DIR"
+          Xvfb :99 -screen 0 1440x900x24 &
+          export DISPLAY=:99 GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1
+          dbus-run-session -- ./zig-out/bin/ghostty &
+          APP_PID=$!
+          sleep 8
+          import -window root "screenshot-${{ matrix.distro }}.png" || true
+          kill $APP_PID || true
+
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-${{ matrix.distro }}
+          path: screenshot-*.png
+          if-no-files-found: warn

@@ -1,0 +1,54 @@
+# Linux (GTK) dev-build container for Sarv Terminal.
+#
+# Build the image (once):
+#   docker build -t sarvterminal-linux-dev -f scripts/linux/Dockerfile.dev .
+# Compile the GTK app (repo mounted, cache persisted in a named volume):
+#   ./scripts/linux/build.sh
+#
+# Fedora is used because it ships a recent blueprint-compiler (>= 0.16),
+# which the GTK apprt requires; Ubuntu LTS's is too old.
+FROM fedora:42
+
+# Parallel downloads + pick the fastest mirror (default mirror selection can
+# crawl at KiB/s), and keep the package cache in a BuildKit cache mount so
+# adding a package later doesn't re-download all 500+ of them.
+RUN printf 'max_parallel_downloads=10\nfastestmirror=True\nkeepcache=True\n' >> /etc/dnf/dnf.conf
+
+RUN --mount=type=cache,target=/var/cache/libdnf5 \
+    dnf install -y \
+    gtk4-devel \
+    gtk4-layer-shell-devel \
+    libadwaita-devel \
+    blueprint-compiler \
+    gettext \
+    libX11-devel \
+    wayland-devel \
+    wayland-protocols-devel \
+    pkg-config \
+    gcc \
+    gcc-c++ \
+    git \
+    curl \
+    xz \
+    findutils \
+    python3 \
+    # For running the app headless and capturing screenshots in CI/dev:
+    xorg-x11-server-Xvfb \
+    dbus-daemon \
+    mesa-dri-drivers
+    # no `dnf clean all`: the package cache lives in the BuildKit cache mount
+    # (not in the image layer), so keeping it costs nothing and speeds rebuilds.
+
+# Zig: match minimum_zig_version in build.zig.zon. Try both tarball naming
+# schemes (ziglang.org changed the order of arch/os between releases).
+ARG ZIG_VERSION=0.15.2
+RUN ARCH="$(uname -m)" && \
+    (curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ARCH}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz \
+     || curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ARCH}-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz) && \
+    mkdir -p /opt/zig && \
+    tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1 && \
+    rm /tmp/zig.tar.xz && \
+    ln -s /opt/zig/zig /usr/local/bin/zig && \
+    zig version
+
+WORKDIR /src
