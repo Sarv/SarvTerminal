@@ -17,6 +17,14 @@ struct VaultsRootView: View {
     /// Opens the command palette (the "+" button).
     let newTabAction: () -> Void
 
+    /// Whether the active tab is a terminal — the command sidebar's actions
+    /// (run/paste snippets & history) target the focused terminal, so it's
+    /// only available there (not on the Vaults dashboard / SFTP).
+    private var inTerminal: Bool {
+        if case .terminal = tabs.selection { return true }
+        return false
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             topBar
@@ -49,7 +57,11 @@ struct VaultsRootView: View {
                 // connection popup) so it can't bleed up over the tab strip.
                 .clipped()
 
-                if sidebarVisible {
+                // The command sidebar targets the focused TERMINAL (run/paste
+                // snippets, history), so it only renders on terminal tabs.
+                // `sidebarVisible` is kept as-is, so switching back to a
+                // terminal restores it.
+                if sidebarVisible, inTerminal {
                     VaultsCommandSidebar(tab: $sidebarTab)
                         .transition(.move(edge: .trailing))
                 }
@@ -95,17 +107,24 @@ struct VaultsRootView: View {
             VaultsBellView()
             // Focus mode (the pane sidebar) is opened with ⌘⇧M — no top-bar
             // button. The sidebar carries its own "Split view" button to return.
+            // Disabled (not hidden) outside terminal tabs so the trailing
+            // cluster keeps its layout — mac convention for "temporarily
+            // unavailable".
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { sidebarVisible.toggle() }
             } label: {
                 Image(systemName: "sidebar.right")
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(sidebarVisible ? Color.accentColor : .secondary)
+                    .foregroundStyle(!inTerminal ? Color.secondary.opacity(0.35)
+                                     : sidebarVisible ? Color.accentColor : .secondary)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Command sidebar (snippets, history, themes, search)")
+            .disabled(!inTerminal)
+            .help(inTerminal
+                  ? "Command sidebar (snippets, history, themes, search)"
+                  : "Command sidebar — available in terminal tabs")
             AccountMenuButton()
                 .padding(.trailing, 6)
         }
