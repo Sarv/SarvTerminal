@@ -176,6 +176,30 @@ class AppDelegate: NSObject,
         ghostty.delegate = self
     }
 
+    /// Rewrite the app name in every main-menu title from the bundle's display
+    /// name, so a distinctly-branded build (e.g. the dev build's "Sarv Terminal
+    /// Dev") reads consistently across "About X", "Hide X", "Quit X", "X Help",
+    /// "Make X the Default Terminal", and the bold app-menu title. The menu ships
+    /// with "Sarv Terminal" baked into MainMenu.xib; this is a no-op for the
+    /// release build (its name is already "Sarv Terminal").
+    private func brandMenuFromBundleName() {
+        let info = Bundle.main.infoDictionary
+        let appName = (info?["CFBundleDisplayName"] as? String)
+            ?? (info?["CFBundleName"] as? String)
+            ?? "Sarv Terminal"
+        let baked = "Sarv Terminal"
+        guard appName != baked, let mainMenu = NSApp.mainMenu else { return }
+
+        func relabel(_ menu: NSMenu) {
+            menu.title = menu.title.replacingOccurrences(of: baked, with: appName)
+            for item in menu.items {
+                item.title = item.title.replacingOccurrences(of: baked, with: appName)
+                if let submenu = item.submenu { relabel(submenu) }
+            }
+        }
+        relabel(mainMenu)
+    }
+
     // MARK: - NSApplicationDelegate
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -227,6 +251,11 @@ class AppDelegate: NSObject,
 
         // Initial config loading
         ghosttyConfigDidChange(config: ghostty.config)
+
+        // Relabel the static menu titles ("About X", "Hide X", "Quit X", …) from
+        // the bundle name so the dev build reads "Sarv Terminal Dev" everywhere.
+        // No-op for the release build (its name is already "Sarv Terminal").
+        brandMenuFromBundleName()
 
         // Start our update checker.
         updateController.startUpdater()

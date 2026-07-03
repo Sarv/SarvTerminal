@@ -19,6 +19,15 @@ cp -R "zig-out/Sarv Terminal.app" "$DEV_APP"
 # hardcoded MARKETING_VERSION placeholder (0.1). Before signing so it's covered.
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(cat VERSION)" "$DEV_APP/Contents/Info.plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(cat VERSION)" "$DEV_APP/Contents/Info.plist" 2>/dev/null || true
+# Brand the dev build distinctly so it's obvious which app is which. CFBundleName
+# drives the bold app-menu title and ⌘-Tab; CFBundleDisplayName drives Dock &
+# Finder. Release stays "Sarv Terminal". The static menu subitems (About/Hide/
+# Quit/Help/Default Terminal) are relabeled from these keys at runtime
+# (AppDelegate.brandMenuFromBundleName).
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Sarv Terminal Dev" "$DEV_APP/Contents/Info.plist" 2>/dev/null || \
+  /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Sarv Terminal Dev" "$DEV_APP/Contents/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Set :CFBundleName Sarv Terminal Dev" "$DEV_APP/Contents/Info.plist" 2>/dev/null || \
+  /usr/libexec/PlistBuddy -c "Add :CFBundleName string Sarv Terminal Dev" "$DEV_APP/Contents/Info.plist" 2>/dev/null || true
 # ad-hoc re-sign the copy so it launches cleanly
 codesign --force --deep --sign - "$DEV_APP" >/dev/null 2>&1 || true
 
