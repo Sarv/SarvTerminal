@@ -10,6 +10,7 @@ pub const keys = @import("keys.zig");
 pub const store = @import("store.zig");
 pub const ssh = @import("ssh.zig");
 pub const askpass = @import("askpass.zig");
+pub const hostkey = @import("hostkey.zig");
 pub const vault = @import("vault.zig");
 pub const util = @import("util.zig");
 
@@ -27,6 +28,7 @@ test {
     _ = store;
     _ = ssh;
     _ = askpass;
+    _ = hostkey;
     _ = vault;
     _ = util;
 }
