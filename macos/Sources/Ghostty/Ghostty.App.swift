@@ -645,7 +645,13 @@ extension Ghostty {
                 pwdChanged(app, target: target, v: action.action.pwd)
 
             case GHOSTTY_ACTION_OPEN_CONFIG:
-                openConfig(app)
+                // The core's default ⌘, keybind fires this action when a
+                // terminal has focus. In this app "config" means the Settings
+                // window — matching the app menu's "Settings… ⌘,". The raw file
+                // stays reachable via "Edit Config File…" / Settings ▸ Advanced.
+                DispatchQueue.main.async {
+                    (NSApp.delegate as? AppDelegate)?.showSettings(nil)
+                }
 
             case GHOSTTY_ACTION_FLOAT_WINDOW:
                 toggleFloatWindow(app, target: target, mode: action.action.float_window)

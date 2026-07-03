@@ -1387,7 +1387,10 @@ extension AppDelegate {
         menuShortcutManager.reset()
 
         syncMenuShortcut(config, action: "check_for_updates", menuItem: self.menuCheckForUpdates)
-        syncMenuShortcut(config, action: "open_config", menuItem: self.menuOpenConfig)
+        // Do NOT sync `open_config` (⌘,) onto "Edit Config File…" — it would
+        // duplicate the Settings… ⌘, and steal the key when a terminal is
+        // focused (⌘, must ALWAYS open Settings; the open_config action is
+        // redirected there too). Edit Config File stays menu-click only.
         syncMenuShortcut(config, action: "reload_config", menuItem: self.menuReloadConfig)
         syncMenuShortcut(config, action: "quit", menuItem: self.menuQuit)
 

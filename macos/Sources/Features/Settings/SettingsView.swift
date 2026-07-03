@@ -108,6 +108,17 @@ final class SettingsViewModel: ObservableObject {
         ) { [weak self] _ in
             self?.reloadFromDisk()
         }
+
+        // Same when anything ELSE commits the config (e.g. the command
+        // sidebar's theme/font tab) — otherwise an open Settings window keeps
+        // showing the stale theme. Our own commits post with `object: self`,
+        // so skip those to avoid rebuilding the forms mid-edit.
+        NotificationCenter.default.addObserver(
+            forName: .sarvConfigDidCommit, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, note.object as? SettingsViewModel !== self else { return }
+            self.reloadFromDisk()
+        }
     }
 
     /// Rebuild every form from what's currently on disk (config + UserDefaults)
@@ -280,7 +291,9 @@ final class SettingsViewModel: ObservableObject {
             lastSaveError = nil
             (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
             flashSaved()
-            NotificationCenter.default.post(name: .sarvConfigDidCommit, object: nil)
+            // `object: self` marks this as OUR commit so the reload observer
+            // above ignores it (external commits arrive with a different object).
+            NotificationCenter.default.post(name: .sarvConfigDidCommit, object: self)
         } catch {
             lastSaveError = error.localizedDescription
         }
