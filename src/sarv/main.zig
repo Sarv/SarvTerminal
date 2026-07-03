@@ -8,6 +8,9 @@ pub const paths = @import("paths.zig");
 pub const envelope = @import("envelope.zig");
 pub const keys = @import("keys.zig");
 pub const store = @import("store.zig");
+pub const ssh = @import("ssh.zig");
+pub const askpass = @import("askpass.zig");
+pub const vault = @import("vault.zig");
 
 pub const SavedHost = model.SavedHost;
 pub const HostGroup = model.HostGroup;
@@ -21,4 +24,7 @@ test {
     _ = envelope;
     _ = keys;
     _ = store;
+    _ = ssh;
+    _ = askpass;
+    _ = vault;
 }
