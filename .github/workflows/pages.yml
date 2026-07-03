@@ -1,0 +1,41 @@
+# Deploys the update feed (docs/: appcast.xml + release notes) to GitHub Pages.
+#
+# Replaces the legacy branch-based Pages build, which redeployed the whole site
+# on EVERY push to main (even Swift-only commits) and failed sporadically with
+# "Deployment failed, try again later" — no retries, no useful logs. This only
+# runs when docs/ actually changes, and the concurrency group prevents the
+# superseded-build races that rapid pushes caused.
+#
+# Requires the repo's Pages source set to "GitHub Actions"
+# (Settings → Pages → Build and deployment → Source).
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: deployment
+        uses: actions/deploy-pages@v4
