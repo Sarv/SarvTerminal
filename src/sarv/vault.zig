@@ -27,6 +27,55 @@ pub fn loadHosts(gpa: std.mem.Allocator) !HostStore.Loaded {
     return HostStore.load(gpa, path, key);
 }
 
+/// Persist the full hosts array (encrypted). Callers load, mutate the slice,
+/// and save the whole thing back — same whole-file model as the macOS store.
+pub fn saveHosts(gpa: std.mem.Allocator, hosts: []const model.SavedHost) !void {
+    const path = try paths.dataFile(gpa, hosts_file);
+    defer gpa.free(path);
+    const key = try keys.getOrCreate(gpa);
+    try HostStore.save(gpa, path, hosts, key);
+}
+
+/// Insert `host` or replace the existing one with the same id, then persist.
+/// When replacing, the stored `createdAt` is preserved. All string data is
+/// copied during serialization, so `host`'s borrowed slices only need to live
+/// for the duration of this call.
+pub fn upsertHost(gpa: std.mem.Allocator, host: model.SavedHost) !void {
+    var loaded = try loadHosts(gpa);
+    defer loaded.deinit();
+
+    var list: std.ArrayList(model.SavedHost) = .empty;
+    defer list.deinit(gpa);
+
+    var replaced = false;
+    for (loaded.items) |existing| {
+        if (std.mem.eql(u8, existing.id, host.id)) {
+            var updated = host;
+            updated.createdAt = existing.createdAt; // keep original creation time
+            try list.append(gpa, updated);
+            replaced = true;
+        } else {
+            try list.append(gpa, existing);
+        }
+    }
+    if (!replaced) try list.append(gpa, host);
+
+    try saveHosts(gpa, list.items);
+}
+
+/// Remove the host with the given id and persist. No-op if absent.
+pub fn deleteHost(gpa: std.mem.Allocator, id: []const u8) !void {
+    var loaded = try loadHosts(gpa);
+    defer loaded.deinit();
+
+    var list: std.ArrayList(model.SavedHost) = .empty;
+    defer list.deinit(gpa);
+    for (loaded.items) |existing| {
+        if (!std.mem.eql(u8, existing.id, id)) try list.append(gpa, existing);
+    }
+    try saveHosts(gpa, list.items);
+}
+
 /// Load all host groups (plaintext, no key). Caller must `.deinit()`.
 pub fn loadGroups(gpa: std.mem.Allocator) !GroupStore.Loaded {
     const path = try paths.dataFile(gpa, groups_file);
@@ -85,6 +134,79 @@ fn findGroup(groups: []const model.HostGroup, id: []const u8) ?*const model.Host
         if (std.mem.eql(u8, g.id, id)) return g;
     }
     return null;
+}
+
+// Sandbox the config dir to a tmp path for the duration of a test.
+const TmpConfig = struct {
+    dir: std.testing.TmpDir,
+    z: [:0]u8,
+    alloc: std.mem.Allocator,
+
+    fn init(alloc: std.mem.Allocator) !TmpConfig {
+        var dir = std.testing.tmpDir(.{});
+        errdefer dir.cleanup();
+        const path = try dir.dir.realpathAlloc(alloc, ".");
+        defer alloc.free(path);
+        const z = try alloc.dupeZ(u8, path);
+        const c = struct {
+            extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+        };
+        _ = c.setenv("XDG_CONFIG_HOME", z, 1);
+        return .{ .dir = dir, .z = z, .alloc = alloc };
+    }
+    fn deinit(self: *TmpConfig) void {
+        const c = struct {
+            extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+        };
+        _ = c.unsetenv("XDG_CONFIG_HOME");
+        self.alloc.free(self.z);
+        self.dir.cleanup();
+    }
+};
+
+test "sarv: upsert adds then updates a host, preserving createdAt" {
+    const alloc = std.testing.allocator;
+    var cfg = try TmpConfig.init(alloc);
+    defer cfg.deinit();
+
+    try upsertHost(alloc, .{
+        .id = "h1",
+        .label = "web",
+        .hostname = "10.0.0.1",
+        .createdAt = "2020-01-01T00:00:00Z",
+        .updatedAt = "2020-01-01T00:00:00Z",
+    });
+
+    // Update the same id with a new createdAt that must be ignored.
+    try upsertHost(alloc, .{
+        .id = "h1",
+        .label = "web-renamed",
+        .hostname = "10.0.0.2",
+        .createdAt = "2099-01-01T00:00:00Z",
+        .updatedAt = "2026-07-04T00:00:00Z",
+    });
+
+    var loaded = try loadHosts(alloc);
+    defer loaded.deinit();
+    try std.testing.expectEqual(@as(usize, 1), loaded.items.len);
+    try std.testing.expectEqualStrings("web-renamed", loaded.items[0].label);
+    try std.testing.expectEqualStrings("10.0.0.2", loaded.items[0].hostname);
+    try std.testing.expectEqualStrings("2020-01-01T00:00:00Z", loaded.items[0].createdAt);
+}
+
+test "sarv: deleteHost removes only the matching id" {
+    const alloc = std.testing.allocator;
+    var cfg = try TmpConfig.init(alloc);
+    defer cfg.deinit();
+
+    try upsertHost(alloc, .{ .id = "a", .hostname = "1" });
+    try upsertHost(alloc, .{ .id = "b", .hostname = "2" });
+    try deleteHost(alloc, "a");
+
+    var loaded = try loadHosts(alloc);
+    defer loaded.deinit();
+    try std.testing.expectEqual(@as(usize, 1), loaded.items.len);
+    try std.testing.expectEqualStrings("b", loaded.items[0].id);
 }
 
 test "sarv: groupPath builds a breadcrumb from parent links" {

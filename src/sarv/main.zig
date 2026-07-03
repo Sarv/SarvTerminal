@@ -11,6 +11,7 @@ pub const store = @import("store.zig");
 pub const ssh = @import("ssh.zig");
 pub const askpass = @import("askpass.zig");
 pub const vault = @import("vault.zig");
+pub const util = @import("util.zig");
 
 pub const SavedHost = model.SavedHost;
 pub const HostGroup = model.HostGroup;
@@ -27,4 +28,5 @@ test {
     _ = ssh;
     _ = askpass;
     _ = vault;
+    _ = util;
 }
