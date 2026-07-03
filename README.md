@@ -16,15 +16,6 @@ manager, and end-to-end-encrypted settings sync — in one native app.
 
 ---
 
-> ### Built on Ghostty 👻
-> Sarv Terminal is a **fork of [Ghostty](https://github.com/ghostty-org/ghostty)** by
-> [Mitchell Hashimoto](https://github.com/mitchellh) and the Ghostty contributors. The blazing-fast,
-> GPU-accelerated terminal engine at the heart of this app is entirely their work, and we are deeply
-> grateful for it. Sarv Terminal layers a **connection-manager workflow** (hosts, SFTP, keys, tunnels,
-> encrypted sync) on top of that engine. **Huge thanks to the Ghostty team** — please consider
-> [supporting the upstream project](https://github.com/ghostty-org/ghostty). See
-> [Credits & License](#credits--license).
-
 ## About
 
 Most terminals make you choose: a *fast native terminal* **or** a *connection manager* (like the
@@ -205,6 +196,15 @@ How to get started:
    general guidelines.
 
 Be kind and constructive — we want this to be a friendly community.
+
+> ### Built on Ghostty 👻
+> Sarv Terminal is a **fork of [Ghostty](https://github.com/ghostty-org/ghostty)** by
+> [Mitchell Hashimoto](https://github.com/mitchellh) and the Ghostty contributors. The blazing-fast,
+> GPU-accelerated terminal engine at the heart of this app is entirely their work, and we are deeply
+> grateful for it. Sarv Terminal layers a **connection-manager workflow** (hosts, SFTP, keys, tunnels,
+> encrypted sync) on top of that engine. **Huge thanks to the Ghostty team** — please consider
+> [supporting the upstream project](https://github.com/ghostty-org/ghostty). See
+> [Credits & License](#credits--license).
 
 ## Credits & License
 
