@@ -417,16 +417,37 @@ private final class SidebarAppearance: ObservableObject {
         themeName = theme
         commit { editor in
             if theme.isEmpty { editor.remove("theme") } else { editor.set("theme", theme) }
-            // Selecting a theme resets the background so the theme shows cleanly:
-            // opaque, with the theme's own background (no leftover translucency /
-            // color override). Adding a background image later re-enables the
-            // translucent look via Appearance settings.
-            editor.set("background-opacity", "1")
+            // A theme OWNS every color. Clear any manual color overrides so the
+            // theme's own palette shows — a leftover `foreground = #FFFFFF` would
+            // otherwise render text white-on-white (invisible) on a light theme,
+            // and a leftover `background` would hide the theme's background.
+            editor.remove("foreground")
             editor.remove("background")
-            // Keep the window CHROME on the system appearance so a light terminal
-            // theme doesn't flip the toolbar to white and hide our light icons.
-            editor.set("window-theme", "system")
+            editor.remove("cursor-color")
+            editor.remove("cursor-text")
+            editor.remove("selection-background")
+            editor.remove("selection-foreground")
+            // Reset the BACKGROUND so the theme shows cleanly. A leftover
+            // background image sits on top of every theme and masks the switch
+            // ("theme switching does nothing"), so clear it here — re-add a
+            // background image afterward via Appearance settings, which re-enables
+            // translucency + auto text-contrast.
+            editor.remove("background-image")
+            editor.set("background-opacity", "1")
+            // Force the window CHROME dark (deterministic) so a light terminal
+            // theme can't flip the toolbar white and hide our icons. `system`
+            // maps to nil ("don't touch"), which left the chrome flaky.
+            editor.set("window-theme", "dark")
         }
+        // The visible background image is ALSO drawn as a window-level overlay
+        // from BackgroundDisplayStore (persisted in UserDefaults, independent of
+        // the config). Clearing only the config key makes the theme flash then
+        // get re-covered by that overlay — so reset the overlay too. Re-adding a
+        // background image via Appearance restores it.
+        BackgroundDisplayStore.shared.update(
+            useShared: false,
+            imagePath: "",
+            imageVisibility: BackgroundDisplayStore.shared.imageVisibility)
     }
     func setFontFamily(_ family: String) {
         fontFamily = family
