@@ -58,6 +58,7 @@ pub const blueprints: []const Blueprint = &.{
     .{ .major = 1, .minor = 5, .name = "sarv-keys-dialog" },
     .{ .major = 1, .minor = 5, .name = "sarv-tunnels-dialog" },
     .{ .major = 1, .minor = 5, .name = "sarv-snippets-dialog" },
+    .{ .major = 1, .minor = 5, .name = "sarv-files-dialog" },
 };
 
 /// CSS files in css_path
@@ -77,6 +78,9 @@ pub const Blueprint = struct {
 /// The list of filepaths that we depend on. Used for the build
 /// system to have proper caching.
 pub const file_inputs = deps: {
+    // Raised as the Sarv blueprint list grew; comptimePrint per entry is
+    // branch-heavy and overflows the default 1000-branch budget.
+    @setEvalBranchQuota(100_000);
     const total = (icon_sizes.len * 2) + blueprints.len + css.len;
     var deps: [total][]const u8 = undefined;
     var index: usize = 0;

@@ -1,0 +1,138 @@
+using Gtk 4.0;
+using Gio 2.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 720;
+  content-height: 560;
+  title: _("Files");
+  closed => $closed();
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      [start]
+      Gtk.Button {
+        icon-name: "go-up-symbolic";
+        tooltip-text: _("Go to parent directory");
+        clicked => $up_clicked();
+      }
+
+      [title]
+      Adw.ComboRow host_row {
+        title: _("Host");
+        hexpand: true;
+
+        model: Gtk.StringList host_names {};
+
+        notify::selected => $host_changed();
+      }
+
+      [end]
+      Gtk.Button {
+        icon-name: "view-refresh-symbolic";
+        tooltip-text: _("Reload");
+        clicked => $reload_clicked();
+      }
+    }
+
+    [top]
+    Gtk.Box {
+      orientation: horizontal;
+      spacing: 6;
+
+      styles [
+        "toolbar",
+      ]
+
+      Gtk.Label path_label {
+        ellipsize: start;
+        halign: start;
+        hexpand: true;
+        label: ".";
+
+        styles [
+          "monospace",
+          "dim-label",
+        ]
+      }
+    }
+
+    Gtk.ScrolledWindow {
+      hscrollbar-policy: never;
+
+      Gtk.ListView view {
+        single-click-activate: false;
+        activate => $row_activated();
+
+        model: Gtk.SingleSelection model {
+          model: Gio.ListStore source {
+            item-type: typeof<$GhosttySarvFile>;
+          };
+        };
+
+        styles [
+          "rich-list",
+        ]
+
+        factory: Gtk.BuilderListItemFactory {
+          template Gtk.ListItem {
+            child: Gtk.Box {
+              orientation: horizontal;
+              spacing: 12;
+
+              Gtk.Image {
+                icon-name: bind template.item as <$GhosttySarvFile>.icon-name;
+                pixel-size: 22;
+
+                styles [
+                  "sarv-file-icon",
+                ]
+              }
+
+              Gtk.Box {
+                orientation: vertical;
+                hexpand: true;
+                valign: center;
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvFile>.label;
+
+                  styles [
+                    "title",
+                  ]
+                }
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvFile>.subtitle;
+
+                  styles [
+                    "subtitle",
+                    "monospace",
+                  ]
+                }
+              }
+            };
+          }
+        };
+      }
+    }
+
+    [bottom]
+    Gtk.ActionBar {
+      [start]
+      Gtk.Label empty_label {
+        label: _("No files to show — pick a host with key/agent auth.");
+        visible: false;
+
+        styles [
+          "dim-label",
+        ]
+      }
+    }
+  }
+}
