@@ -145,8 +145,9 @@ pub fn knownHostsToken(alloc: std.mem.Allocator, host: []const u8, port: i64) ![
 
 /// Shell-quote a string the same way the macOS app does: return as-is when it
 /// contains only safe characters, otherwise single-quote and escape embedded
-/// single quotes as '\''. Caller owns the result.
-fn shellQuote(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
+/// single quotes as '\''. Caller owns the result. Shared with other modules
+/// that build shell command strings (sftp, port forwarding).
+pub fn shellQuote(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
     if (isSafe(s)) return alloc.dupe(u8, s);
 
     var out: std.ArrayList(u8) = .empty;
@@ -176,7 +177,7 @@ fn isSafe(s: []const u8) bool {
 }
 
 /// Expand a leading `~` to $HOME. Caller owns the result.
-fn expandTilde(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+pub fn expandTilde(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
     if (path.len == 0 or path[0] != '~') return alloc.dupe(u8, path);
     const home = std.posix.getenv("HOME") orelse return alloc.dupe(u8, path);
     return std.fmt.allocPrint(alloc, "{s}{s}", .{ home, path[1..] });

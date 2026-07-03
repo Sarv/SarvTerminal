@@ -13,6 +13,12 @@ pub const askpass = @import("askpass.zig");
 pub const hostkey = @import("hostkey.zig");
 pub const vault = @import("vault.zig");
 pub const util = @import("util.zig");
+pub const known_hosts = @import("known_hosts.zig");
+pub const sshkeys = @import("sshkeys.zig");
+pub const portforward = @import("portforward.zig");
+pub const shell_history = @import("shell_history.zig");
+pub const sftp = @import("sftp.zig");
+pub const sync_crypto = @import("sync_crypto.zig");
 
 pub const SavedHost = model.SavedHost;
 pub const HostGroup = model.HostGroup;
@@ -31,4 +37,10 @@ test {
     _ = hostkey;
     _ = vault;
     _ = util;
+    _ = known_hosts;
+    _ = sshkeys;
+    _ = portforward;
+    _ = shell_history;
+    _ = sftp;
+    _ = sync_crypto;
 }
