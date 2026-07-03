@@ -198,15 +198,21 @@ extension Ghostty {
         /// readable. `backgroundHex == nil` lets the theme's own background show
         /// (translucent, image visible); a non-nil hex pins an opaque backing.
         func applyTheme(_ themeName: String, to surface: ghostty_surface_t,
-                        backgroundHex: String?, opacity: Double) {
+                        backgroundHex: String?, foregroundHex: String? = nil,
+                        opacity: Double) {
             let trimmed = themeName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, let cfg = ghostty_config_new() else { return }
             defer { ghostty_config_free(cfg) }
-            ghostty_config_load_default_files(cfg)
+            Config.loadUserBaseConfig(into: cfg)
 
             var override = "theme = \(trimmed)\nbackground-opacity = \(opacity)\n"
             if let backgroundHex {
                 override += "background = \(backgroundHex)\nbackground-blur = false\n"
+            }
+            // Auto text-contrast: flip only the DEFAULT text color so it stays
+            // readable over a background image; the theme's palette is untouched.
+            if let foregroundHex {
+                override += "foreground = \(foregroundHex)\n"
             }
 
             let tmp = FileManager.default.temporaryDirectory
@@ -225,7 +231,7 @@ extension Ghostty {
         func applyFontThicken(_ thicken: Bool, to surface: ghostty_surface_t) {
             guard let cfg = ghostty_config_new() else { return }
             defer { ghostty_config_free(cfg) }
-            ghostty_config_load_default_files(cfg)
+            Config.loadUserBaseConfig(into: cfg)
 
             let override = "font-thicken = \(thicken ? "true" : "false")\n"
             let tmp = FileManager.default.temporaryDirectory
@@ -243,7 +249,7 @@ extension Ghostty {
         func themeColors(_ themeName: String) -> (fgLum: Double, bgLum: Double, bgHex: String)? {
             guard let cfg = ghostty_config_new() else { return nil }
             defer { ghostty_config_free(cfg) }
-            ghostty_config_load_default_files(cfg)
+            Config.loadUserBaseConfig(into: cfg)
             let tmp = FileManager.default.temporaryDirectory
                 .appendingPathComponent("sarv-theme-probe-\(UUID().uuidString).conf")
             guard (try? "theme = \(themeName)\n".write(to: tmp, atomically: true, encoding: .utf8)) != nil else { return nil }

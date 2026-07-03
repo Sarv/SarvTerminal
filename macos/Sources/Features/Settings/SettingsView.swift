@@ -302,7 +302,7 @@ final class SettingsViewModel: ObservableObject {
         // — so we keep a moderate value and let the image's own opacity
         // (sharedImageVisibility) be the brightness control. Otherwise the
         // user's chosen opacity applies.
-        let sharedPaneOpacity = 0.4
+        let sharedPaneOpacity = BackgroundDisplayStore.sharedPaneOpacity
         let curOpacity = cur.backgroundDisplayShared ? sharedPaneOpacity : cur.backgroundOpacity
         let wasOpacity = was.backgroundDisplayShared ? sharedPaneOpacity : was.backgroundOpacity
         if curOpacity != wasOpacity {

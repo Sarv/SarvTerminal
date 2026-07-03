@@ -516,15 +516,42 @@ final class VaultsTabsModel: ObservableObject {
         }
         let store = BackgroundDisplayStore.shared
         let windowBacking = 0.12
-        let backdrop: Double
         if let imageLum = store.imageAverageLuminance {
-            backdrop = imageLum * store.imageVisibility + windowBacking * (1 - store.imageVisibility)
-        } else {
-            backdrop = windowBacking
-        }
-        if abs(colors.fgLum - backdrop) >= 0.4 {
+            // A shared background image is showing: the pane renders TRANSLUCENT,
+            // so text sits on a BLEND of the theme's background (pane opacity)
+            // and the image behind it — judge readability against that blend,
+            // never the raw image. Auto-adjust = find the LOWEST pane opacity
+            // that keeps the theme's own text readable (image as visible as
+            // possible, theme colors intact); flip the default text color only
+            // if even a nearly-opaque pane can't get there.
+            let minOpacity = BackgroundDisplayStore.sharedPaneOpacity
+            let imageBackdrop = imageLum * store.imageVisibility + windowBacking * (1 - store.imageVisibility)
+            func blend(_ opacity: Double) -> Double {
+                colors.bgLum * opacity + imageBackdrop * (1 - opacity)
+            }
+            if abs(colors.fgLum - blend(minOpacity)) >= 0.4 {
+                ghostty.applyTheme(theme, to: s, backgroundHex: nil, opacity: minOpacity)
+            } else {
+                // Solve blend(o) for the opacity where contrast reaches 0.4.
+                let target = colors.bgLum > colors.fgLum ? colors.fgLum + 0.4 : colors.fgLum - 0.4
+                let denominator = colors.bgLum - imageBackdrop
+                let needed = denominator == 0 ? 1.0 : (target - imageBackdrop) / denominator
+                if needed > 0, needed <= 0.92 {
+                    ghostty.applyTheme(theme, to: s, backgroundHex: nil,
+                                       opacity: max(minOpacity, needed))
+                } else {
+                    let contrastFg = blend(minOpacity) < 0.5 ? "#FFFFFF" : "#1E1E1E"
+                    ghostty.applyTheme(theme, to: s, backgroundHex: nil, foregroundHex: contrastFg,
+                                       opacity: minOpacity)
+                }
+            }
+        } else if abs(colors.fgLum - windowBacking) >= 0.4 {
+            // No image, theme text contrasts with the window backing — keep the
+            // user's own translucency.
             ghostty.applyTheme(theme, to: s, backgroundHex: nil, opacity: ghostty.config.backgroundOpacity)
         } else {
+            // No image — pin the theme's own solid background so the theme shows
+            // instead of only the text recoloring.
             let solidHex = abs(colors.fgLum - colors.bgLum) >= 0.4
                 ? colors.bgHex
                 : (colors.fgLum < 0.5 ? "#FFFFFF" : "#1E1E1E")
@@ -1517,6 +1544,9 @@ final class VaultsTabsModel: ObservableObject {
         observe(.sarvSurfaceBackingChanged) { [weak self] note in
             guard let pane = note.object as? Ghostty.SurfaceView else { return }
             self?.applyFontWeight(to: pane)
+            // Fires at surface creation too — new panes need the readability
+            // pass when a shared background image is showing.
+            self?.applySmartThemeIfNeeded(to: pane)
         }
         observe(.sarvAutoFontWeightChanged) { [weak self] _ in self?.applyFontWeightForDisplay() }
     }
@@ -1555,15 +1585,37 @@ final class VaultsTabsModel: ObservableObject {
     }
 
     /// Push the current config to every live embedded surface so settings apply
-    /// immediately to existing terminals, not just newly-opened ones.
+    /// immediately to existing terminals, not just newly-opened ones. After the
+    /// base push, re-run the readability pass (`applySmartThemeIfNeeded`) — the
+    /// push drops per-surface overrides, and a newly set background image needs
+    /// the text-contrast check.
     private func applyConfigToExistingSurfaces() {
         guard let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty else { return }
         for tab in terminals {
             for pane in tab.surfaceTree.root?.leaves() ?? [] {
                 guard let surface = pane.surface else { continue }
                 ghostty.reloadConfig(surface: surface, soft: true)
+                applySmartThemeIfNeeded(to: pane)
             }
         }
+    }
+
+    /// The ONE readability-aware theme entry point for a pane: the host theme
+    /// when the tab has one, else the global theme when a shared background
+    /// image is showing (the image can wash out the theme's text). Both cases
+    /// funnel into `applyThemeSmart` — never re-implement this decision.
+    private func applySmartThemeIfNeeded(to pane: Ghostty.SurfaceView) {
+        let host = connections[pane.id]?.model.host ?? tab(containing: pane)?.connectHost
+        let hostTheme = host?.themeName.trimmingCharacters(in: .whitespaces) ?? ""
+        if !hostTheme.isEmpty {
+            DispatchQueue.main.async { self.applyThemeSmart(hostTheme, to: pane) }
+            return
+        }
+        guard BackgroundDisplayStore.shared.hasSharedImage,
+              let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty,
+              let global = ghostty.config.themeName?.trimmingCharacters(in: .whitespaces),
+              !global.isEmpty else { return }
+        DispatchQueue.main.async { self.applyThemeSmart(global, to: pane) }
     }
 
     private enum CloseTabKind { case this, other, right }

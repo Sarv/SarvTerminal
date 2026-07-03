@@ -13,6 +13,12 @@ import AppKit
 final class BackgroundDisplayStore: ObservableObject {
     static let shared = BackgroundDisplayStore()
 
+    /// Pane translucency while the shared window-level image is showing — the
+    /// MINIMUM backing so the tab bar keeps rendering (never 0.0). The single
+    /// definition: Settings writes it to the config and `applyThemeSmart` starts
+    /// its readability search from it.
+    static let sharedPaneOpacity = 0.4
+
     /// Shared = one image drawn at the window level behind transparent panes.
     /// Per-pane = Ghostty draws `background-image` on each surface.
     @Published private(set) var useShared: Bool
@@ -51,6 +57,10 @@ final class BackgroundDisplayStore: ObservableObject {
         UserDefaults.standard.set(imageVisibility, forKey: Keys.visibility)
     }
 
+    /// Whether the window-level shared image is active (shared mode + path set).
+    /// Cheap check — doesn't load the image from disk like `sharedImage` does.
+    var hasSharedImage: Bool { useShared && !imagePath.isEmpty }
+
     /// The image to render at window level (shared mode only).
     var sharedImage: NSImage? {
         guard useShared, !imagePath.isEmpty else { return nil }
@@ -86,7 +96,7 @@ final class BackgroundDisplayStore: ObservableObject {
     }
 
     static func readConfigValue(_ key: String) -> String? {
-        let path = ("~/.config/ghostty/config" as NSString).expandingTildeInPath
+        let path = AppPaths.ghosttyConfigFile.path
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
         for raw in content.split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
