@@ -28,6 +28,7 @@ const Surface = @import("surface.zig").Surface;
 const Tab = @import("tab.zig").Tab;
 const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
+const SarvHostsDialog = @import("sarv_hosts_dialog.zig").SarvHostsDialog;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
@@ -376,6 +377,7 @@ pub const Window = extern struct {
             .init("clear", actionClear, null),
             // TODO: accept the surface that toggled the command palette
             .init("toggle-command-palette", actionToggleCommandPalette, null),
+            .init("show-sarv-hosts", actionShowSarvHosts, null),
             .init("toggle-inspector", actionToggleInspector, null),
         };
 
@@ -392,6 +394,18 @@ pub const Window = extern struct {
     /// The new tab will be selected.
     pub fn newTab(self: *Self, parent_: ?*CoreSurface) void {
         _ = self.newTabPage(parent_, .tab, .none);
+    }
+
+    /// Create a new tab that runs a specific shell command, titled `title`.
+    /// Used by the Sarv hosts manager to open an SSH session in a new tab.
+    /// The command is shell-expanded, so it may carry an `env …` prefix
+    /// (see the sarv askpass flow).
+    pub fn newTabWithCommand(
+        self: *Self,
+        command: configpkg.Command,
+        title: ?[:0]const u8,
+    ) void {
+        _ = self.newTabPage(null, .tab, .{ .command = command, .title = title });
     }
 
     pub fn newTabForWindow(
@@ -2063,6 +2077,18 @@ pub const Window = extern struct {
         // TODO: accept the surface that toggled the command palette as a
         // parameter
         self.toggleCommandPalette();
+    }
+
+    /// Present the Sarv hosts dialog. The dialog owns its lifecycle: it
+    /// self-refs while shown and unrefs when closed.
+    fn actionShowSarvHosts(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        const dialog = SarvHostsDialog.new();
+        defer dialog.unref();
+        dialog.present(self);
     }
 
     /// Toggle the Ghostty inspector for the active surface.
