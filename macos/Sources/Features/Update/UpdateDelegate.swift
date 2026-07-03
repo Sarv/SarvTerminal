@@ -23,6 +23,25 @@ extension UpdateDriver: SPUUpdaterDelegate {
                 viewModel?.state = .idle
             }
         ))
+
+        // The auto-downloaded update would otherwise install SILENTLY on quit —
+        // nothing in the Vaults window surfaces the ready state. Offer to
+        // relaunch now (deferred so the delegate returns before the modal runs).
+        let version = item.displayVersionString
+        DispatchQueue.main.async {
+            let result = SarvAlert.runModal(
+                title: "Update Ready",
+                message: "Sarv Terminal \(version) has been downloaded. " +
+                         "Relaunch now to finish installing, or it will be " +
+                         "installed automatically the next time you quit.",
+                buttons: [
+                    .init("Relaunch Now", isDefault: true),
+                    .init("Later", isCancel: true),
+                ])
+            if result.buttonIndex == 0 {
+                immediateInstallHandler()
+            }
+        }
         return true
     }
 }
