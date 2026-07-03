@@ -3,25 +3,9 @@ import Cocoa
 import SwiftUI
 import Combine
 
-/// White gear button shown in the Vaults top strip.
-struct VaultsGearView: View {
-    var body: some View {
-        Button {
-            (NSApp.delegate as? AppDelegate)?.showSettings(nil)
-        } label: {
-            Image(systemName: "gearshape")
-                .font(.system(size: 14, weight: .regular))
-                .foregroundColor(.white)
-        }
-        .buttonStyle(.plain)
-        .hoverTip("Settings")
-        .frame(width: 28, height: 24)
-    }
-}
-
-/// Notification bell shown alongside the gear. Opens the in-app inbox of
+/// Notification bell in the Vaults top strip. Opens the in-app inbox of
 /// recent app-level notifications (transfers, tunnels, sync, etc.) and shows
-/// an unread badge.
+/// an unread badge. (No gear next to it — Settings lives in the app menu, ⌘,.)
 struct VaultsBellView: View {
     @ObservedObject private var center = SarvNotificationCenter.shared
     @State private var showInbox = false
@@ -32,7 +16,9 @@ struct VaultsBellView: View {
         } label: {
             Image(systemName: "bell")
                 .font(.system(size: 14, weight: .regular))
-                .foregroundColor(.white)
+                // Adapts to the chrome appearance — hardcoded .white vanishes
+                // on a light window.
+                .foregroundStyle(.secondary)
                 .frame(width: 28, height: 24)
                 .overlay(alignment: .topTrailing) {
                     if center.unreadCount > 0 {

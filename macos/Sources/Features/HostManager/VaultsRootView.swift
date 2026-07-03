@@ -89,6 +89,10 @@ struct VaultsRootView: View {
     private var topBar: some View {
         HStack(spacing: 8) {
             VaultsTabStrip(newTabAction: newTabAction)
+            // Trailing order: + (in the tab strip) · bell · sidebar · account.
+            // No gear icon — Settings follows the macOS convention (app menu
+            // "Sarv Terminal → Settings…", ⌘,) instead of a chrome button.
+            VaultsBellView()
             // Focus mode (the pane sidebar) is opened with ⌘⇧M — no top-bar
             // button. The sidebar carries its own "Split view" button to return.
             Button {
@@ -102,8 +106,6 @@ struct VaultsRootView: View {
             }
             .buttonStyle(.plain)
             .help("Command sidebar (snippets, history, themes, search)")
-            VaultsBellView()
-            VaultsGearView()
             AccountMenuButton()
                 .padding(.trailing, 6)
         }

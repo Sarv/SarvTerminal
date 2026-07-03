@@ -15,7 +15,9 @@ struct AccountMenuButton: View {
         } label: {
             Image(systemName: store.isAuthenticated ? "person.crop.circle.fill" : "person.crop.circle")
                 .font(.system(size: 14, weight: .regular))
-                .foregroundColor(.white)
+                // Adapts to the chrome appearance — hardcoded .white vanishes
+                // on a light window.
+                .foregroundStyle(.secondary)
                 .frame(width: 28, height: 24)
         }
         .buttonStyle(.plain)
