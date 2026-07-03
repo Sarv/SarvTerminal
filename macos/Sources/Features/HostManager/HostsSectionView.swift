@@ -1072,6 +1072,31 @@ private struct GroupListRow<MoveMenu: View>: View {
 
 // MARK: - Host card / row
 
+/// How a click on a host card/row triggers an SSH connection.
+/// Configurable from Settings → General → "Hosts connect on".
+enum HostConnectClickMode: String, CaseIterable, Identifiable {
+    case single
+    case double
+
+    static let storageKey = "SarvHostsConnectClick"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .single: return "Single Click"
+        case .double: return "Double Click"
+        }
+    }
+
+    var tapCount: Int {
+        switch self {
+        case .single: return 1
+        case .double: return 2
+        }
+    }
+}
+
 private struct HostCard<MoveMenu: View>: View {
     let host: SavedHost
     let groupPath: String
@@ -1082,60 +1107,63 @@ private struct HostCard<MoveMenu: View>: View {
     let onMoveToBuilder: () -> MoveMenu
 
     @State private var hovering = false
+    @AppStorage(HostConnectClickMode.storageKey)
+    private var connectClick: HostConnectClickMode = .double
 
     var body: some View {
-        Button(action: onOpen) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(Color.accentColor.opacity(0.85))
-                        .frame(width: 44, height: 44)
-                    Image(systemName: "server.rack")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(.white)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(host.displayLabel)
-                        .fontWeight(.medium)
-                        .lineLimit(1)
-                    Text(host.subtitle.isEmpty ? host.hostname : host.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    if !groupPath.isEmpty {
-                        HStack(spacing: 3) {
-                            Image(systemName: "folder").font(.caption2)
-                            Text(groupPath).font(.caption2).lineLimit(1)
-                        }
-                        .foregroundStyle(.tertiary)
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.85))
+                    .frame(width: 44, height: 44)
+                Image(systemName: "server.rack")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(.white)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(host.displayLabel)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                Text(host.subtitle.isEmpty ? host.hostname : host.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if !groupPath.isEmpty {
+                    HStack(spacing: 3) {
+                        Image(systemName: "folder").font(.caption2)
+                        Text(groupPath).font(.caption2).lineLimit(1)
                     }
-                }
-                Spacer()
-                if hovering {
-                    Button(action: onConnect) {
-                        Image(systemName: "play.fill")
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(
-                                RoundedRectangle(cornerRadius: 5).fill(Color.accentColor)
-                            )
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!host.canConnect)
+                    .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.horizontal, 12).padding(.vertical, 10)
-            .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(hovering ? Color.secondary.opacity(0.12) : Color.secondary.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.20), lineWidth: 1)
-            )
+            Spacer()
+            if hovering {
+                Button(action: onOpen) {
+                    Image(systemName: "square.and.pencil")
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5).fill(Color.accentColor)
+                        )
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .help("Edit")
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(hovering ? Color.secondary.opacity(0.12) : Color.secondary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.secondary.opacity(0.20), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(count: connectClick.tapCount) {
+            if host.canConnect { onConnect() } else { onOpen() }
+        }
         .onHover { hovering = $0 }
         .contextMenu {
             Button("Connect", action: onConnect).disabled(!host.canConnect)
@@ -1158,61 +1186,64 @@ private struct HostListRow<MoveMenu: View>: View {
     let onMoveToBuilder: () -> MoveMenu
 
     @State private var hovering = false
+    @AppStorage(HostConnectClickMode.storageKey)
+    private var connectClick: HostConnectClickMode = .double
 
     var body: some View {
-        Button(action: onOpen) {
-            HStack(spacing: 12) {
-                Image(systemName: "server.rack")
-                    .font(.system(size: 16))
+        HStack(spacing: 12) {
+            Image(systemName: "server.rack")
+                .font(.system(size: 16))
+                .foregroundStyle(.secondary)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(host.displayLabel).fontWeight(.medium)
+                Text(host.subtitle.isEmpty ? host.hostname : host.subtitle)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(host.displayLabel).fontWeight(.medium)
-                    Text(host.subtitle.isEmpty ? host.hostname : host.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if !groupPath.isEmpty {
-                        HStack(spacing: 3) {
-                            Image(systemName: "folder").font(.caption2)
-                            Text(groupPath).font(.caption2).lineLimit(1)
-                        }
-                        .foregroundStyle(.tertiary)
+                if !groupPath.isEmpty {
+                    HStack(spacing: 3) {
+                        Image(systemName: "folder").font(.caption2)
+                        Text(groupPath).font(.caption2).lineLimit(1)
                     }
+                    .foregroundStyle(.tertiary)
                 }
-                Spacer()
-                if !host.tags.isEmpty {
-                    Text(host.tags.first ?? "")
-                        .font(.caption2)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.accentColor.opacity(0.18))
-                        )
-                        .foregroundStyle(.secondary)
-                }
-                Button(action: onConnect) {
-                    Image(systemName: "play.fill")
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color.accentColor.opacity(hovering ? 1.0 : 0.85))
-                        )
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-                .disabled(!host.canConnect)
             }
-            .padding(.horizontal, 12).padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(hovering ? Color.secondary.opacity(0.12) : Color.secondary.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.20), lineWidth: 1)
-            )
+            Spacer()
+            if !host.tags.isEmpty {
+                Text(host.tags.first ?? "")
+                    .font(.caption2)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.accentColor.opacity(0.18))
+                    )
+                    .foregroundStyle(.secondary)
+            }
+            Button(action: onOpen) {
+                Image(systemName: "square.and.pencil")
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.accentColor.opacity(hovering ? 1.0 : 0.85))
+                    )
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .help("Edit")
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hovering ? Color.secondary.opacity(0.12) : Color.secondary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.secondary.opacity(0.20), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(count: connectClick.tapCount) {
+            if host.canConnect { onConnect() } else { onOpen() }
+        }
         .onHover { hovering = $0 }
         .contextMenu {
             Button("Connect", action: onConnect).disabled(!host.canConnect)

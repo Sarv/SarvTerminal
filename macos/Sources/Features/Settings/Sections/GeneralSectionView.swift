@@ -4,6 +4,8 @@ struct GeneralSectionView: View {
     @ObservedObject var viewModel: SettingsViewModel
     @AppStorage("SarvRestoreSession") private var restoreSession = true
     @AppStorage("SarvNewTabDirectory") private var newTabDirectory = ""
+    @AppStorage(HostConnectClickMode.storageKey)
+    private var hostsConnectClick: HostConnectClickMode = .double
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -11,8 +13,22 @@ struct GeneralSectionView: View {
             sessionCard
             behaviorCard
             terminalCard
+            hostsCard
             clipboardCard
             scrollbackCard
+        }
+    }
+
+    private var hostsCard: some View {
+        SettingsCard(title: "Hosts") {
+            row("Hosts connect on") {
+                Picker("", selection: $hostsConnectClick) {
+                    ForEach(HostConnectClickMode.allCases) { opt in
+                        Text(opt.label).tag(opt)
+                    }
+                }
+                .labelsHidden().pickerStyle(.menu).frame(maxWidth: 200, alignment: .leading)
+            }
         }
     }
 
