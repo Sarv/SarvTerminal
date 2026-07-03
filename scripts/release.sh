@@ -248,19 +248,39 @@ $BODY
         *) echo "$(tr '[:lower:]' '[:upper:]' <<<"${1:0:1}")${1:1}" ;;
       esac; }
 
-    # scope<TAB>description, one per kept commit (newest first).
+    # Documentation never belongs in user-facing release notes: skip commits
+    # whose CHANGES are only .md files or docs/ (regardless of commit type).
+    docs_only(){ # $1 = commit hash → success if every touched file is docs
+      local files f
+      files=$(git diff-tree --no-commit-id --name-only -r "$1")
+      [[ -n "$files" ]] || return 1
+      while IFS= read -r f; do
+        [[ "$f" == *.md || "$f" == docs/* ]] || return 1
+      done <<<"$files"
+      return 0
+    }
+
+    # scope<TAB>description, one per kept commit (newest first). Skips docs
+    # scopes and docs-only commits.
     PARSED=$(mktemp)
     re='^(feat|fix|perf)(\(([^)]+)\))?!?:[[:space:]]+(.+)$'
-    git log $RANGE --no-merges --pretty=format:'%s' | while IFS= read -r subj; do
+    git log $RANGE --no-merges --pretty=format:'%H%x09%s' | while IFS=$'\t' read -r hash subj; do
       if [[ "$subj" =~ $re ]]; then
+        case "${BASH_REMATCH[3]}" in docs|readme|changelog) continue ;; esac
+        docs_only "$hash" && continue
         printf '%s\t%s\n' "${BASH_REMATCH[3]:-general}" "${BASH_REMATCH[4]}"
       fi
     done > "$PARSED"
 
     # Never blank: if no conventional feat/fix/perf commits exist in range, fall
-    # back to every commit subject so the notes still describe real, current work.
+    # back to every commit subject so the notes still describe real, current work
+    # — still excluding docs commits.
     if [[ ! -s "$PARSED" ]]; then
-      git log $RANGE --no-merges --pretty=format:'%s' | sed 's/^/general\t/' > "$PARSED"
+      git log $RANGE --no-merges --pretty=format:'%H%x09%s' | while IFS=$'\t' read -r hash subj; do
+        [[ "$subj" =~ ^docs ]] && continue
+        docs_only "$hash" && continue
+        printf 'general\t%s\n' "$subj"
+      done > "$PARSED"
     fi
 
     # HTML body (Sparkle web page) + a Markdown copy (GitHub release body, which
