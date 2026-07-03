@@ -1,0 +1,217 @@
+using Gtk 4.0;
+using Gio 2.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 720;
+  content-height: 560;
+  title: _("Snippets");
+  closed => $closed();
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      [title]
+      Gtk.SearchEntry search {
+        hexpand: true;
+        placeholder-text: _("Search snippets…");
+        search-changed => $search_changed();
+      }
+
+      [end]
+      Gtk.Button {
+        icon-name: "list-add-symbolic";
+        tooltip-text: _("Add snippet");
+        clicked => $add_clicked();
+      }
+
+      [end]
+      Gtk.Button {
+        icon-name: "document-edit-symbolic";
+        tooltip-text: _("Edit selected snippet");
+        clicked => $edit_clicked();
+      }
+    }
+
+    Gtk.ScrolledWindow {
+      hscrollbar-policy: never;
+
+      Gtk.ListView view {
+        single-click-activate: false;
+        activate => $row_activated();
+
+        model: Gtk.SingleSelection model {
+          model: Gtk.FilterListModel filter_model {
+            incremental: true;
+
+            filter: Gtk.StringFilter {
+              expression: expr item as <$GhosttySarvSnippet>.search-text;
+              search: bind search.text;
+            };
+
+            model: Gio.ListStore source {
+              item-type: typeof<$GhosttySarvSnippet>;
+            };
+          };
+        };
+
+        styles [
+          "rich-list",
+        ]
+
+        factory: Gtk.BuilderListItemFactory {
+          template Gtk.ListItem {
+            child: Gtk.Box {
+              orientation: horizontal;
+              spacing: 12;
+
+              Gtk.Image {
+                icon-name: "utilities-terminal-symbolic";
+                pixel-size: 22;
+
+                styles [
+                  "sarv-host-icon",
+                ]
+              }
+
+              Gtk.Box {
+                orientation: vertical;
+                hexpand: true;
+                valign: center;
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvSnippet>.name;
+
+                  styles [
+                    "title",
+                  ]
+                }
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvSnippet>.command;
+
+                  styles [
+                    "subtitle",
+                    "monospace",
+                  ]
+                }
+              }
+
+              Gtk.Image {
+                icon-name: "starred-symbolic";
+                valign: center;
+                tooltip-text: _("Pinned");
+                visible: bind template.item as <$GhosttySarvSnippet>.pinned;
+              }
+
+              Gtk.Image {
+                icon-name: "edit-copy-symbolic";
+                valign: center;
+                tooltip-text: _("Double-click to copy the command");
+                opacity: 0.55;
+              }
+            };
+          }
+        };
+      }
+    }
+
+    [bottom]
+    Gtk.ActionBar {
+      [start]
+      Gtk.Label empty_label {
+        label: _("No snippets yet — add snippets in the macOS app or via sync.");
+        visible: false;
+
+        styles [
+          "dim-label",
+        ]
+      }
+    }
+  }
+}
+
+Adw.Dialog editor {
+  content-width: 520;
+  content-height: 520;
+  title: _("Snippet");
+  closed => $editor_closed();
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      show-end-title-buttons: false;
+      show-start-title-buttons: false;
+
+      [start]
+      Gtk.Button {
+        label: _("Cancel");
+        clicked => $cancel_clicked();
+      }
+
+      [end]
+      Gtk.Button save_button {
+        label: _("Save");
+        clicked => $save_clicked();
+
+        styles [
+          "suggested-action",
+        ]
+      }
+    }
+
+    Adw.PreferencesPage {
+      Adw.PreferencesGroup {
+        title: _("Snippet");
+
+        Adw.EntryRow name_row {
+          title: _("Name");
+        }
+
+        Adw.SwitchRow pinned_row {
+          title: _("Pinned");
+        }
+      }
+
+      Adw.PreferencesGroup {
+        title: _("Command");
+
+        Gtk.ScrolledWindow {
+          height-request: 180;
+          hscrollbar-policy: automatic;
+          vscrollbar-policy: automatic;
+
+          styles [
+            "card",
+          ]
+
+          Gtk.TextView command_view {
+            monospace: true;
+            top-margin: 8;
+            bottom-margin: 8;
+            left-margin: 8;
+            right-margin: 8;
+            wrap-mode: word_char;
+          }
+        }
+      }
+
+      Adw.PreferencesGroup delete_group {
+        Gtk.Button delete_button {
+          label: _("Delete Snippet");
+          halign: center;
+          clicked => $delete_clicked();
+
+          styles [
+            "destructive-action",
+            "pill",
+          ]
+        }
+      }
+    }
+  }
+}
