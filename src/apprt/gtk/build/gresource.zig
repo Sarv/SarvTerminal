@@ -54,6 +54,9 @@ pub const blueprints: []const Blueprint = &.{
     .{ .major = 1, .minor = 5, .name = "command-palette" },
     .{ .major = 1, .minor = 5, .name = "sarv-hosts-dialog" },
     .{ .major = 1, .minor = 5, .name = "sarv-host-editor" },
+    .{ .major = 1, .minor = 5, .name = "sarv-known-hosts-dialog" },
+    .{ .major = 1, .minor = 5, .name = "sarv-keys-dialog" },
+    .{ .major = 1, .minor = 5, .name = "sarv-tunnels-dialog" },
 };
 
 /// CSS files in css_path

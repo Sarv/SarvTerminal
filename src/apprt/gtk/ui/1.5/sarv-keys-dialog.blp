@@ -1,0 +1,191 @@
+using Gtk 4.0;
+using Gio 2.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 720;
+  content-height: 560;
+  title: _("SSH Keychain");
+  closed => $closed();
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      [title]
+      Gtk.SearchEntry search {
+        hexpand: true;
+        placeholder-text: _("Search keys…");
+        search-changed => $search_changed();
+      }
+
+      [end]
+      Gtk.Button {
+        icon-name: "list-add-symbolic";
+        tooltip-text: _("Generate key");
+        clicked => $add_clicked();
+      }
+
+      [end]
+      Gtk.Button {
+        icon-name: "user-trash-symbolic";
+        tooltip-text: _("Delete selected key");
+        clicked => $delete_clicked();
+      }
+    }
+
+    Gtk.ScrolledWindow {
+      hscrollbar-policy: never;
+
+      Gtk.ListView view {
+        single-click-activate: false;
+
+        model: Gtk.SingleSelection model {
+          model: Gtk.FilterListModel filter_model {
+            incremental: true;
+
+            filter: Gtk.StringFilter {
+              expression: expr item as <$GhosttySarvKey>.search-text;
+              search: bind search.text;
+            };
+
+            model: Gio.ListStore source {
+              item-type: typeof<$GhosttySarvKey>;
+            };
+          };
+        };
+
+        styles [
+          "rich-list",
+        ]
+
+        factory: Gtk.BuilderListItemFactory {
+          template Gtk.ListItem {
+            child: Gtk.Box {
+              orientation: horizontal;
+              spacing: 12;
+
+              Gtk.Image {
+                icon-name: "dialog-password-symbolic";
+                pixel-size: 22;
+
+                styles [
+                  "sarv-host-icon",
+                ]
+              }
+
+              Gtk.Box {
+                orientation: vertical;
+                hexpand: true;
+                valign: center;
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvKey>.name;
+
+                  styles [
+                    "title",
+                  ]
+                }
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvKey>.detail;
+
+                  styles [
+                    "subtitle",
+                  ]
+                }
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvKey>.fingerprint;
+
+                  styles [
+                    "subtitle",
+                    "monospace",
+                  ]
+                }
+              }
+            };
+          }
+        };
+      }
+    }
+
+    [bottom]
+    Gtk.ActionBar {
+      [start]
+      Gtk.Label empty_label {
+        label: _("No SSH keys found in ~/.ssh — generate one to get started.");
+        visible: false;
+
+        styles [
+          "dim-label",
+        ]
+      }
+    }
+  }
+}
+
+Adw.Dialog generate_dialog {
+  content-width: 520;
+  content-height: 480;
+  title: _("Generate SSH Key");
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      show-end-title-buttons: false;
+      show-start-title-buttons: false;
+
+      [start]
+      Gtk.Button {
+        label: _("Cancel");
+        clicked => $generate_cancel_clicked();
+      }
+
+      [end]
+      Gtk.Button {
+        label: _("Generate");
+        clicked => $generate_confirm_clicked();
+
+        styles [
+          "suggested-action",
+        ]
+      }
+    }
+
+    Adw.PreferencesPage {
+      Adw.PreferencesGroup {
+        title: _("Key");
+
+        Adw.EntryRow name_row {
+          title: _("File name (in ~/.ssh)");
+        }
+
+        Adw.ComboRow type_row {
+          title: _("Type");
+
+          model: Gtk.StringList {
+            strings [
+              _("Ed25519"),
+              _("ECDSA"),
+              _("RSA"),
+            ]
+          };
+        }
+
+        Adw.EntryRow comment_row {
+          title: _("Comment");
+        }
+
+        Adw.PasswordEntryRow passphrase_row {
+          title: _("Passphrase");
+        }
+      }
+    }
+  }
+}

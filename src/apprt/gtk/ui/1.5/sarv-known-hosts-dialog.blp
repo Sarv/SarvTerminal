@@ -1,0 +1,114 @@
+using Gtk 4.0;
+using Gio 2.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 720;
+  content-height: 560;
+  title: _("Known Hosts");
+  closed => $closed();
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      [title]
+      Gtk.SearchEntry search {
+        hexpand: true;
+        placeholder-text: _("Search known hosts…");
+        search-changed => $search_changed();
+      }
+
+      [end]
+      Gtk.Button {
+        icon-name: "user-trash-symbolic";
+        tooltip-text: _("Remove selected known host");
+        clicked => $remove_clicked();
+      }
+    }
+
+    Gtk.ScrolledWindow {
+      hscrollbar-policy: never;
+
+      Gtk.ListView view {
+        single-click-activate: false;
+
+        model: Gtk.SingleSelection model {
+          model: Gtk.FilterListModel filter_model {
+            incremental: true;
+
+            filter: Gtk.StringFilter {
+              expression: expr item as <$GhosttySarvKnownHost>.search-text;
+              search: bind search.text;
+            };
+
+            model: Gio.ListStore source {
+              item-type: typeof<$GhosttySarvKnownHost>;
+            };
+          };
+        };
+
+        styles [
+          "rich-list",
+        ]
+
+        factory: Gtk.BuilderListItemFactory {
+          template Gtk.ListItem {
+            child: Gtk.Box {
+              orientation: horizontal;
+              spacing: 12;
+
+              Gtk.Image {
+                icon-name: "network-server-symbolic";
+                pixel-size: 22;
+
+                styles [
+                  "sarv-host-icon",
+                ]
+              }
+
+              Gtk.Box {
+                orientation: vertical;
+                hexpand: true;
+                valign: center;
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvKnownHost>.host;
+
+                  styles [
+                    "title",
+                  ]
+                }
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvKnownHost>.subtitle;
+
+                  styles [
+                    "subtitle",
+                    "monospace",
+                  ]
+                }
+              }
+            };
+          }
+        };
+      }
+    }
+
+    [bottom]
+    Gtk.ActionBar {
+      [start]
+      Gtk.Label empty_label {
+        label: _("No known hosts — ~/.ssh/known_hosts is empty or missing.");
+        visible: false;
+
+        styles [
+          "dim-label",
+        ]
+      }
+    }
+  }
+}

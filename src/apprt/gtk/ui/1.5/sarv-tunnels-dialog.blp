@@ -1,0 +1,122 @@
+using Gtk 4.0;
+using Gio 2.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 720;
+  content-height: 560;
+  title: _("Port Forwarding");
+  closed => $closed();
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      [title]
+      Gtk.SearchEntry search {
+        hexpand: true;
+        placeholder-text: _("Search tunnels…");
+        search-changed => $search_changed();
+      }
+
+      [end]
+      Gtk.Button {
+        icon-name: "media-playback-start-symbolic";
+        tooltip-text: _("Start/Stop selected tunnel");
+        clicked => $toggle_clicked();
+      }
+    }
+
+    Gtk.ScrolledWindow {
+      hscrollbar-policy: never;
+
+      Gtk.ListView view {
+        single-click-activate: false;
+        activate => $row_activated();
+
+        model: Gtk.SingleSelection model {
+          model: Gtk.FilterListModel filter_model {
+            incremental: true;
+
+            filter: Gtk.StringFilter {
+              expression: expr item as <$GhosttySarvTunnel>.search-text;
+              search: bind search.text;
+            };
+
+            model: Gio.ListStore source {
+              item-type: typeof<$GhosttySarvTunnel>;
+            };
+          };
+        };
+
+        styles [
+          "rich-list",
+        ]
+
+        factory: Gtk.BuilderListItemFactory {
+          template Gtk.ListItem {
+            child: Gtk.Box {
+              orientation: horizontal;
+              spacing: 12;
+
+              Gtk.Image {
+                icon-name: "network-transmit-receive-symbolic";
+                pixel-size: 22;
+
+                styles [
+                  "sarv-host-icon",
+                ]
+              }
+
+              Gtk.Box {
+                orientation: vertical;
+                hexpand: true;
+                valign: center;
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvTunnel>.label;
+
+                  styles [
+                    "title",
+                  ]
+                }
+
+                Gtk.Label {
+                  ellipsize: end;
+                  halign: start;
+                  label: bind template.item as <$GhosttySarvTunnel>.subtitle;
+
+                  styles [
+                    "subtitle",
+                    "monospace",
+                  ]
+                }
+              }
+
+              Gtk.Image {
+                icon-name: "media-playback-start-symbolic";
+                valign: center;
+                tooltip-text: _("Select and Start/Stop");
+                opacity: 0.55;
+              }
+            };
+          }
+        };
+      }
+    }
+
+    [bottom]
+    Gtk.ActionBar {
+      [start]
+      Gtk.Label empty_label {
+        label: _("No port-forward rules yet — add them in the macOS app or via sync.");
+        visible: false;
+
+        styles [
+          "dim-label",
+        ]
+      }
+    }
+  }
+}

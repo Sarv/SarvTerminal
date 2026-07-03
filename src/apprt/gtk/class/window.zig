@@ -29,6 +29,9 @@ const Tab = @import("tab.zig").Tab;
 const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
 const SarvHostsDialog = @import("sarv_hosts_dialog.zig").SarvHostsDialog;
+const SarvKnownHostsDialog = @import("sarv_known_hosts_dialog.zig").SarvKnownHostsDialog;
+const SarvKeysDialog = @import("sarv_keys_dialog.zig").SarvKeysDialog;
+const SarvTunnelsDialog = @import("sarv_tunnels_dialog.zig").SarvTunnelsDialog;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
@@ -378,6 +381,9 @@ pub const Window = extern struct {
             // TODO: accept the surface that toggled the command palette
             .init("toggle-command-palette", actionToggleCommandPalette, null),
             .init("show-sarv-hosts", actionShowSarvHosts, null),
+            .init("show-sarv-known-hosts", actionShowSarvKnownHosts, null),
+            .init("show-sarv-keys", actionShowSarvKeys, null),
+            .init("show-sarv-tunnels", actionShowSarvTunnels, null),
             .init("toggle-inspector", actionToggleInspector, null),
         };
 
@@ -2087,6 +2093,39 @@ pub const Window = extern struct {
         self: *Window,
     ) callconv(.c) void {
         const dialog = SarvHostsDialog.new();
+        defer dialog.unref();
+        dialog.present(self);
+    }
+
+    /// Present the Sarv known-hosts dialog.
+    fn actionShowSarvKnownHosts(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        const dialog = SarvKnownHostsDialog.new();
+        defer dialog.unref();
+        dialog.present(self);
+    }
+
+    /// Present the Sarv SSH keychain dialog.
+    fn actionShowSarvKeys(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        const dialog = SarvKeysDialog.new();
+        defer dialog.unref();
+        dialog.present(self);
+    }
+
+    /// Present the Sarv port-forwarding dialog.
+    fn actionShowSarvTunnels(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        const dialog = SarvTunnelsDialog.new();
         defer dialog.unref();
         dialog.present(self);
     }
