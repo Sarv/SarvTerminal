@@ -163,6 +163,9 @@ class AppDelegate: NSObject,
     @MainActor private lazy var menuShortcutManager = Ghostty.MenuShortcutManager()
 
     override init() {
+        // Register the app-bundled monospaced fonts BEFORE libghostty inits, so
+        // a bundled font set as the configured font-family resolves at startup.
+        BundledFonts.register()
 #if DEBUG
         ghostty = Ghostty.App(configPath: ProcessInfo.processInfo.environment["GHOSTTY_CONFIG_PATH"])
 #else
