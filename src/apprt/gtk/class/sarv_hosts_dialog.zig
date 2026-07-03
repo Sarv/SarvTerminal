@@ -177,24 +177,55 @@ pub const SarvHostsDialog = extern struct {
 
         const object_ = priv.model.as(gio.ListModel).getObject(pos);
         defer if (object_) |o| o.unref();
-        const host = gobject.ext.cast(SarvHost, object_ orelse return) orelse return;
+        const wrapper = gobject.ext.cast(SarvHost, object_ orelse return) orelse return;
+        const id = wrapper.getId() orelse return;
 
         const window = priv.window.get() orelse return;
         defer window.unref();
 
-        const cmd_str = host.getCommand() orelse return;
-        const title = host.getLabel();
+        const gpa = Application.default().allocator();
+
+        // Reload the full host by id so we have the password and every SSH
+        // option, not just the display strings the list wrapper keeps.
+        var hosts = sarv.vault.loadHosts(gpa) catch |err| {
+            log.warn("failed to load host for connect: {}", .{err});
+            return;
+        };
+        defer hosts.deinit();
+        const host = for (hosts.items) |*h| {
+            if (std.mem.eql(u8, h.id, id)) break h;
+        } else return;
+
+        // Build the shell command. When a password is stored, feed it to ssh
+        // out-of-band via SSH_ASKPASS (staged connect); otherwise a plain
+        // command lets ssh use keys/agent (and prompt on the TTY if needed).
+        const cmd_str: []u8 = blk: {
+            if (host.password.len > 0) {
+                var env = sarv.askpass.prepare(gpa, host.password) catch |err| {
+                    log.warn("askpass prepare failed, connecting without password: {}", .{err});
+                    break :blk sarv.ssh.command(gpa, host, false) catch return;
+                };
+                // Free the env strings but keep the password file on disk so
+                // ssh can read it. Cleanup on app exit is a follow-up.
+                defer env.deinit();
+                break :blk sarv.ssh.commandWithEnv(gpa, host, true, env) catch return;
+            }
+            break :blk sarv.ssh.command(gpa, host, false) catch return;
+        };
+        defer gpa.free(cmd_str);
+
+        const cmd_z = gpa.dupeZ(u8, cmd_str) catch return;
+        defer gpa.free(cmd_z);
+        const title_z = gpa.dupeZ(u8, if (host.label.len > 0) host.label else host.hostname) catch null;
+        defer if (title_z) |t| gpa.free(t);
 
         var command: configpkg.Command = undefined;
-        command.parseCLI(
-            Application.default().allocator(),
-            cmd_str,
-        ) catch |err| {
+        command.parseCLI(gpa, cmd_z) catch |err| {
             log.warn("failed to parse ssh command: {}", .{err});
             return;
         };
 
-        window.newTabWithCommand(command, title);
+        window.newTabWithCommand(command, title_z);
         _ = priv.dialog.close();
     }
 
@@ -287,7 +318,6 @@ const SarvHost = extern struct {
         label: ?[:0]const u8 = null,
         subtitle: ?[:0]const u8 = null,
         search_text: ?[:0]const u8 = null,
-        command: ?[:0]const u8 = null,
         pub var offset: c_int = 0;
     };
 
@@ -318,10 +348,6 @@ const SarvHost = extern struct {
             0,
         );
 
-        // Prebuild the (shell-expanded) ssh command string.
-        const cmd = try sarv.ssh.command(alloc, host, false);
-        priv.command = try alloc.dupeZ(u8, cmd);
-
         return self;
     }
 
@@ -340,12 +366,6 @@ const SarvHost = extern struct {
 
     pub fn getId(self: *Self) ?[:0]const u8 {
         return self.private().id;
-    }
-    pub fn getLabel(self: *Self) ?[:0]const u8 {
-        return self.private().label;
-    }
-    pub fn getCommand(self: *Self) ?[:0]const u8 {
-        return self.private().command;
     }
 
     fn propGetLabel(self: *Self) ?[:0]const u8 {
