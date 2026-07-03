@@ -155,14 +155,7 @@ struct AdvancedSectionView: View {
     }
 
     private var configFilePath: String {
-        let env = ProcessInfo.processInfo.environment
-        let baseDir: URL = {
-            if let xdg = env["XDG_CONFIG_HOME"], !xdg.isEmpty {
-                return URL(fileURLWithPath: xdg)
-            }
-            return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config")
-        }()
-        return baseDir.appendingPathComponent("ghostty/config").path
+        return AppPaths.ghosttyConfigFile.path
     }
 
     private func editConfig() {

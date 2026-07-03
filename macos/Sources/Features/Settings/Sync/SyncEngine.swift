@@ -415,14 +415,7 @@ enum SyncEngine {
     // MARK: - Paths
 
     private static func ghosttyConfigURL() -> URL {
-        let env = ProcessInfo.processInfo.environment
-        let base: URL
-        if let xdg = env["XDG_CONFIG_HOME"], !xdg.isEmpty {
-            base = URL(fileURLWithPath: xdg)
-        } else {
-            base = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config")
-        }
-        return base.appendingPathComponent("ghostty").appendingPathComponent("config")
+        return AppPaths.ghosttyConfigFile
     }
 
     private static func assetsDir() -> URL? {

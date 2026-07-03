@@ -207,16 +207,11 @@ enum KeybindParser {
     }
 }
 
-/// Path resolver for `~/.config/ghostty/config` honoring `XDG_CONFIG_HOME`.
+/// Path resolver for the Ghostty terminal config file. Delegates to the single
+/// source of truth (``AppPaths/ghosttyConfigFile``) so debug builds use their
+/// own isolated config.
 enum ConfigFile {
     static func url() -> URL {
-        let env = ProcessInfo.processInfo.environment
-        let baseDir: URL = {
-            if let xdg = env["XDG_CONFIG_HOME"], !xdg.isEmpty {
-                return URL(fileURLWithPath: xdg)
-            }
-            return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config")
-        }()
-        return baseDir.appendingPathComponent("ghostty/config")
+        return AppPaths.ghosttyConfigFile
     }
 }

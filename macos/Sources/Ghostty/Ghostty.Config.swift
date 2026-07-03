@@ -53,6 +53,22 @@ extension Ghostty {
             self.config = nil
         }
 
+        /// Load the user's BASE configuration into `cfg`. This is the SINGLE
+        /// source of truth for "where the config comes from", so the main config
+        /// load and every per-surface overlay (`applyTheme`, `applyFontThicken`,
+        /// `themeColors`) agree on exactly one file. Debug builds read the
+        /// ISOLATED `ghostty-dev/config` (seeded once from the release config) so
+        /// dev experiments never touch the release app; release reads the standard
+        /// default files. Disagreeing here is what caused the background image to
+        /// flash-then-revert on a theme switch.
+        static func loadUserBaseConfig(into cfg: ghostty_config_t) {
+#if DEBUG
+            ghostty_config_load_file(cfg, AppPaths.ghosttyConfigFile.path)
+#else
+            ghostty_config_load_default_files(cfg)
+#endif
+        }
+
         /// Initializes a new configuration and loads all the values.
         /// - Parameters:
         ///   - path: An optional preferred config file path. Pass `nil` to load the default configuration files.
@@ -71,7 +87,7 @@ extension Ghostty {
             if let path {
                 ghostty_config_load_file(cfg, path)
             } else {
-                ghostty_config_load_default_files(cfg)
+                loadUserBaseConfig(into: cfg)
             }
 
             // We only load CLI args when not running in Xcode because in Xcode we

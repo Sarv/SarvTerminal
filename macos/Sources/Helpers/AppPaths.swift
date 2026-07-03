@@ -22,6 +22,56 @@ enum AppPaths {
         return dir
     }
 
+    /// The Ghostty **terminal** config file (`theme`, `font-*`, `background-*`,
+    /// keybinds, …) — distinct from the app's own data in ``configDir``.
+    ///
+    /// Honors `XDG_CONFIG_HOME`, falling back to `~/.config`. **Debug builds use
+    /// a separate `ghostty-dev/config`** so experiments in the dev build never
+    /// touch the release app's `~/.config/ghostty/config`. This is the single
+    /// source of truth — EVERY reader/writer of the terminal config must use it
+    /// (never re-derive `~/.config/ghostty/config` by hand).
+    static var ghosttyConfigFile: URL {
+        #if DEBUG
+        let dirName = "ghostty-dev"
+        #else
+        let dirName = "ghostty"
+        #endif
+        let file = xdgConfigBaseDir
+            .appendingPathComponent(dirName, isDirectory: true)
+            .appendingPathComponent("config")
+        #if DEBUG
+        seedDebugGhosttyConfigIfNeeded(devFile: file)
+        #endif
+        return file
+    }
+
+    /// `$XDG_CONFIG_HOME` if set, otherwise `~/.config`.
+    private static var xdgConfigBaseDir: URL {
+        let env = ProcessInfo.processInfo.environment
+        if let xdg = env["XDG_CONFIG_HOME"], !xdg.isEmpty {
+            return URL(fileURLWithPath: xdg)
+        }
+        return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config", isDirectory: true)
+    }
+
+    #if DEBUG
+    /// Seed the dev terminal config once from the release config so the dev build
+    /// starts identical, then diverges. No-op once the dev file exists.
+    private static func seedDebugGhosttyConfigIfNeeded(devFile: URL) {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: devFile.path) else { return }
+        try? fm.createDirectory(at: devFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let releaseFile = xdgConfigBaseDir
+            .appendingPathComponent("ghostty", isDirectory: true)
+            .appendingPathComponent("config")
+        if fm.fileExists(atPath: releaseFile.path) {
+            try? fm.copyItem(at: releaseFile, to: devFile)
+        } else {
+            fm.createFile(atPath: devFile.path, contents: nil)
+        }
+    }
+    #endif
+
     /// One-time migration of preferences from the old `com.mitchellh.ghostty*`
     /// UserDefaults domains into this build's domain. macOS keys UserDefaults by
     /// bundle id, so after the rebrand to `com.sarv.terminal[.debug]` the app's

@@ -59,12 +59,7 @@ extension Ghostty.Config {
     /// Read a raw `key = value` line directly from the on-disk config file.
     /// Used for keys whose libghostty C type isn't a plain string.
     static func rawConfigFileValue(_ key: String) -> String? {
-        let env = ProcessInfo.processInfo.environment
-        let base: URL = {
-            if let xdg = env["XDG_CONFIG_HOME"], !xdg.isEmpty { return URL(fileURLWithPath: xdg) }
-            return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config")
-        }()
-        let path = base.appendingPathComponent("ghostty/config")
+        let path = AppPaths.ghosttyConfigFile
         guard let content = try? String(contentsOf: path, encoding: .utf8) else { return nil }
         for raw in content.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)

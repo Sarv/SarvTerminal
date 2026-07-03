@@ -162,16 +162,8 @@ final class ConfigFileEditor {
     // MARK: - Path resolution
 
     private static func configFileURL() throws -> URL {
-        // Honor XDG_CONFIG_HOME if set, fall back to ~/.config.
-        let env = ProcessInfo.processInfo.environment
-        let baseDir: URL
-        if let xdg = env["XDG_CONFIG_HOME"], !xdg.isEmpty {
-            baseDir = URL(fileURLWithPath: xdg)
-        } else {
-            baseDir = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config")
-        }
-        return baseDir
-            .appendingPathComponent("ghostty")
-            .appendingPathComponent("config")
+        // Single source of truth — debug builds get an isolated config file so
+        // dev experiments never touch the release app's config.
+        return AppPaths.ghosttyConfigFile
     }
 }
