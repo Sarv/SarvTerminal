@@ -34,6 +34,7 @@ const SarvKeysDialog = @import("sarv_keys_dialog.zig").SarvKeysDialog;
 const SarvTunnelsDialog = @import("sarv_tunnels_dialog.zig").SarvTunnelsDialog;
 const SarvSnippetsDialog = @import("sarv_snippets_dialog.zig").SarvSnippetsDialog;
 const SarvFilesDialog = @import("sarv_files_dialog.zig").SarvFilesDialog;
+const SarvSyncDialog = @import("sarv_sync_dialog.zig").SarvSyncDialog;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
@@ -388,6 +389,7 @@ pub const Window = extern struct {
             .init("show-sarv-tunnels", actionShowSarvTunnels, null),
             .init("show-sarv-snippets", actionShowSarvSnippets, null),
             .init("show-sarv-files", actionShowSarvFiles, null),
+            .init("show-sarv-sync", actionShowSarvSync, null),
             .init("toggle-inspector", actionToggleInspector, null),
         };
 
@@ -2152,6 +2154,17 @@ pub const Window = extern struct {
         self: *Window,
     ) callconv(.c) void {
         const dialog = SarvFilesDialog.new();
+        defer dialog.unref();
+        dialog.present(self);
+    }
+
+    /// Present the Sarv encrypted-sync dialog.
+    fn actionShowSarvSync(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        const dialog = SarvSyncDialog.new();
         defer dialog.unref();
         dialog.present(self);
     }

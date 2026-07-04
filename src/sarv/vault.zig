@@ -83,12 +83,27 @@ pub fn loadGroups(gpa: std.mem.Allocator) !GroupStore.Loaded {
     return GroupStore.load(gpa, path, null);
 }
 
+/// Persist the full groups array (plaintext, matching the macOS store).
+pub fn saveGroups(gpa: std.mem.Allocator, groups: []const model.HostGroup) !void {
+    const path = try paths.dataFile(gpa, groups_file);
+    defer gpa.free(path);
+    try GroupStore.save(gpa, path, groups, null);
+}
+
 /// Load all snippets. Caller must `.deinit()`.
 pub fn loadSnippets(gpa: std.mem.Allocator) !SnippetStore.Loaded {
     const path = try paths.dataFile(gpa, snippets_file);
     defer gpa.free(path);
     const key = try keys.getOrCreate(gpa);
     return SnippetStore.load(gpa, path, key);
+}
+
+/// Persist the full snippets array (encrypted).
+pub fn saveSnippets(gpa: std.mem.Allocator, snippets: []const model.Snippet) !void {
+    const path = try paths.dataFile(gpa, snippets_file);
+    defer gpa.free(path);
+    const key = try keys.getOrCreate(gpa);
+    try SnippetStore.save(gpa, path, snippets, key);
 }
 
 /// Load all port-forward rules. Caller must `.deinit()`.

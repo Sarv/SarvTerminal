@@ -1,0 +1,67 @@
+using Gtk 4.0;
+using Adw 1;
+
+Adw.Dialog dialog {
+  content-width: 520;
+  content-height: 560;
+  title: _("Encrypted Sync");
+  closed => $closed();
+
+  Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+    }
+
+    Adw.PreferencesPage {
+      Adw.PreferencesGroup {
+        title: _("Folder backend");
+
+        Adw.EntryRow folder_row {
+          title: _("Sync folder");
+        }
+
+        Adw.EntryRow device_row {
+          title: _("Device name");
+        }
+
+        Adw.PasswordEntryRow password_row {
+          title: _("Master password");
+        }
+      }
+
+      Adw.PreferencesGroup {
+        Gtk.Button push_button {
+          label: _("Push to folder");
+          halign: center;
+          clicked => $push_clicked();
+
+          styles [
+            "suggested-action",
+            "pill",
+          ]
+        }
+
+        Gtk.Button pull_button {
+          label: _("Pull from folder");
+          halign: center;
+          clicked => $pull_clicked();
+
+          styles [
+            "pill",
+          ]
+        }
+      }
+
+      Adw.PreferencesGroup {
+        Gtk.Label status_label {
+          wrap: true;
+          xalign: 0;
+
+          styles [
+            "dim-label",
+          ]
+        }
+      }
+    }
+  }
+}
