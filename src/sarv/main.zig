@@ -21,6 +21,7 @@ pub const sftp = @import("sftp.zig");
 pub const sync_crypto = @import("sync_crypto.zig");
 pub const sync = @import("sync.zig");
 pub const session = @import("session.zig");
+pub const git_sync = @import("git_sync.zig");
 
 pub const SavedHost = model.SavedHost;
 pub const HostGroup = model.HostGroup;
@@ -47,4 +48,5 @@ test {
     _ = sync_crypto;
     _ = sync;
     _ = session;
+    _ = git_sync;
 }
