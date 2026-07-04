@@ -48,5 +48,43 @@ cat > "$DIR/portforwards.json" <<'JSON'
 ]
 JSON
 
-echo "done. seeded: hosts (4), groups (3), snippets (3), port-forwards (2)."
-echo "launch the app and open the ☰ menu → Hosts / Snippets / Port Forwarding / Files."
+# --- SSH Keys + Known Hosts populate the real ~/.ssh (those dialogs read it,
+# not the vault). Demo material is clearly named and idempotent (safe re-run).
+SSH_DIR="$HOME/.ssh"
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+
+if command -v ssh-keygen >/dev/null 2>&1; then
+  for spec in "ed25519:sarv_demo_ed25519" "rsa:sarv_demo_rsa"; do
+    typ="${spec%%:*}"; name="${spec##*:}"
+    if [ ! -f "$SSH_DIR/$name" ]; then
+      ssh-keygen -q -t "$typ" -f "$SSH_DIR/$name" -N "" -C "sarv-demo-$typ" || true
+      echo "generated demo key: $SSH_DIR/$name"
+    fi
+  done
+
+  # Seed a few known_hosts entries from the demo pubkey (valid, parseable).
+  KH="$SSH_DIR/known_hosts"
+  if ! grep -q "sarv-demo-known-host" "$KH" 2>/dev/null && [ -f "$SSH_DIR/sarv_demo_ed25519.pub" ]; then
+    keypair="$(cut -d' ' -f1,2 "$SSH_DIR/sarv_demo_ed25519.pub")"
+    {
+      echo "web-prod-01.example.com $keypair sarv-demo-known-host"
+      echo "db-primary.example.com $keypair sarv-demo-known-host"
+      echo "[raspberry-pi.local]:2222 $keypair sarv-demo-known-host"
+    } >> "$KH"
+    chmod 600 "$KH"
+    echo "seeded 3 known_hosts entries into $KH"
+  fi
+else
+  echo "note: ssh-keygen not found — skipped SSH Keys + Known Hosts demo data."
+fi
+
+echo
+echo "done. seeded:"
+echo "  Hosts (4), Groups (3), Snippets (3), Port Forwarding (2)  [vault: $DIR]"
+echo "  SSH Keys (2 demo) + Known Hosts (3 demo)                  [$SSH_DIR]"
+echo "launch the app and open the ☰ menu → Hosts / SSH Keys / Known Hosts /"
+echo "Snippets / Port Forwarding / Files."
+echo
+echo "to remove the SSH demo material later:"
+echo "  rm -f $SSH_DIR/sarv_demo_* ; sed -i '/sarv-demo-known-host/d' $SSH_DIR/known_hosts"
