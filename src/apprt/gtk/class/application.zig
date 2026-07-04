@@ -45,34 +45,6 @@ const OpenURI = @import("../portal.zig").OpenURI;
 
 const log = std.log.scoped(.gtk_ghostty_application);
 
-/// Sarv theme stylesheet — leans the GTK/libadwaita widgets toward the macOS
-/// app's appearance: the violet brand accent (recolors buttons, switches,
-/// selections, focus rings) and card-styled list rows echoing the macOS vault
-/// grid. CSS parse errors are non-fatal (logged via the provider's
-/// parsing-error signal), so this degrades gracefully on odd GTK versions.
-const sarv_theme_css =
-    \\@define-color accent_bg_color #7B68EE;
-    \\@define-color accent_color #9d8cf5;
-    \\@define-color accent_fg_color #ffffff;
-    \\
-    \\/* List rows as rounded cards, like the macOS hosts grid. */
-    \\.rich-list > row {
-    \\  margin: 3px 8px;
-    \\  border-radius: 10px;
-    \\  border: 1px solid alpha(@window_fg_color, 0.12);
-    \\  background-color: alpha(@window_fg_color, 0.04);
-    \\}
-    \\.rich-list > row:hover {
-    \\  background-color: alpha(@window_fg_color, 0.09);
-    \\}
-    \\.rich-list > row:selected {
-    \\  background-color: alpha(@accent_bg_color, 0.22);
-    \\}
-    \\
-    \\/* Roomier form rows in the editor/sync dialogs. */
-    \\.sarv-dialog preferencesgroup { margin: 6px 4px; }
-;
-
 /// Function used to funnel GLib/GObject/GTK log messages into Zig's logging
 /// system rather than just getting dumped directly to stderr.
 fn glibLogWriterFunction(
@@ -404,22 +376,6 @@ pub const Application = extern struct {
             gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 3,
         );
         errdefer css_provider.unref();
-
-        // Sarv theme: nudge the GTK dialogs toward the macOS app's look
-        // (violet accent + dark card rows). Loaded once at a priority below
-        // the runtime config provider so user config still wins. Lives for the
-        // whole process (the Application is a singleton), so it isn't unref'd.
-        {
-            const sarv_bytes = glib.Bytes.new(sarv_theme_css.ptr, sarv_theme_css.len);
-            defer sarv_bytes.unref();
-            const sarv_provider = gtk.CssProvider.new();
-            sarv_provider.loadFromBytes(sarv_bytes);
-            gtk.StyleContext.addProviderForDisplay(
-                display,
-                sarv_provider.as(gtk.StyleProvider),
-                gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2,
-            );
-        }
 
         // Initialize the app.
         const self = gobject.ext.newInstance(Self, .{
