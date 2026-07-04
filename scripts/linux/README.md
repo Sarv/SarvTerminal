@@ -42,6 +42,17 @@ zig build run
 
 4. To test new commits: `git pull && zig build run`.
 
+> **VM OpenGL note:** the terminal surface renders with OpenGL, and most VMs
+> (incl. UTM without 3D accel) can't provide a GL context — you'll see an
+> "Unable to acquire an OpenGL context" screen. Force Mesa's software renderer:
+> ```sh
+> sudo apt install -y libgl1-mesa-dri mesa-utils
+> LIBGL_ALWAYS_SOFTWARE=1 zig build run
+> ```
+> or enable "Hardware OpenGL Acceleration" in UTM → Display. The Sarv dialogs
+> (Hosts, Keys, Snippets, Sync…) are plain GTK and render even without GL — open
+> them from the ☰ menu.
+
 > Ubuntu 24.04's blueprint-compiler may be older than the required 0.16;
 > if the build complains, use Ubuntu 25.04+ or install blueprint-compiler
 > from source (`pip install blueprint-compiler` is NOT it — use the
