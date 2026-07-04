@@ -20,6 +20,7 @@ pub const shell_history = @import("shell_history.zig");
 pub const sftp = @import("sftp.zig");
 pub const sync_crypto = @import("sync_crypto.zig");
 pub const sync = @import("sync.zig");
+pub const session = @import("session.zig");
 
 pub const SavedHost = model.SavedHost;
 pub const HostGroup = model.HostGroup;
@@ -45,4 +46,5 @@ test {
     _ = sftp;
     _ = sync_crypto;
     _ = sync;
+    _ = session;
 }
