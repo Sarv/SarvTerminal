@@ -1,0 +1,33 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Sarv Terminal
+GenericName=Terminal
+Comment=Terminal and SSH connection manager
+# The `sarvterminal` command is a symlink to the `ghostty` binary that the
+# packages install (see packaging/). `--gtk-single-instance=true` matches the
+# behaviour of the upstream desktop entry so activations reuse one process.
+TryExec=sarvterminal
+Exec=sarvterminal --gtk-single-instance=true
+# `sarvterminal` icon is installed by the packages alongside the app.
+Icon=sarvterminal
+Categories=System;TerminalEmulator;
+Keywords=terminal;tty;pty;ssh;shell;
+Terminal=false
+StartupNotify=true
+# StartupWMClass MUST stay the GTK application id (com.mitchellh.ghostty).
+# Renaming the internal app id is out of scope; the window class is derived
+# from that id, so this is what the compositor sees for window matching.
+StartupWMClass=com.mitchellh.ghostty
+Actions=new-window;
+X-GNOME-UsesNotifications=true
+X-TerminalArgExec=-e
+X-TerminalArgTitle=--title=
+X-TerminalArgAppId=--class=
+X-TerminalArgDir=--working-directory=
+X-TerminalArgHold=--wait-after-command
+X-KDE-Shortcuts=Ctrl+Alt+T
+
+[Desktop Action new-window]
+Name=New Window
+Exec=sarvterminal --gtk-single-instance=true

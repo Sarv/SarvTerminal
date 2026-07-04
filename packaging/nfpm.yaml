@@ -1,0 +1,109 @@
+# nfpm config for Sarv Terminal — builds .deb and .rpm from a pre-built
+# `zig-out` prefix. See https://nfpm.goreleaser.com.
+#
+# Build first, then package:
+#   zig build -Doptimize=ReleaseFast --prefix zig-out
+#   VERSION=$(cat VERSION)
+#   nfpm pkg --config packaging/nfpm.yaml --packager deb --target ./dist
+#   nfpm pkg --config packaging/nfpm.yaml --packager rpm --target ./dist
+#
+# `version` reads $VERSION at package time; export it (e.g. VERSION=$(cat VERSION)).
+# The `contents` paths are relative to the repo root — run nfpm from there.
+
+name: sarvterminal
+arch: ${GOARCH}            # nfpm maps this to deb/rpm arch names automatically
+platform: linux
+version: ${VERSION}
+version_schema: none
+section: utils
+priority: optional
+maintainer: Sarv <support@sarv.com>
+description: |
+  Terminal and SSH connection manager.
+  A fast, native terminal emulator (a Ghostty fork) with built-in host,
+  snippet and port-forward management.
+vendor: Sarv
+homepage: https://github.com/Sarv/SarvTerminal
+license: MIT
+
+# The binary is installed as /usr/bin/ghostty (internal id unchanged); a
+# `sarvterminal` symlink is the user-facing CLI name. Conflict with an
+# upstream `ghostty` package that would own the same paths.
+replaces:
+  - ghostty
+conflicts:
+  - ghostty
+provides:
+  - ghostty
+
+# Runtime dependencies differ in name between Debian/Ubuntu and Fedora/RHEL.
+# nfpm applies the whole list to both packagers, so we key per-format via
+# `overrides` below and leave the shared list empty here.
+depends: []
+
+overrides:
+  deb:
+    depends:
+      - libgtk-4-1
+      - libadwaita-1-0
+      - libgtk4-layer-shell0
+      - fontconfig
+      - libfreetype6
+      - libharfbuzz0b
+      - libonig5
+  rpm:
+    depends:
+      - gtk4
+      - libadwaita
+      - gtk4-layer-shell
+      - fontconfig
+      - freetype
+      - harfbuzz
+      - oniguruma
+
+contents:
+  # Real binary + everything the build installed under share/ (desktop entry,
+  # hicolor icons, terminfo, manpages, shell integration, dbus service...).
+  - src: ./zig-out/bin/ghostty
+    dst: /usr/bin/ghostty
+    file_info:
+      mode: 0755
+
+  - src: ./zig-out/share
+    dst: /usr/share
+    type: tree
+
+  # User-facing CLI name -> real binary.
+  - src: /usr/bin/ghostty
+    dst: /usr/bin/sarvterminal
+    type: symlink
+
+  # Sarv-branded desktop entry (Name=Sarv Terminal, Exec=sarvterminal).
+  - src: ./dist/linux/sarvterminal.desktop
+    dst: /usr/share/applications/sarvterminal.desktop
+    file_info:
+      mode: 0644
+
+  # Icon=sarvterminal: reuse the app's existing 256x256 hicolor icon under the
+  # `sarvterminal` name so the .desktop icon resolves. (Add more sizes here if
+  # you want crisp icons at every resolution.)
+  - src: ./zig-out/share/icons/hicolor/256x256/apps/com.mitchellh.ghostty.png
+    dst: /usr/share/icons/hicolor/256x256/apps/sarvterminal.png
+    file_info:
+      mode: 0644
+  - src: ./zig-out/share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png
+    dst: /usr/share/icons/hicolor/512x512/apps/sarvterminal.png
+    file_info:
+      mode: 0644
+
+  # License.
+  - src: ./LICENSE
+    dst: /usr/share/licenses/sarvterminal/LICENSE
+    packager: rpm
+    file_info:
+      mode: 0644
+  - src: ./LICENSE
+    dst: /usr/share/doc/sarvterminal/copyright
+    packager: deb
+    file_info:
+      mode: 0644

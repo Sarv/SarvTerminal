@@ -1,0 +1,90 @@
+# Maintainer: Sarv <support@sarv.com>
+#
+# Arch Linux PKGBUILD for Sarv Terminal (a Ghostty fork), built from source
+# with Zig. The internal application id stays com.mitchellh.ghostty on purpose
+# (renaming it is out of scope); the package installs the binary as `ghostty`
+# and a `sarvterminal` symlink, plus a Sarv-branded .desktop entry.
+#
+# Build locally with:  makepkg -si
+#
+# NOTE: `pkgver` should be kept in sync with the repo VERSION file. `sha256sums`
+# is left as SKIP for a git/tag checkout; set real sums for a fixed source
+# tarball before publishing to the AUR.
+
+pkgname=sarvterminal
+pkgver=1.5.0
+pkgrel=1
+pkgdesc="Terminal and SSH connection manager (a fast, native Ghostty fork)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Sarv/SarvTerminal"
+license=('MIT')
+
+depends=(
+  'gtk4'
+  'libadwaita'
+  'gtk4-layer-shell'
+  'fontconfig'
+  'freetype2'
+  'harfbuzz'
+  'oniguruma'
+)
+makedepends=(
+  'zig>=0.15.2'
+  'blueprint-compiler'
+  'gettext'
+  'pkgconf'
+  'git'
+)
+optdepends=(
+  'nautilus: "Open in Sarv Terminal" file-manager integration'
+)
+# Ships /bin/ghostty; conflict with the upstream ghostty package which owns the
+# same path and the com.mitchellh.ghostty desktop/icon files.
+conflicts=('ghostty')
+provides=("ghostty=${pkgver}")
+
+# Build from a tagged source tarball. Swap for a `git+...#tag=` source if you
+# prefer a VCS checkout.
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "${srcdir}/SarvTerminal-${pkgver}"
+
+  # Match the release build flags used by the project's CI.
+  zig build \
+    -Doptimize=ReleaseFast \
+    -Dcpu=baseline \
+    -Dversion-string="${pkgver}" \
+    --prefix "${srcdir}/zig-prefix"
+}
+
+package() {
+  local prefix="${srcdir}/zig-prefix"
+
+  # Install the whole built prefix (bin + share: desktop, icons, terminfo,
+  # manpages, shell integration, etc.).
+  install -d "${pkgdir}/usr"
+  cp -R "${prefix}/bin"   "${pkgdir}/usr/bin"
+  cp -R "${prefix}/share" "${pkgdir}/usr/share"
+
+  # Expose the `sarvterminal` CLI name as a symlink to the real binary.
+  ln -sf ghostty "${pkgdir}/usr/bin/sarvterminal"
+
+  # Sarv-branded desktop entry (Name=Sarv Terminal, Exec=sarvterminal).
+  install -Dm644 \
+    "${srcdir}/SarvTerminal-${pkgver}/dist/linux/sarvterminal.desktop" \
+    "${pkgdir}/usr/share/applications/sarvterminal.desktop"
+
+  # The entry uses Icon=sarvterminal — re-name the installed hicolor icons so
+  # the theme lookup resolves. (The upstream com.mitchellh.ghostty icons stay
+  # in place too.)
+  local icondir
+  while IFS= read -r -d '' src; do
+    cp -f "${src}" "${src%/com.mitchellh.ghostty.png}/sarvterminal.png"
+  done < <(find "${pkgdir}/usr/share/icons/hicolor" -name 'com.mitchellh.ghostty.png' -print0)
+
+  # License.
+  install -Dm644 "${srcdir}/SarvTerminal-${pkgver}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

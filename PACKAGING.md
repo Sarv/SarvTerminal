@@ -35,8 +35,40 @@ zig build -Doptimize=ReleaseFast
 The required Zig version is pinned by `minimum_zig_version` in
 [`build.zig.zon`](build.zig.zon).
 
+## Linux artifacts (AppImage, .deb, .rpm, Arch)
+
+Sarv Terminal can be packaged for the major Linux distributions. All artifacts
+install the binary as `ghostty` plus a user-facing `sarvterminal` symlink, and
+present the app as **Sarv Terminal** via a branded `.desktop` entry. The
+internal application id stays `com.mitchellh.ghostty` (renaming it is out of
+scope).
+
+The assets live in [`packaging/`](packaging/) — see
+[`packaging/README.md`](packaging/README.md) for full build steps. In short,
+build a prefix once:
+
+```sh
+zig build -Doptimize=ReleaseFast --prefix zig-out
+```
+
+then produce the artifact you need:
+
+| Distro / need                  | Artifact | How |
+| ------------------------------ | -------- | --- |
+| Any distro (portable)          | AppImage | `packaging/build-appimage.sh` |
+| Debian / Ubuntu                | `.deb`   | `nfpm pkg --config packaging/nfpm.yaml --packager deb` |
+| Fedora / RHEL / openSUSE       | `.rpm`   | `nfpm pkg --config packaging/nfpm.yaml --packager rpm` |
+| Arch / Manjaro                 | pkg      | `makepkg -si` with [`packaging/PKGBUILD`](packaging/PKGBUILD) |
+
+The **AppImage** is the "runs on any distro" portable option and needs no
+system packages installed.
+
+The existing per-arch tarball release
+([`.github/workflows/linux-release.yml`](.github/workflows/linux-release.yml))
+remains the from-tarball install path.
+
 ## Package managers (Homebrew, etc.)
 
-There is no Homebrew cask or other package-manager distribution yet — it's on
-the [roadmap](README.md#roadmap--status), and contributions to set up that
-pipeline are very welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+There is no Homebrew cask yet — it's on the
+[roadmap](README.md#roadmap--status), and contributions to set up that pipeline
+are very welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
