@@ -439,8 +439,106 @@ fn parseHumanSize(tok: []const u8) u64 {
 }
 
 // ---------------------------------------------------------------------------
+// Local listing + demo data (for the dual-pane browser)
+// ---------------------------------------------------------------------------
+
+/// An owned directory listing. Free with `deinit`.
+pub const Listing = struct {
+    arena: std.heap.ArenaAllocator,
+    entries: []FileEntry,
+    pub fn deinit(self: *Listing) void {
+        self.arena.deinit();
+    }
+};
+
+fn dirsFirstByName(_: void, a: FileEntry, b: FileEntry) bool {
+    if (a.isDir != b.isDir) return a.isDir; // directories first
+    return std.ascii.lessThanIgnoreCase(a.name, b.name);
+}
+
+/// List a LOCAL directory into FileEntry rows (dirs first, then name). This
+/// powers the local pane of the dual-pane browser and needs no SSH, so it's
+/// fully testable and works offline in a VM. Caller frees via Listing.deinit.
+pub fn listLocal(gpa: std.mem.Allocator, path: []const u8) !Listing {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    errdefer arena.deinit();
+    const alloc = arena.allocator();
+
+    var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
+    defer dir.close();
+
+    var list: std.ArrayList(FileEntry) = .empty;
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        var size: u64 = 0;
+        var mode: u32 = 0o644;
+        if (dir.statFile(entry.name)) |st| {
+            size = st.size;
+            mode = @intCast(st.mode & 0o777);
+        } else |_| {}
+        try list.append(alloc, .{
+            .name = try alloc.dupe(u8, entry.name),
+            .isDir = entry.kind == .directory,
+            .size = size,
+            .mode = mode,
+            .mtime = "",
+            .symlink = entry.kind == .sym_link,
+        });
+    }
+    std.mem.sort(FileEntry, list.items, {}, dirsFirstByName);
+    return .{ .arena = arena, .entries = try list.toOwnedSlice(alloc) };
+}
+
+/// Static demo listing for the remote pane so the dual-pane browser can be
+/// exercised without a reachable SSH host (select the "Demo (sample)" host).
+/// All strings are static literals — no allocation, nothing to free.
+pub fn sampleEntries() []const FileEntry {
+    return &demo_entries;
+}
+
+const demo_entries = [_]FileEntry{
+    .{ .name = "app", .isDir = true, .size = 4096, .mode = 0o755, .mtime = "2026-07-04 12:00", .symlink = false },
+    .{ .name = "logs", .isDir = true, .size = 4096, .mode = 0o755, .mtime = "2026-07-04 09:30", .symlink = false },
+    .{ .name = "backups", .isDir = true, .size = 4096, .mode = 0o700, .mtime = "2026-07-03 22:15", .symlink = false },
+    .{ .name = "deploy.sh", .isDir = false, .size = 2048, .mode = 0o755, .mtime = "2026-07-04 11:45", .symlink = false },
+    .{ .name = "config.yaml", .isDir = false, .size = 1536, .mode = 0o644, .mtime = "2026-07-02 16:20", .symlink = false },
+    .{ .name = "app.log", .isDir = false, .size = 1048576, .mode = 0o644, .mtime = "2026-07-04 12:01", .symlink = false },
+    .{ .name = "README.md", .isDir = false, .size = 4096, .mode = 0o644, .mtime = "2026-06-30 10:00", .symlink = false },
+    .{ .name = "current", .isDir = false, .size = 32, .mode = 0o777, .mtime = "2026-07-04 11:45", .symlink = true },
+};
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+test "sarv: listLocal lists a temp dir with dirs first" {
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("subdir");
+    try tmp.dir.writeFile(.{ .sub_path = "zeta.txt", .data = "hello" });
+    try tmp.dir.writeFile(.{ .sub_path = "alpha.txt", .data = "hi" });
+
+    const path = try tmp.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(path);
+
+    var listing = try listLocal(alloc, path);
+    defer listing.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), listing.entries.len);
+    // Directory sorts first.
+    try std.testing.expect(listing.entries[0].isDir);
+    try std.testing.expectEqualStrings("subdir", listing.entries[0].name);
+    // Then files alphabetically.
+    try std.testing.expectEqualStrings("alpha.txt", listing.entries[1].name);
+    try std.testing.expectEqual(@as(u64, 5), listing.entries[2].size); // zeta.txt "hello"
+}
+
+test "sarv: sampleEntries provides non-empty demo data" {
+    const e = sampleEntries();
+    try std.testing.expect(e.len > 0);
+    try std.testing.expect(e[0].isDir); // dirs first in the demo set
+}
 
 test "sarv: parseLsLine parses a directory line" {
     const alloc = std.testing.allocator;
