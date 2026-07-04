@@ -51,11 +51,10 @@ fn keystoreDir(alloc: std.mem.Allocator) ![]const u8 {
     const dir = try std.fs.path.join(alloc, &.{ config, "keystore" });
     errdefer alloc.free(dir);
     try std.fs.cwd().makePath(dir);
-    // Owner-only directory; ignore failures on filesystems without chmod.
-    if (std.fs.cwd().openDir(dir, .{})) |d| {
-        var dd = d;
-        defer dd.close();
-        dd.chmod(0o700) catch {};
-    } else |_| {}
+    // Best-effort owner-only perms. Path-based fchmodat (not Dir.chmod, which
+    // fchmod()s the directory handle and asserts `unreachable` on EBADF for an
+    // O_PATH-style fd). The key file itself is created 0600, which is the real
+    // protection; a stricter dir mode is just defense-in-depth.
+    std.posix.fchmodat(std.fs.cwd().fd, dir, 0o700, 0) catch {};
     return dir;
 }
