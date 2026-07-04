@@ -19,6 +19,7 @@ pub const portforward = @import("portforward.zig");
 pub const shell_history = @import("shell_history.zig");
 pub const sftp = @import("sftp.zig");
 pub const sync_crypto = @import("sync_crypto.zig");
+pub const sync = @import("sync.zig");
 
 pub const SavedHost = model.SavedHost;
 pub const HostGroup = model.HostGroup;
@@ -43,4 +44,5 @@ test {
     _ = shell_history;
     _ = sftp;
     _ = sync_crypto;
+    _ = sync;
 }
