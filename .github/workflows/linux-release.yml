@@ -1,0 +1,89 @@
+# Builds installable Linux release artifacts for Sarv Terminal.
+#
+# Produces a ReleaseFast build of the GTK app for x86_64 and aarch64 and
+# uploads a tarball per arch. Runs on a version tag (v*) or manual dispatch.
+# Flatpak/AppImage packaging with full Sarv branding is a tracked follow-up;
+# this gives a from-tarball install path in the meantime.
+name: linux-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: release (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    container:
+      image: fedora:42
+    steps:
+      - name: Install system dependencies
+        run: |
+          dnf install -y gtk4-devel gtk4-layer-shell-devel libadwaita-devel \
+            blueprint-compiler gettext libX11-devel wayland-devel \
+            wayland-protocols-devel pkg-config gcc gcc-c++ git curl xz findutils python3
+        shell: bash
+
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        shell: bash
+        run: |
+          ZIG_VERSION="$(grep -o 'minimum_zig_version = "[^"]*"' build.zig.zon | cut -d'"' -f2)"
+          HOST="$(uname -m)"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${HOST}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz \
+            || curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${HOST}-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p /opt/zig
+          tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+          echo "/opt/zig" >> "$GITHUB_PATH"
+
+      - name: Build (ReleaseFast)
+        shell: bash
+        run: |
+          VERSION="$(cat VERSION)"
+          # Native build on a matching-arch runner (dynamically-linked GTK
+          # can't be cross-compiled without the target's system libraries).
+          zig build \
+            -Doptimize=ReleaseFast \
+            -Dcpu=baseline \
+            -Dversion-string="$VERSION" \
+            --prefix "zig-out"
+
+      - name: Package tarball
+        shell: bash
+        run: |
+          VERSION="$(cat VERSION)"
+          NAME="SarvTerminal-${VERSION}-linux-${{ matrix.arch }}"
+          mkdir -p "dist/$NAME"
+          cp -R zig-out/* "dist/$NAME/"
+          cp README.md LICENSE "dist/$NAME/" 2>/dev/null || true
+          tar -czf "${NAME}.tar.gz" -C dist "$NAME"
+          sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SarvTerminal-linux-${{ matrix.arch }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tar.gz
+            *.tar.gz.sha256
