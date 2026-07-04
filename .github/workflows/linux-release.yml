@@ -66,11 +66,22 @@ jobs:
         run: |
           VERSION="$(cat VERSION)"
           NAME="SarvTerminal-${VERSION}-linux-${{ matrix.arch }}"
-          mkdir -p "dist/$NAME"
-          cp -R zig-out/* "dist/$NAME/"
-          cp README.md LICENSE "dist/$NAME/" 2>/dev/null || true
-          tar -czf "${NAME}.tar.gz" -C dist "$NAME"
+          mkdir -p "out/$NAME"
+          cp -R zig-out/* "out/$NAME/"
+          cp README.md LICENSE "out/$NAME/" 2>/dev/null || true
+          tar -czf "${NAME}.tar.gz" -C out "$NAME"
           sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+
+      - name: Build AppImage
+        shell: bash
+        run: |
+          # FUSE isn't available in containers; extract-and-run avoids it.
+          dnf install -y fuse-libs file desktop-file-utils || true
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          ./packaging/build-appimage.sh ./zig-out || echo "AppImage build failed (non-fatal)"
+          for f in SarvTerminal-*.AppImage; do
+            [ -f "$f" ] && sha256sum "$f" > "$f.sha256" || true
+          done
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -79,6 +90,9 @@ jobs:
           path: |
             *.tar.gz
             *.tar.gz.sha256
+            *.AppImage
+            *.AppImage.sha256
+          if-no-files-found: warn
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -87,3 +101,5 @@ jobs:
           files: |
             *.tar.gz
             *.tar.gz.sha256
+            *.AppImage
+            *.AppImage.sha256
