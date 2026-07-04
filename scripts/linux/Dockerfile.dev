@@ -18,6 +18,7 @@ RUN --mount=type=cache,target=/var/cache/libdnf5 \
     dnf install -y \
     gtk4-devel \
     gtk4-layer-shell-devel \
+    libxml2 \
     libadwaita-devel \
     blueprint-compiler \
     gettext \

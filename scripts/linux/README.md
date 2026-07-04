@@ -28,7 +28,8 @@ This proves the code compiles and unit tests pass — it does not show the UI.
 ```sh
 sudo apt update && sudo apt install -y \
   libgtk-4-dev libadwaita-1-dev blueprint-compiler gettext \
-  libx11-dev libwayland-dev wayland-protocols pkg-config gcc g++ git curl xz-utils
+  libx11-dev libwayland-dev wayland-protocols pkg-config gcc g++ git curl xz-utils \
+  libxml2-utils libgtk4-layer-shell-dev
 
 # Zig (match minimum_zig_version in build.zig.zon)
 curl -fsSL https://ziglang.org/download/0.15.2/zig-aarch64-linux-0.15.2.tar.xz | \

@@ -28,7 +28,7 @@ jobs:
           - distro: fedora
             image: fedora:42
             setup: >-
-              dnf install -y gtk4-devel gtk4-layer-shell-devel libadwaita-devel blueprint-compiler
+              dnf install -y gtk4-devel gtk4-layer-shell-devel libadwaita-devel libxml2 blueprint-compiler
               gettext libX11-devel wayland-devel wayland-protocols-devel
               pkg-config gcc gcc-c++ git curl xz findutils python3
               xorg-x11-server-Xvfb dbus-daemon mesa-dri-drivers
@@ -37,7 +37,7 @@ jobs:
             image: ubuntu:25.04
             setup: >-
               apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
-              libgtk-4-dev libgtk4-layer-shell-dev libadwaita-1-dev blueprint-compiler gettext
+              libgtk-4-dev libgtk4-layer-shell-dev libadwaita-1-dev libxml2-utils blueprint-compiler gettext
               libx11-dev libwayland-dev wayland-protocols pkg-config
               gcc g++ git curl xz-utils python3
               xvfb dbus imagemagick
@@ -49,7 +49,7 @@ jobs:
             image: archlinux:latest
             experimental: true
             setup: >-
-              pacman -Syu --noconfirm gtk4 gtk4-layer-shell libadwaita blueprint-compiler
+              pacman -Syu --noconfirm gtk4 gtk4-layer-shell libadwaita libxml2 blueprint-compiler
               gettext libx11 wayland wayland-protocols pkgconf gcc git
               curl xz python xorg-server-xvfb dbus mesa imagemagick
     container:

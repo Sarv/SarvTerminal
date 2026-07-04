@@ -31,7 +31,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
-          dnf install -y gtk4-devel gtk4-layer-shell-devel libadwaita-devel \
+          dnf install -y gtk4-devel gtk4-layer-shell-devel libadwaita-devel libxml2 \
             blueprint-compiler gettext libX11-devel wayland-devel \
             wayland-protocols-devel pkg-config gcc gcc-c++ git curl xz findutils python3
         shell: bash
