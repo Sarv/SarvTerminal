@@ -1,11 +1,15 @@
-//! The Sarv "Files" dialog for the GTK app: a DUAL-PANE (local ↔ remote)
-//! file browser, the GTK counterpart of the macOS Files browser.
+//! The Sarv "Files" dialog for the GTK app: a DUAL-PANE endpoint file browser,
+//! the GTK counterpart of the macOS Files browser.
 //!
-//! LEFT pane lists the LOCAL filesystem (via sarv.sftp.listLocal — no SSH, so
-//! it works offline and is fully testable). RIGHT pane lists a REMOTE host
-//! chosen from a dropdown: index 0 is a built-in "Demo (sample)" listing
-//! (sarv.sftp.sampleEntries, no spawn), and the remaining entries are the saved
-//! vault hosts. For a real host the remote listing is fetched by running
+//! BOTH panes are identical "endpoint" browsers. Each pane has a Gtk.DropDown
+//! whose entries are: "Local", "Demo (sample)", then each saved vault host.
+//! Endpoint mapping per pane by dropdown index:
+//!   0        => Local filesystem (via sarv.sftp.listLocal — no SSH, offline).
+//!   1        => Demo (sarv.sftp.sampleEntries — static, no spawn).
+//!   n >= 2   => the saved vault host at hosts.items[n - 2].
+//! Defaults: left = index 0 (Local), right = index 1 (Demo).
+//!
+//! For a real host the remote listing is fetched by running
 //! `ssh … "ls -la --time-style=long-iso <path>"` (built by sarv.sftp) via
 //! `/bin/sh -c <command>` and parsing the output with sarv.sftp.parseLsLine.
 //!
@@ -14,9 +18,12 @@
 //! the UI. It only works for hosts reachable with key/agent auth — no askpass
 //! is wired here, so password-auth hosts (and an async spawn) are follow-ups.
 //!
-//! NOTE: the transfer buttons (→ upload, ← download) DO NOT actually spawn scp
-//! in this version — they only compose the scp command and report it in the
-//! status bar. Real transfers (with progress + askpass) are a follow-up.
+//! Transfers are REAL scp now: the center "→"/"←" buttons compose the correct
+//! scp command (upload / download / server-to-server) and spawn it via
+//! `/bin/sh -c <command>` (synchronously — briefly blocks the UI, and only
+//! works for key/agent-auth hosts; askpass + async are follow-ups). Local↔Local
+//! copies use std.fs directly. On success the destination pane is reloaded so
+//! the new file appears.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -36,11 +43,25 @@ const Window = @import("window.zig").Window;
 
 const HostsLoaded = sarv.store.Store(sarv.model.SavedHost).Loaded;
 
-/// The dropdown index reserved for the built-in demo listing; real vault hosts
-/// follow it (host index = dropdown index - 1).
-const demo_index: c_uint = 0;
+/// Dropdown index reserved for the Local filesystem endpoint.
+const local_index: c_uint = 0;
+/// Dropdown index reserved for the built-in Demo listing. Saved vault hosts
+/// follow it (host index = dropdown index - 2).
+const demo_index: c_uint = 1;
+/// First dropdown index that maps to a saved vault host.
+const host_base_index: c_uint = 2;
 
 const log = std.log.scoped(.gtk_sarv_files_dialog);
+
+/// Which pane a helper operates on.
+const Side = enum { left, right };
+
+/// The kind of endpoint a pane's dropdown currently points at.
+const Endpoint = union(enum) {
+    local,
+    demo,
+    host: *const sarv.model.SavedHost,
+};
 
 pub const SarvFilesDialog = extern struct {
     const Self = @This();
@@ -59,36 +80,36 @@ pub const SarvFilesDialog = extern struct {
         window: WeakRef(Window) = .empty,
         dialog: *adw.Dialog,
 
-        // Local pane.
-        local_path: *gtk.Label,
-        local_view: *gtk.ListView,
-        local_model: *gtk.SingleSelection,
-        local_source: *gio.ListStore,
+        // Left pane.
+        left_dropdown: *gtk.DropDown,
+        left_names: *gtk.StringList,
+        left_path: *gtk.Label,
+        left_view: *gtk.ListView,
+        left_model: *gtk.SingleSelection,
+        left_source: *gio.ListStore,
 
-        // Remote pane.
-        host_dropdown: *gtk.DropDown,
-        host_names: *gtk.StringList,
-        remote_path: *gtk.Label,
-        remote_view: *gtk.ListView,
-        remote_model: *gtk.SingleSelection,
-        remote_source: *gio.ListStore,
+        // Right pane.
+        right_dropdown: *gtk.DropDown,
+        right_names: *gtk.StringList,
+        right_path: *gtk.Label,
+        right_view: *gtk.ListView,
+        right_model: *gtk.SingleSelection,
+        right_source: *gio.ListStore,
 
         status_label: *gtk.Label,
 
-        /// The saved hosts backing the (post-demo entries of the) dropdown.
-        /// Loaded once on present, kept alive for the dialog's lifetime (the
-        /// dropdown indexes into it), then freed in dispose.
+        /// The saved hosts backing the (post-Demo entries of the) dropdowns.
+        /// Loaded once on present, kept alive for the dialog's lifetime (both
+        /// dropdowns index into it), then freed in dispose.
         hosts: ?HostsLoaded = null,
 
-        /// The local directory currently shown, heap-owned (managed/freed by
-        /// setLocalPath and dispose). Defaults to "".
-        local_dir: []u8 = "",
+        /// The directory currently shown in each pane, heap-owned (managed/freed
+        /// by setPath and dispose). Defaults to "".
+        left_dir: []u8 = "",
+        right_dir: []u8 = "",
 
-        /// The remote directory currently shown, heap-owned (managed/freed by
-        /// setRemotePath and dispose). Defaults to "".
-        remote_dir: []u8 = "",
-
-        /// Guards host_changed while we repopulate the dropdown programmatically.
+        /// Guards the *_changed handlers while we repopulate the dropdowns
+        /// programmatically.
         loading: bool = false,
 
         pub var offset: c_int = 0;
@@ -108,73 +129,123 @@ pub const SarvFilesDialog = extern struct {
         const priv = self.private();
         const gpa = Application.default().allocator();
 
-        if (priv.local_dir.len > 0) {
-            gpa.free(priv.local_dir);
-            priv.local_dir = "";
+        if (priv.left_dir.len > 0) {
+            gpa.free(priv.left_dir);
+            priv.left_dir = "";
         }
-        if (priv.remote_dir.len > 0) {
-            gpa.free(priv.remote_dir);
-            priv.remote_dir = "";
+        if (priv.right_dir.len > 0) {
+            gpa.free(priv.right_dir);
+            priv.right_dir = "";
         }
         if (priv.hosts) |*loaded| {
             loaded.deinit();
             priv.hosts = null;
         }
 
-        priv.local_source.removeAll();
-        priv.remote_source.removeAll();
+        priv.left_source.removeAll();
+        priv.right_source.removeAll();
         gtk.Widget.disposeTemplate(self.as(gtk.Widget), getGObjectType());
         gobject.Object.virtual_methods.dispose.call(Class.parent, self.as(Parent));
     }
 
-    /// Present the dialog over `window`: seed the local pane at $HOME, load the
-    /// vault hosts into the dropdown and show the demo listing on the right.
+    /// Present the dialog over `window`: load the vault hosts into both
+    /// dropdowns, default left = Local (at $HOME) and right = Demo, then list
+    /// both panes.
     pub fn present(self: *Self, window: *Window) void {
         const priv = self.private();
         priv.window.set(window);
 
-        const home = std.posix.getenv("HOME") orelse "/";
-        self.setLocalPath(home);
-        self.reloadLocal();
-
         self.loadHosts();
-        self.reloadRemote();
+
+        // Defaults: left = Local ($HOME), right = Demo.
+        const home = std.posix.getenv("HOME") orelse "/";
+        self.setPath(.left, home);
+        self.setPath(.right, ".");
+
+        self.reload(.left);
+        self.reload(.right);
 
         priv.dialog.present(window.as(gtk.Widget));
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-side accessors
+    // -----------------------------------------------------------------------
+
+    fn dropdown(self: *Self, side: Side) *gtk.DropDown {
+        const priv = self.private();
+        return switch (side) {
+            .left => priv.left_dropdown,
+            .right => priv.right_dropdown,
+        };
+    }
+
+    fn names(self: *Self, side: Side) *gtk.StringList {
+        const priv = self.private();
+        return switch (side) {
+            .left => priv.left_names,
+            .right => priv.right_names,
+        };
+    }
+
+    fn pathLabel(self: *Self, side: Side) *gtk.Label {
+        const priv = self.private();
+        return switch (side) {
+            .left => priv.left_path,
+            .right => priv.right_path,
+        };
+    }
+
+    fn model(self: *Self, side: Side) *gtk.SingleSelection {
+        const priv = self.private();
+        return switch (side) {
+            .left => priv.left_model,
+            .right => priv.right_model,
+        };
+    }
+
+    fn source(self: *Self, side: Side) *gio.ListStore {
+        const priv = self.private();
+        return switch (side) {
+            .left => priv.left_source,
+            .right => priv.right_source,
+        };
+    }
+
+    /// The directory currently shown by `side` (borrowed; do not free).
+    fn dir(self: *Self, side: Side) []const u8 {
+        const priv = self.private();
+        return switch (side) {
+            .left => priv.left_dir,
+            .right => priv.right_dir,
+        };
     }
 
     // -----------------------------------------------------------------------
     // Path helpers
     // -----------------------------------------------------------------------
 
-    /// Replace `local_dir` with a fresh heap copy of `path`, update the label,
-    /// and free the old value.
-    fn setLocalPath(self: *Self, path: []const u8) void {
+    /// Replace the pane's dir with a fresh heap copy of `path`, update the
+    /// label, and free the old value.
+    fn setPath(self: *Self, side: Side, path: []const u8) void {
         const priv = self.private();
         const gpa = Application.default().allocator();
 
         const copy = gpa.dupe(u8, path) catch return;
-        if (priv.local_dir.len > 0) gpa.free(priv.local_dir);
-        priv.local_dir = copy;
+        switch (side) {
+            .left => {
+                if (priv.left_dir.len > 0) gpa.free(priv.left_dir);
+                priv.left_dir = copy;
+            },
+            .right => {
+                if (priv.right_dir.len > 0) gpa.free(priv.right_dir);
+                priv.right_dir = copy;
+            },
+        }
 
         const label_z = gpa.dupeZ(u8, path) catch return;
         defer gpa.free(label_z);
-        priv.local_path.setLabel(label_z);
-    }
-
-    /// Replace `remote_dir` with a fresh heap copy of `path`, update the label,
-    /// and free the old value.
-    fn setRemotePath(self: *Self, path: []const u8) void {
-        const priv = self.private();
-        const gpa = Application.default().allocator();
-
-        const copy = gpa.dupe(u8, path) catch return;
-        if (priv.remote_dir.len > 0) gpa.free(priv.remote_dir);
-        priv.remote_dir = copy;
-
-        const label_z = gpa.dupeZ(u8, path) catch return;
-        defer gpa.free(label_z);
-        priv.remote_path.setLabel(label_z);
+        self.pathLabel(side).setLabel(label_z);
     }
 
     /// Compute the parent of `path` (string-only, never above "/") and return a
@@ -204,71 +275,17 @@ pub const SarvFilesDialog = extern struct {
     }
 
     // -----------------------------------------------------------------------
-    // Local pane
+    // Endpoints
     // -----------------------------------------------------------------------
 
-    /// List `local_dir` and repopulate the local file list. Each entry's
-    /// display strings are duped into the per-item arena, so the Listing can be
-    /// freed immediately after wrapping.
-    fn reloadLocal(self: *Self) void {
-        const priv = self.private();
-        priv.local_source.removeAll();
-
-        const gpa = Application.default().allocator();
-
-        var listing = sarv.sftp.listLocal(gpa, priv.local_dir) catch |err| {
-            log.warn("failed to list local directory: {}", .{err});
-            self.setStatus("Cannot read local directory.");
-            return;
-        };
-        defer listing.deinit();
-
-        for (listing.entries) |*entry| {
-            const obj = SarvFile.new(entry) catch |err| {
-                log.warn("failed to wrap file entry: {}", .{err});
-                continue;
-            };
-            defer obj.unref();
-            priv.local_source.append(obj.as(gobject.Object));
-        }
-    }
-
-    fn localActivated(_: *gtk.ListView, pos: c_uint, self: *Self) callconv(.c) void {
-        const priv = self.private();
-        const gpa = Application.default().allocator();
-
-        const object_ = priv.local_model.as(gio.ListModel).getObject(pos);
-        defer if (object_) |o| o.unref();
-        const wrapper = gobject.ext.cast(SarvFile, object_ orelse return) orelse return;
-        if (!wrapper.getIsDir()) return;
-        const name = wrapper.getName() orelse return;
-
-        const child = childPath(gpa, priv.local_dir, name) orelse return;
-        defer gpa.free(child);
-        self.setLocalPath(child);
-        self.reloadLocal();
-    }
-
-    fn localUpClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
-        const priv = self.private();
-        const gpa = Application.default().allocator();
-        const parent = parentPath(gpa, priv.local_dir) orelse return;
-        defer gpa.free(parent);
-        self.setLocalPath(parent);
-        self.reloadLocal();
-    }
-
-    // -----------------------------------------------------------------------
-    // Remote pane
-    // -----------------------------------------------------------------------
-
-    /// (Re)load the saved hosts into the dropdown: "Demo (sample)" at index 0,
-    /// then each vault host label. Selecting index 0 resets the remote path.
+    /// (Re)load the saved hosts into both dropdowns: "Local" at index 0,
+    /// "Demo (sample)" at index 1, then each vault host label. Sets the default
+    /// selection for each side (left = Local, right = Demo).
     fn loadHosts(self: *Self) void {
         const priv = self.private();
         const gpa = Application.default().allocator();
 
-        // Suppress the selection handler while we rebuild the model.
+        // Suppress the selection handlers while we rebuild the models.
         priv.loading = true;
         defer priv.loading = false;
 
@@ -278,17 +295,13 @@ pub const SarvFilesDialog = extern struct {
             priv.hosts = null;
         }
 
-        // Clear the name model (StringList has no removeAll; splice out the
-        // whole range).
-        const existing = priv.host_names.as(gio.ListModel).getNItems();
-        if (existing > 0) priv.host_names.splice(0, existing, null);
-
-        priv.host_names.append("Demo (sample)");
+        self.resetNames(.left);
+        self.resetNames(.right);
 
         const loaded = sarv.vault.loadHosts(gpa) catch |err| {
             log.warn("failed to load hosts: {}", .{err});
-            priv.host_dropdown.setSelected(demo_index);
-            self.setRemotePath(".");
+            self.dropdown(.left).setSelected(local_index);
+            self.dropdown(.right).setSelected(demo_index);
             return;
         };
 
@@ -296,48 +309,84 @@ pub const SarvFilesDialog = extern struct {
             const label = if (host.label.len > 0) host.label else host.hostname;
             const label_z = gpa.dupeZ(u8, label) catch continue;
             defer gpa.free(label_z);
-            priv.host_names.append(label_z);
+            self.names(.left).append(label_z);
+            self.names(.right).append(label_z);
         }
 
         priv.hosts = loaded;
-        priv.host_dropdown.setSelected(demo_index);
-        self.setRemotePath(".");
+        self.dropdown(.left).setSelected(local_index);
+        self.dropdown(.right).setSelected(demo_index);
     }
 
-    /// The currently selected vault host, or null when the demo entry is
-    /// selected (or nothing is loaded).
-    fn selectedHost(self: *Self) ?*const sarv.model.SavedHost {
-        const priv = self.private();
-        const idx = priv.host_dropdown.getSelected();
-        if (idx == demo_index) return null;
-        const loaded = priv.hosts orelse return null;
-        const host_idx = idx - 1;
-        if (host_idx >= loaded.items.len) return null;
-        return &loaded.items[host_idx];
+    /// Clear a pane's name model (StringList has no removeAll; splice out the
+    /// whole range) and seed the fixed "Local"/"Demo (sample)" entries.
+    fn resetNames(self: *Self, side: Side) void {
+        const list = self.names(side);
+        const existing = list.as(gio.ListModel).getNItems();
+        if (existing > 0) list.splice(0, existing, null);
+        list.append("Local");
+        list.append("Demo (sample)");
     }
 
-    /// List `remote_dir` on the selected host (or show the demo listing) and
-    /// repopulate the remote file list.
-    fn reloadRemote(self: *Self) void {
-        const priv = self.private();
-        priv.remote_source.removeAll();
+    /// The endpoint the pane's dropdown currently points at.
+    fn endpoint(self: *Self, side: Side) Endpoint {
+        const idx = self.dropdown(side).getSelected();
+        if (idx == local_index) return .local;
+        if (idx == demo_index) return .demo;
+        const loaded = self.private().hosts orelse return .demo;
+        const host_idx = idx - host_base_index;
+        if (host_idx >= loaded.items.len) return .demo;
+        return .{ .host = &loaded.items[host_idx] };
+    }
+
+    // -----------------------------------------------------------------------
+    // Reload (shared by both panes)
+    // -----------------------------------------------------------------------
+
+    /// List the pane's current directory for its selected endpoint and
+    /// repopulate its file list. Each entry's display strings are duped into the
+    /// per-item arena, so any transient Listing can be freed immediately.
+    fn reload(self: *Self, side: Side) void {
+        const store = self.source(side);
+        store.removeAll();
 
         const gpa = Application.default().allocator();
 
-        const host = self.selectedHost() orelse {
-            // Demo listing: static entries, no spawn.
-            for (sarv.sftp.sampleEntries()) |*entry| {
-                const obj = SarvFile.new(entry) catch continue;
-                defer obj.unref();
-                priv.remote_source.append(obj.as(gobject.Object));
-            }
-            self.setStatus("Showing the built-in demo listing.");
-            return;
-        };
+        switch (self.endpoint(side)) {
+            .local => {
+                var listing = sarv.sftp.listLocal(gpa, self.dir(side)) catch |err| {
+                    log.warn("failed to list local directory: {}", .{err});
+                    self.setStatus("Cannot read local directory.");
+                    return;
+                };
+                defer listing.deinit();
 
-        const listing = self.fetchListing(gpa, host) catch |err| {
+                for (listing.entries) |*entry| {
+                    const obj = SarvFile.new(entry) catch continue;
+                    defer obj.unref();
+                    store.append(obj.as(gobject.Object));
+                }
+            },
+            .demo => {
+                for (sarv.sftp.sampleEntries()) |*entry| {
+                    const obj = SarvFile.new(entry) catch continue;
+                    defer obj.unref();
+                    store.append(obj.as(gobject.Object));
+                }
+                self.setStatus("Showing the built-in demo listing.");
+            },
+            .host => |host| self.reloadHost(side, gpa, host),
+        }
+    }
+
+    /// List `dir(side)` on `host` via a synchronous ssh spawn, parse, sort and
+    /// wrap into the pane's store.
+    fn reloadHost(self: *Self, side: Side, gpa: Allocator, host: *const sarv.model.SavedHost) void {
+        const store = self.source(side);
+
+        const listing = self.fetchListing(gpa, host, self.dir(side)) catch |err| {
             log.warn("failed to list remote directory: {}", .{err});
-            self.setStatus("No files (host unreachable or empty) — try the Demo host.");
+            self.setStatus("No files (host unreachable or empty).");
             return;
         };
         defer gpa.free(listing);
@@ -360,11 +409,11 @@ pub const SarvFilesDialog = extern struct {
         for (entries.items) |*entry| {
             const obj = SarvFile.new(entry) catch continue;
             defer obj.unref();
-            priv.remote_source.append(obj.as(gobject.Object));
+            store.append(obj.as(gobject.Object));
         }
 
         if (entries.items.len == 0) {
-            self.setStatus("No files (host unreachable or empty) — try the Demo host.");
+            self.setStatus("No files (host unreachable or empty).");
         } else {
             self.setStatus("Connected.");
         }
@@ -376,13 +425,12 @@ pub const SarvFilesDialog = extern struct {
         return std.ascii.lessThanIgnoreCase(a.name, b.name);
     }
 
-    /// Build the remote listing command for `host`/`remote_dir`, spawn it via
+    /// Build the remote listing command for `host`/`path`, spawn it via
     /// `/bin/sh -c <command>`, capture stdout and wait. Caller owns the result.
     /// Synchronous — blocks until ssh exits (see the file header caveats).
-    fn fetchListing(self: *Self, gpa: Allocator, host: *const sarv.model.SavedHost) ![]u8 {
-        const priv = self.private();
-
-        const command = try sarv.sftp.remoteListCommand(gpa, host, priv.remote_dir);
+    fn fetchListing(self: *Self, gpa: Allocator, host: *const sarv.model.SavedHost, path: []const u8) ![]u8 {
+        _ = self;
+        const command = try sarv.sftp.remoteListCommand(gpa, host, path);
         defer gpa.free(command);
 
         var child = std.process.Child.init(&.{ "/bin/sh", "-c", command }, gpa);
@@ -403,133 +451,224 @@ pub const SarvFilesDialog = extern struct {
         return out;
     }
 
-    fn remoteActivated(_: *gtk.ListView, pos: c_uint, self: *Self) callconv(.c) void {
-        const priv = self.private();
+    // -----------------------------------------------------------------------
+    // Navigation callbacks
+    // -----------------------------------------------------------------------
+
+    fn activated(self: *Self, side: Side, pos: c_uint) void {
         const gpa = Application.default().allocator();
 
-        const object_ = priv.remote_model.as(gio.ListModel).getObject(pos);
+        const object_ = self.model(side).as(gio.ListModel).getObject(pos);
         defer if (object_) |o| o.unref();
         const wrapper = gobject.ext.cast(SarvFile, object_ orelse return) orelse return;
         if (!wrapper.getIsDir()) return;
 
-        // For the demo host, descending has no real backing directory — just
-        // re-show the sample listing so the UI stays responsive and crash-free.
-        if (self.selectedHost() == null) {
-            self.reloadRemote();
+        // For the demo endpoint, descending has no real backing directory —
+        // just re-show the sample listing so the UI stays responsive.
+        if (self.endpoint(side) == .demo) {
+            self.reload(side);
             return;
         }
 
         const name = wrapper.getName() orelse return;
-        const child = childPath(gpa, priv.remote_dir, name) orelse return;
+        const child = childPath(gpa, self.dir(side), name) orelse return;
         defer gpa.free(child);
-        self.setRemotePath(child);
-        self.reloadRemote();
+        self.setPath(side, child);
+        self.reload(side);
     }
 
-    fn remoteUpClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
-        const priv = self.private();
+    fn upClicked(self: *Self, side: Side) void {
         const gpa = Application.default().allocator();
-        const parent = parentPath(gpa, priv.remote_dir) orelse return;
+        const parent = parentPath(gpa, self.dir(side)) orelse return;
         defer gpa.free(parent);
-        self.setRemotePath(parent);
-        self.reloadRemote();
+        self.setPath(side, parent);
+        self.reload(side);
     }
 
-    fn hostChanged(_: *gtk.DropDown, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
-        // Ignore selection changes we make while (re)building the model.
+    /// A dropdown selection changed: switch endpoints, reset the path and
+    /// relist. Local defaults to $HOME; Demo/host default to ".".
+    fn endpointChanged(self: *Self, side: Side) void {
         if (self.private().loading) return;
-        // Switching hosts resets to the top-level path and relists.
-        self.setRemotePath(".");
-        self.reloadRemote();
+        switch (self.endpoint(side)) {
+            .local => self.setPath(side, std.posix.getenv("HOME") orelse "/"),
+            else => self.setPath(side, "."),
+        }
+        self.reload(side);
+    }
+
+    fn leftActivated(_: *gtk.ListView, pos: c_uint, self: *Self) callconv(.c) void {
+        self.activated(.left, pos);
+    }
+    fn rightActivated(_: *gtk.ListView, pos: c_uint, self: *Self) callconv(.c) void {
+        self.activated(.right, pos);
+    }
+    fn leftUpClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
+        self.upClicked(.left);
+    }
+    fn rightUpClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
+        self.upClicked(.right);
+    }
+    fn leftChanged(_: *gtk.DropDown, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+        self.endpointChanged(.left);
+    }
+    fn rightChanged(_: *gtk.DropDown, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+        self.endpointChanged(.right);
     }
 
     // -----------------------------------------------------------------------
-    // Transfers (v1: compose the scp command, report it, do NOT spawn)
+    // Transfers (real scp)
     // -----------------------------------------------------------------------
 
-    /// The selected local entry, or null when none.
-    fn selectedLocal(self: *Self) ?*SarvFile {
-        const priv = self.private();
-        const idx = priv.local_model.getSelected();
-        const object_ = priv.local_model.as(gio.ListModel).getObject(idx) orelse return null;
-        // The list store owns a ref; getObject added one we must drop, but the
-        // caller only reads immediately, so unref here and rely on the store's.
+    /// The selected entry in `side`, or null when none.
+    fn selected(self: *Self, side: Side) ?*SarvFile {
+        const sel = self.model(side);
+        const idx = sel.getSelected();
+        const object_ = sel.as(gio.ListModel).getObject(idx) orelse return null;
+        // getObject added a ref; drop it — the store keeps its own and the
+        // caller only reads immediately.
         defer object_.unref();
         return gobject.ext.cast(SarvFile, object_);
     }
 
-    /// The selected remote entry, or null when none.
-    fn selectedRemote(self: *Self) ?*SarvFile {
-        const priv = self.private();
-        const idx = priv.remote_model.getSelected();
-        const object_ = priv.remote_model.as(gio.ListModel).getObject(idx) orelse return null;
-        defer object_.unref();
-        return gobject.ext.cast(SarvFile, object_);
+    fn copyRightClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
+        self.transfer(.left, .right);
+    }
+    fn copyLeftClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
+        self.transfer(.right, .left);
     }
 
-    fn uploadClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
-        const priv = self.private();
+    /// Copy the selected file in `src` to the current directory of `dst` using
+    /// real scp (or std.fs for Local→Local). Synchronous — briefly blocks the
+    /// UI and only works for key/agent-auth hosts (askpass + async are
+    /// follow-ups). On success the destination pane is reloaded.
+    fn transfer(self: *Self, src: Side, dst: Side) void {
         const gpa = Application.default().allocator();
 
-        const wrapper = self.selectedLocal() orelse {
-            self.setStatus("Select a local file to upload.");
+        const wrapper = self.selected(src) orelse {
+            self.setStatus("Select a file to transfer.");
             return;
         };
         const name = wrapper.getName() orelse return;
+        const is_dir = wrapper.getIsDir();
 
-        const host = self.selectedHost() orelse {
+        const src_ep = self.endpoint(src);
+        const dst_ep = self.endpoint(dst);
+
+        // Demo is not a real endpoint for transfers.
+        if (src_ep == .demo or dst_ep == .demo) {
             self.setStatus("Pick a real host (not Demo) to transfer.");
             return;
-        };
+        }
 
-        const local_full = childPath(gpa, priv.local_dir, name) orelse return;
-        defer gpa.free(local_full);
-        const remote_full = childPath(gpa, priv.remote_dir, name) orelse return;
-        defer gpa.free(remote_full);
+        // Source path: <src dir>/<name>. Destination path: <dst dir>/<name>.
+        const src_full = childPath(gpa, self.dir(src), name) orelse return;
+        defer gpa.free(src_full);
+        const dst_full = childPath(gpa, self.dir(dst), name) orelse return;
+        defer gpa.free(dst_full);
 
-        // NOTE: v1 only *composes* the command; a real transfer (spawn + async
-        // progress + askpass) is a follow-up.
-        const cmd = sarv.sftp.scpUpload(gpa, host, local_full, remote_full, wrapper.getIsDir()) catch {
-            self.setStatus("Failed to build the upload command.");
-            return;
-        };
-        defer gpa.free(cmd);
-
-        const msg = std.fmt.allocPrintSentinel(gpa, "Would upload {s} → {s}", .{ name, remote_full }, 0) catch return;
-        defer gpa.free(msg);
-        priv.status_label.setLabel(msg);
+        switch (src_ep) {
+            .local => switch (dst_ep) {
+                // Local → Local: pure filesystem copy.
+                .local => {
+                    if (is_dir) {
+                        self.setStatus("directory copy not supported yet");
+                        return;
+                    }
+                    std.fs.cwd().copyFile(src_full, std.fs.cwd(), dst_full, .{}) catch |err| {
+                        log.warn("local copy failed: {}", .{err});
+                        self.setStatus("Transfer failed (local copy).");
+                        return;
+                    };
+                    self.reportTransferred(name);
+                    self.reload(dst);
+                },
+                // Local → Host: scp upload.
+                .host => |dst_host| {
+                    const cmd = sarv.sftp.scpUpload(gpa, dst_host, src_full, dst_full, is_dir) catch {
+                        self.setStatus("Failed to build the transfer command.");
+                        return;
+                    };
+                    defer gpa.free(cmd);
+                    self.runTransfer(cmd, name, dst);
+                },
+                .demo => unreachable,
+            },
+            .host => |src_host| switch (dst_ep) {
+                // Host → Local: scp download.
+                .local => {
+                    const cmd = sarv.sftp.scpDownload(gpa, src_host, src_full, dst_full, is_dir) catch {
+                        self.setStatus("Failed to build the transfer command.");
+                        return;
+                    };
+                    defer gpa.free(cmd);
+                    self.runTransfer(cmd, name, dst);
+                },
+                // Host → Host: scp server-to-server relay.
+                .host => |dst_host| {
+                    const cmd = sarv.sftp.scpServerToServer(gpa, src_host, src_full, dst_host, dst_full, is_dir) catch {
+                        self.setStatus("Failed to build the transfer command.");
+                        return;
+                    };
+                    defer gpa.free(cmd);
+                    self.runTransfer(cmd, name, dst);
+                },
+                .demo => unreachable,
+            },
+            .demo => unreachable,
+        }
     }
 
-    fn downloadClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
-        const priv = self.private();
+    /// Spawn `command` via `/bin/sh -c <command>` and wait. Reports success or
+    /// failure in the status bar; on success reloads `dst`. Synchronous — see
+    /// the transfer() caveats. `command` is borrowed (caller frees).
+    fn runTransfer(self: *Self, command: []const u8, name: []const u8, dst: Side) void {
         const gpa = Application.default().allocator();
 
-        const wrapper = self.selectedRemote() orelse {
-            self.setStatus("Select a remote file to download.");
+        const command_z = gpa.dupeZ(u8, command) catch return;
+        defer gpa.free(command_z);
+
+        var child = std.process.Child.init(&.{ "/bin/sh", "-c", command_z }, gpa);
+        child.stdin_behavior = .Close;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+
+        child.spawn() catch |err| {
+            log.warn("failed to spawn transfer: {}", .{err});
+            self.setStatus("Transfer failed (could not spawn).");
             return;
         };
-        const name = wrapper.getName() orelse return;
 
-        const host = self.selectedHost() orelse {
-            self.setStatus("Pick a real host (not Demo) to transfer.");
+        const term = child.wait() catch |err| {
+            log.warn("transfer wait failed: {}", .{err});
+            self.setStatus("Transfer failed (wait error).");
             return;
         };
 
-        const remote_full = childPath(gpa, priv.remote_dir, name) orelse return;
-        defer gpa.free(remote_full);
-        const local_full = childPath(gpa, priv.local_dir, name) orelse return;
-        defer gpa.free(local_full);
+        switch (term) {
+            .Exited => |code| {
+                if (code == 0) {
+                    self.reportTransferred(name);
+                    self.reload(dst);
+                } else {
+                    self.reportFailed(code);
+                }
+            },
+            else => self.reportFailed(1),
+        }
+    }
 
-        // NOTE: v1 only *composes* the command; the real transfer is a follow-up.
-        const cmd = sarv.sftp.scpDownload(gpa, host, remote_full, local_full, wrapper.getIsDir()) catch {
-            self.setStatus("Failed to build the download command.");
-            return;
-        };
-        defer gpa.free(cmd);
-
-        const msg = std.fmt.allocPrintSentinel(gpa, "Would download {s} → {s}", .{ name, local_full }, 0) catch return;
+    fn reportTransferred(self: *Self, name: []const u8) void {
+        const gpa = Application.default().allocator();
+        const msg = std.fmt.allocPrintSentinel(gpa, "Transferred {s}", .{name}, 0) catch return;
         defer gpa.free(msg);
-        priv.status_label.setLabel(msg);
+        self.private().status_label.setLabel(msg);
+    }
+
+    fn reportFailed(self: *Self, code: u32) void {
+        const gpa = Application.default().allocator();
+        const msg = std.fmt.allocPrintSentinel(gpa, "Transfer failed ({d})", .{code}, 0) catch return;
+        defer gpa.free(msg);
+        self.private().status_label.setLabel(msg);
     }
 
     // -----------------------------------------------------------------------
@@ -568,26 +707,32 @@ pub const SarvFilesDialog = extern struct {
             );
 
             class.bindTemplateChildPrivate("dialog", .{});
-            class.bindTemplateChildPrivate("local_path", .{});
-            class.bindTemplateChildPrivate("local_view", .{});
-            class.bindTemplateChildPrivate("local_model", .{});
-            class.bindTemplateChildPrivate("local_source", .{});
-            class.bindTemplateChildPrivate("host_dropdown", .{});
-            class.bindTemplateChildPrivate("host_names", .{});
-            class.bindTemplateChildPrivate("remote_path", .{});
-            class.bindTemplateChildPrivate("remote_view", .{});
-            class.bindTemplateChildPrivate("remote_model", .{});
-            class.bindTemplateChildPrivate("remote_source", .{});
+
+            class.bindTemplateChildPrivate("left_dropdown", .{});
+            class.bindTemplateChildPrivate("left_names", .{});
+            class.bindTemplateChildPrivate("left_path", .{});
+            class.bindTemplateChildPrivate("left_view", .{});
+            class.bindTemplateChildPrivate("left_model", .{});
+            class.bindTemplateChildPrivate("left_source", .{});
+
+            class.bindTemplateChildPrivate("right_dropdown", .{});
+            class.bindTemplateChildPrivate("right_names", .{});
+            class.bindTemplateChildPrivate("right_path", .{});
+            class.bindTemplateChildPrivate("right_view", .{});
+            class.bindTemplateChildPrivate("right_model", .{});
+            class.bindTemplateChildPrivate("right_source", .{});
+
             class.bindTemplateChildPrivate("status_label", .{});
 
             class.bindTemplateCallback("closed", &closed);
-            class.bindTemplateCallback("host_changed", &hostChanged);
-            class.bindTemplateCallback("local_activated", &localActivated);
-            class.bindTemplateCallback("local_up_clicked", &localUpClicked);
-            class.bindTemplateCallback("remote_activated", &remoteActivated);
-            class.bindTemplateCallback("remote_up_clicked", &remoteUpClicked);
-            class.bindTemplateCallback("upload_clicked", &uploadClicked);
-            class.bindTemplateCallback("download_clicked", &downloadClicked);
+            class.bindTemplateCallback("left_changed", &leftChanged);
+            class.bindTemplateCallback("left_activated", &leftActivated);
+            class.bindTemplateCallback("left_up_clicked", &leftUpClicked);
+            class.bindTemplateCallback("right_changed", &rightChanged);
+            class.bindTemplateCallback("right_activated", &rightActivated);
+            class.bindTemplateCallback("right_up_clicked", &rightUpClicked);
+            class.bindTemplateCallback("copy_right_clicked", &copyRightClicked);
+            class.bindTemplateCallback("copy_left_clicked", &copyLeftClicked);
 
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);
         }

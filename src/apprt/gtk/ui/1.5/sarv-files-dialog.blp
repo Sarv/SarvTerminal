@@ -26,7 +26,7 @@ Adw.Dialog dialog {
       margin-bottom: 6;
 
       // -------------------------------------------------------------------
-      // LEFT: local pane
+      // LEFT: endpoint pane (defaults to Local)
       // -------------------------------------------------------------------
       Gtk.Box {
         orientation: vertical;
@@ -36,24 +36,22 @@ Adw.Dialog dialog {
           orientation: horizontal;
           spacing: 6;
 
-          Gtk.Label {
-            label: _("Local");
-            halign: start;
+          Gtk.DropDown left_dropdown {
             hexpand: true;
 
-            styles [
-              "heading",
-            ]
+            model: Gtk.StringList left_names {};
+
+            notify::selected => $left_changed();
           }
 
           Gtk.Button {
             icon-name: "go-up-symbolic";
             tooltip-text: _("Go to parent directory");
-            clicked => $local_up_clicked();
+            clicked => $left_up_clicked();
           }
         }
 
-        Gtk.Label local_path {
+        Gtk.Label left_path {
           ellipsize: start;
           halign: start;
           label: "/";
@@ -68,12 +66,12 @@ Adw.Dialog dialog {
           hscrollbar-policy: never;
           vexpand: true;
 
-          Gtk.ListView local_view {
+          Gtk.ListView left_view {
             single-click-activate: false;
-            activate => $local_activated();
+            activate => $left_activated();
 
-            model: Gtk.SingleSelection local_model {
-              model: Gio.ListStore local_source {
+            model: Gtk.SingleSelection left_model {
+              model: Gio.ListStore left_source {
                 item-type: typeof<$GhosttySarvFile>;
               };
             };
@@ -141,19 +139,19 @@ Adw.Dialog dialog {
 
         Gtk.Button {
           icon-name: "go-next-symbolic";
-          tooltip-text: _("Upload to remote");
-          clicked => $upload_clicked();
+          tooltip-text: _("Copy selected from left to right");
+          clicked => $copy_right_clicked();
         }
 
         Gtk.Button {
           icon-name: "go-previous-symbolic";
-          tooltip-text: _("Download to local");
-          clicked => $download_clicked();
+          tooltip-text: _("Copy selected from right to left");
+          clicked => $copy_left_clicked();
         }
       }
 
       // -------------------------------------------------------------------
-      // RIGHT: remote pane
+      // RIGHT: endpoint pane (defaults to Demo)
       // -------------------------------------------------------------------
       Gtk.Box {
         orientation: vertical;
@@ -163,22 +161,22 @@ Adw.Dialog dialog {
           orientation: horizontal;
           spacing: 6;
 
-          Gtk.DropDown host_dropdown {
+          Gtk.DropDown right_dropdown {
             hexpand: true;
 
-            model: Gtk.StringList host_names {};
+            model: Gtk.StringList right_names {};
 
-            notify::selected => $host_changed();
+            notify::selected => $right_changed();
           }
 
           Gtk.Button {
             icon-name: "go-up-symbolic";
             tooltip-text: _("Go to parent directory");
-            clicked => $remote_up_clicked();
+            clicked => $right_up_clicked();
           }
         }
 
-        Gtk.Label remote_path {
+        Gtk.Label right_path {
           ellipsize: start;
           halign: start;
           label: ".";
@@ -193,12 +191,12 @@ Adw.Dialog dialog {
           hscrollbar-policy: never;
           vexpand: true;
 
-          Gtk.ListView remote_view {
+          Gtk.ListView right_view {
             single-click-activate: false;
-            activate => $remote_activated();
+            activate => $right_activated();
 
-            model: Gtk.SingleSelection remote_model {
-              model: Gio.ListStore remote_source {
+            model: Gtk.SingleSelection right_model {
+              model: Gio.ListStore right_source {
                 item-type: typeof<$GhosttySarvFile>;
               };
             };
@@ -260,7 +258,7 @@ Adw.Dialog dialog {
     Gtk.ActionBar {
       [start]
       Gtk.Label status_label {
-        label: _("Local ↔ remote file browser. Pick a host on the right.");
+        label: _("Pick an endpoint on each side, then transfer with the center arrows.");
 
         styles [
           "dim-label",
