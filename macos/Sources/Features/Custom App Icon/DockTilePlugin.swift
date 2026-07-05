@@ -52,7 +52,8 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
         let appIcon: NSImage?
         if #available(macOS 26.0, *) {
             // Reset to the bundle icon. Debug and Release ship different app
-            // icons (AppIconDebug carries a DEV badge), so the bundle already
+            // icons (AppIconDebug uses the blueprint background — the color IS
+            // the build marker, no DEV badge), so the bundle already
             // distinguishes the two — no need to override with Blueprint.
             appIcon = nil
         } else {
