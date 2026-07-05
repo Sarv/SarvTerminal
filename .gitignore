@@ -40,3 +40,4 @@ macos/macos/
 # code-signing material (public cert only; never commit .p12/private keys)
 signing/
 *.p12
+zig-out-linux/
