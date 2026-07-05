@@ -50,7 +50,7 @@ struct VaultsView: View {
     var body: some View {
         HStack(spacing: 0) {
             sidebar
-                .frame(width: 220)
+                .frame(width: 190)
                 .background(Color.black.opacity(0.18))
             Divider()
             Group {
