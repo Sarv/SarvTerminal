@@ -242,7 +242,15 @@ private struct VaultsHostEditorSidebar: View {
                 },
                 onDelete: nil,
                 onConnect: nil,
-                onAutosave: { SavedHostsStore.shared.upsert(draft) }
+                onAutosave: {
+                    // Skip (and don't flash "Saved") when nothing changed.
+                    if let current = SavedHostsStore.shared.host(withID: draft.id),
+                       current.contentEquals(draft) {
+                        return false
+                    }
+                    SavedHostsStore.shared.upsert(draft)
+                    return true
+                }
             )
         }
     }

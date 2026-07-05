@@ -1,15 +1,21 @@
 import SwiftUI
+import AppKit
 
 /// Tag input with chip display + autocomplete suggestions sourced from
 /// other saved hosts. Matches the Termius "Create Tag X" pattern.
 struct TagsField: View {
     @Binding var tags: [String]
     let allKnownTags: [String]
+    /// External focus tag for the editor's Tab/Shift+Tab chain.
+    var focus: FocusState<HostEditorFocusField?>.Binding? = nil
+    var field: HostEditorFocusField? = nil
 
     @State private var input: String = ""
     @FocusState private var focused: Bool
     /// Keyboard highlight in the suggestion list (-1 = none, typing mode).
     @State private var highlighted: Int = -1
+    /// Backspace-on-empty monitor, installed only while the input is focused.
+    @State private var deleteMonitor: Any? = nil
 
     /// The rows currently shown in the suggestion list: matching known tags,
     /// plus a trailing "Create Tag …" entry for a genuinely new value. ONE
@@ -52,6 +58,7 @@ struct TagsField: View {
             TextField(tags.isEmpty ? "Tags" : "", text: $input)
                 .textFieldStyle(.plain)
                 .focused($focused)
+                .editorFocus(focus, field)
                 .onSubmit { commit(input) }
                 // ↑/↓ walk the suggestion list, Return picks the highlight
                 // (falls through to onSubmit when nothing is highlighted).
@@ -59,6 +66,14 @@ struct TagsField: View {
                     commit(listItems[idx].label)
                 }
                 .onChange(of: input) { _ in highlighted = -1 }
+                // Backspace in an empty input removes the last chip, so tags
+                // can be managed entirely from the keyboard. AppKit monitor —
+                // the field editor consumes Backspace before SwiftUI key
+                // handling ever sees it.
+                .onChange(of: focused) { isFocused in
+                    if isFocused { installDeleteMonitor() } else { removeDeleteMonitor() }
+                }
+                .onDisappear { removeDeleteMonitor() }
                 .frame(minWidth: 80)
         }
         .padding(.horizontal, 12)
@@ -70,6 +85,9 @@ struct TagsField: View {
                                 : Color.secondary.opacity(0.25),
                         lineWidth: focused ? 1.5 : 1)
         )
+        .onHover { inside in
+            if inside { NSCursor.iBeam.push() } else { NSCursor.pop() }
+        }
     }
 
     // MARK: - Suggestions
@@ -153,6 +171,26 @@ struct TagsField: View {
 
     private func remove(_ tag: String) {
         tags.removeAll { $0 == tag }
+    }
+
+    // MARK: - Backspace chip removal (AppKit monitor)
+
+    private func installDeleteMonitor() {
+        guard deleteMonitor == nil else { return }
+        deleteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 51,          // Backspace
+                  input.isEmpty,
+                  let last = tags.last else { return event }
+            remove(last)
+            return nil
+        }
+    }
+
+    private func removeDeleteMonitor() {
+        if let m = deleteMonitor {
+            NSEvent.removeMonitor(m)
+            deleteMonitor = nil
+        }
     }
 }
 

@@ -9,12 +9,21 @@ struct ParentGroupPicker: View {
     @Binding var groupID: UUID?
     var excludedID: UUID? = nil
     var placeholder: String = "Parent Group"
+    /// External focus tag for the editor's Tab/Shift+Tab chain — when the
+    /// chain lands here, Return/Space opens the popover.
+    var focus: FocusState<HostEditorFocusField?>.Binding? = nil
+    var field: HostEditorFocusField? = nil
 
     @ObservedObject private var store = HostGroupsStore.shared
     @State private var isPresented = false
     /// Keyboard highlight in the popover list (0 = root row, 1… = groups).
     @State private var highlighted: Int = -1
     @FocusState private var listFocused: Bool
+
+    /// The editor's focus chain points at this picker.
+    private var isChainFocused: Bool {
+        field != nil && focus?.wrappedValue == field
+    }
 
     var body: some View {
         Button {
@@ -23,6 +32,10 @@ struct ParentGroupPicker: View {
             row
         }
         .buttonStyle(.plain)
+        .hoverCursor(.pointingHand)
+        .focusable()
+        .editorFocus(focus, field)
+        .modifier(ActivateOnKeyPress { isPresented = true })
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             popoverContent
         }
@@ -54,7 +67,9 @@ struct ParentGroupPicker: View {
         .contentShape(Rectangle())
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
+                .stroke(isChainFocused ? Color.accentColor.opacity(0.7)
+                                       : Color.secondary.opacity(0.22),
+                        lineWidth: isChainFocused ? 1.5 : 1)
         )
     }
 

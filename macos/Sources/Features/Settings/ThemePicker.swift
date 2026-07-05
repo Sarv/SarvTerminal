@@ -12,12 +12,24 @@ import SwiftUI
 /// responsive) and cached for the lifetime of the picker instance.
 struct ThemePicker: View {
     @Binding var themeName: String
+    /// External focus tag for the host editor's Tab/Shift+Tab chain — when
+    /// the chain lands here, Return/Space opens the popover.
+    var focus: FocusState<HostEditorFocusField?>.Binding? = nil
+    var field: HostEditorFocusField? = nil
 
     @State private var isPresented: Bool = false
     @State private var search: String = ""
     @State private var themes: [ThemeEntry] = []
     @State private var previews: [String: ThemePreview] = [:]
     @State private var didLoad: Bool = false
+    /// Keyboard highlight in the popover list (0 = default row, 1… = themes).
+    @State private var highlighted: Int = -1
+    @FocusState private var searchFocused: Bool
+
+    /// The editor's focus chain points at this picker.
+    private var isChainFocused: Bool {
+        field != nil && focus?.wrappedValue == field
+    }
 
     var body: some View {
         Button {
@@ -27,6 +39,13 @@ struct ThemePicker: View {
             triggerLabel
         }
         .buttonStyle(.plain)
+        .hoverCursor(.pointingHand)
+        .focusable()
+        .editorFocus(focus, field)
+        .modifier(ActivateOnKeyPress {
+            ensureLoaded()
+            isPresented = true
+        })
         .popover(isPresented: $isPresented, arrowEdge: .bottom) {
             popoverContent
         }
@@ -67,7 +86,9 @@ struct ThemePicker: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                .stroke(isChainFocused ? Color.accentColor.opacity(0.7)
+                                       : Color.secondary.opacity(0.25),
+                        lineWidth: isChainFocused ? 1.5 : 1)
         )
     }
 
@@ -80,6 +101,11 @@ struct ThemePicker: View {
                     .foregroundStyle(.secondary)
                 TextField("Search themes…", text: $search)
                     .textFieldStyle(.plain)
+                    .focused($searchFocused)
+                    // ↑/↓ walk the list, Return picks the highlighted theme.
+                    .listKeyNavigation(count: 1 + filteredThemes.count,
+                                       highlighted: $highlighted) { pickRow($0) }
+                    .onChange(of: search) { _ in highlighted = -1 }
                 if !search.isEmpty {
                     Button {
                         search = ""
@@ -99,9 +125,10 @@ struct ThemePicker: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         defaultRow
+                            .id("::default::")
                         if !themes.isEmpty { Divider() }
-                        ForEach(filteredThemes, id: \.name) { entry in
-                            themeRow(entry)
+                        ForEach(Array(filteredThemes.enumerated()), id: \.element.name) { idx, entry in
+                            themeRow(entry, isHighlighted: highlighted == idx + 1)
                                 .id(entry.name)
                         }
                         if filteredThemes.isEmpty && !themes.isEmpty {
@@ -116,8 +143,13 @@ struct ThemePicker: View {
                 // themes the selection is otherwise lost below the fold. Theme
                 // discovery is async, so also fire when the list populates.
                 .onAppear {
+                    searchFocused = true
                     guard !themeName.isEmpty else { return }
                     proxy.scrollTo(themeName, anchor: .center)
+                }
+                .onChange(of: highlighted) { idx in
+                    guard idx >= 0 else { return }
+                    proxy.scrollTo(idx == 0 ? "::default::" : filteredThemes[idx - 1].name)
                 }
                 .onChange(of: themes.count) { _ in
                     guard !themeName.isEmpty else { return }
@@ -147,6 +179,18 @@ struct ThemePicker: View {
         .frame(width: 420)
     }
 
+    /// Keyboard pick: row 0 = "Default (no theme)", rows 1… = filtered themes.
+    private func pickRow(_ idx: Int) {
+        if idx == 0 {
+            themeName = ""
+        } else if filteredThemes.indices.contains(idx - 1) {
+            themeName = filteredThemes[idx - 1].name
+        } else {
+            return
+        }
+        isPresented = false
+    }
+
     // MARK: - Rows
 
     private var defaultRow: some View {
@@ -169,14 +213,15 @@ struct ThemePicker: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
-            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+            .background(isSelected ? Color.accentColor.opacity(0.18)
+                        : highlighted == 0 ? Color.secondary.opacity(0.14) : Color.clear)
             .contentShape(Rectangle())
             .listRowHover(cornerRadius: 0)
         }
         .buttonStyle(.plain)
     }
 
-    private func themeRow(_ entry: ThemeEntry) -> some View {
+    private func themeRow(_ entry: ThemeEntry, isHighlighted: Bool = false) -> some View {
         let isSelected = themeName == entry.name
         let preview = previews[entry.name]
         return Button {
@@ -203,7 +248,8 @@ struct ThemePicker: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 5)
-            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+            .background(isSelected ? Color.accentColor.opacity(0.18)
+                        : isHighlighted ? Color.secondary.opacity(0.14) : Color.clear)
             .contentShape(Rectangle())
             .listRowHover(cornerRadius: 0)
         }

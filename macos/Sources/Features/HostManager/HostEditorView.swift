@@ -11,8 +11,10 @@ struct HostEditorView: View {
     let onDelete: (() -> Void)?
     let onConnect: (() -> Void)?
     /// Called whenever a field with data commits (blur of text inputs, any
-    /// toggle/picker change) so the owner can persist the draft live.
-    var onAutosave: (() -> Void)? = nil
+    /// toggle/picker change) so the owner can persist the draft live. Returns
+    /// whether anything was actually written — the "Saved" flash only shows
+    /// for real changes, not for focusing a field and leaving it untouched.
+    var onAutosave: (() -> Bool)? = nil
 
     @ObservedObject private var store = SavedHostsStore.shared
     @ObservedObject private var snippetsStore = SnippetsStore.shared
@@ -21,7 +23,6 @@ struct HostEditorView: View {
     @State private var showLocalForwards = false
     @State private var showRemoteForwards = false
     @State private var showInitialCommand = false
-    @State private var showNote = false
     @State private var showAdvanced = false
     /// The user has focused-and-left the password field (or tried to save) —
     /// only then is an empty password worth flagging.
@@ -40,27 +41,79 @@ struct HostEditorView: View {
     @FocusState private var localFwdFocused: Bool
     @FocusState private var remoteFwdFocused: Bool
 
+    /// The editor-wide focus chain — drives Tab/Shift+Tab between fields.
+    @FocusState private var focusedField: HostEditorFocusField?
+
+    /// Tab order — every control in visual order, respecting what's currently
+    /// visible (auth method, expanded sections). The whole form is fillable
+    /// from the keyboard: text fields type, pickers cycle with ↑/↓, toggles
+    /// and expanders flip with Space/Return.
+    private var focusOrder: [HostEditorFocusField] {
+        var order: [HostEditorFocusField] = [.hostname, .label, .group, .tags, .note,
+                                             .port, .username, .authMethod]
+        switch draft.authMethod {
+        case .password:  order.append(.password)
+        case .publicKey: order.append(.identityFile)
+        case .agent, .ask: break
+        }
+        order += [.forwardAgent, .startupExpander]
+        if showInitialCommand { order.append(.startup) }
+        order += [.osPicker, .themePicker, .advancedExpander]
+        if showAdvanced {
+            order += [.strictHostKey, .connectTimeout, .keepAlive, .proxyJump,
+                      .compression, .forceTTY, .localForwardsExpander]
+            if showLocalForwards { order.append(.localForwards) }
+            order.append(.remoteForwardsExpander)
+            if showRemoteForwards { order.append(.remoteForwards) }
+            order.append(.socksPort)
+        }
+        return order
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            ScrollView {
-                VStack(spacing: 14) {
-                    addressCard
-                    generalCard
-                    credentialsCard
-                    startupCard
-                    appearanceCard
-                    advancedCard
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 14) {
+                        addressCard
+                        generalCard
+                        credentialsCard
+                        startupCard
+                        appearanceCard
+                        advancedCard
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 18)
+                    .frame(maxWidth: 680)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 18)
-                .frame(maxWidth: 680)
-                .frame(maxWidth: .infinity)
+                // Keep the keyboard-focused field on screen while tabbing.
+                .onChange(of: focusedField) { field in
+                    guard let field else { return }
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(field, anchor: .center)
+                    }
+                }
             }
             Divider()
             footer
         }
+        // Tab / Shift+Tab walk `focusOrder`. AppKit event monitor — the field
+        // editor consumes Tab before SwiftUI key handling, and the mixed
+        // SwiftUI/AppKit form breaks the native key-view loop anyway.
+        .modifier(EditorTabKeyMonitor { backward, inSecureField in
+            // Anchor at .password when the AppKit field holds focus — SwiftUI
+            // can't see it, so `focusedField` alone would restart at the top.
+            if inSecureField {
+                // SwiftUI can't take the keyboard away from an AppKit field:
+                // without an explicit resign the cursor (and typing) stays in
+                // the password box even though the chain moved on.
+                NSApp.keyWindow?.makeFirstResponder(nil)
+            }
+            return shiftFocus(backward ? -1 : 1, from: inSecureField ? .password : nil)
+        })
         .onAppear { syncLocalMirrors() }
         // ONE blanket watcher for every discrete control (toggles, pickers,
         // tags, …): the signature hashes the whole draft with the type-in
@@ -79,10 +132,10 @@ struct HostEditorView: View {
         if fieldHasData { fireAutosave() }
     }
 
-    /// Run the owner's autosave and flash the "Saved" footer indicator.
+    /// Run the owner's autosave; flash the "Saved" footer indicator only when
+    /// something actually changed on disk.
     private func fireAutosave() {
-        guard let onAutosave else { return }
-        onAutosave()
+        guard let onAutosave, onAutosave() else { return }
         withAnimation(.easeIn(duration: 0.1)) { showSaved = true }
         savedIndicatorHide?.cancel()
         let work = DispatchWorkItem {
@@ -90,6 +143,24 @@ struct HostEditorView: View {
         }
         savedIndicatorHide = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+    }
+
+    /// Move the focus chain by `delta` (wrapping). `anchor` overrides the
+    /// current position — used by the AppKit password field, whose focus
+    /// SwiftUI doesn't track.
+    @discardableResult
+    private func shiftFocus(_ delta: Int, from anchor: HostEditorFocusField? = nil) -> Bool {
+        let order = focusOrder
+        guard !order.isEmpty else { return false }
+        guard let cur = anchor ?? focusedField, let i = order.firstIndex(of: cur) else {
+            // Nothing chain-focused yet: Tab enters at the first stop.
+            focusedField = delta > 0 ? order.first : order.last
+            return true
+        }
+        var j = i + delta
+        if j < 0 { j = order.count - 1 } else if j >= order.count { j = 0 }
+        focusedField = order[j]
+        return true
     }
 
     // MARK: - Header
@@ -160,7 +231,9 @@ struct HostEditorView: View {
                               placeholder: "IP or Hostname",
                               text: $draft.hostname,
                               autoFocus: true,
-                              onEditingEnded: { autosaveIf(!draft.hostname.isEmpty) })
+                              onEditingEnded: { autosaveIf(!draft.hostname.isEmpty) },
+                              focus: $focusedField, field: .hostname)
+                    .id(HostEditorFocusField.hostname)
                     .help("Server IP address or DNS hostname")
             }
         }
@@ -171,29 +244,53 @@ struct HostEditorView: View {
     private var generalCard: some View {
         EditorCard("General") {
             EditorTextRow(icon: "tag", placeholder: "Label", text: $draft.label,
-                          onEditingEnded: { autosaveIf(!draft.label.isEmpty) })
+                          onEditingEnded: { autosaveIf(!draft.label.isEmpty) },
+                          focus: $focusedField, field: .label)
+                .id(HostEditorFocusField.label)
                 .help("Display name shown in host lists (empty = hostname)")
-            ParentGroupPicker(groupID: $draft.groupID, placeholder: "Parent Group")
+            ParentGroupPicker(groupID: $draft.groupID, placeholder: "Parent Group",
+                              focus: $focusedField, field: .group)
+                .id(HostEditorFocusField.group)
                 .help("Group this host lives in")
-            TagsField(tags: $draft.tags, allKnownTags: knownTags)
+            TagsField(tags: $draft.tags, allKnownTags: knownTags,
+                      focus: $focusedField, field: .tags)
+                .id(HostEditorFocusField.tags)
                 .help("Tags for search and filtering")
-            EditorExpandRow(icon: "text.alignleft",
-                            title: "Description",
-                            summary: draft.note.isEmpty ? "" : oneLineSummary(draft.note),
-                            isExpanded: $showNote) {
+            // Always visible (not behind an expander) so it's clickable and a
+            // regular Tab stop.
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Image(systemName: "text.alignleft")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
+                    Text("Description")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
                 TextEditor(text: $draft.note)
                     .font(.body)
-                    .frame(minHeight: 80, maxHeight: 160)
+                    .frame(minHeight: 60, maxHeight: 140)
                     .padding(6)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
+                            .stroke(noteFocused ? Color.accentColor.opacity(0.7)
+                                                : Color.secondary.opacity(0.30),
+                                    lineWidth: noteFocused ? 1.5 : 1)
                     )
                     .focused($noteFocused)
+                    .focused($focusedField, equals: .note)
                     .onChange(of: noteFocused) { focused in
                         if !focused { autosaveIf(!draft.note.isEmpty) }
                     }
             }
+            .padding(.horizontal, 12).padding(.vertical, 11)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
+            )
+            .id(HostEditorFocusField.note)
+            .help("Free-form notes about this host")
         }
     }
 
@@ -205,7 +302,9 @@ struct HostEditorView: View {
                 Text("SSH on")
                     .foregroundStyle(.secondary)
                 EditorPortField(value: $draft.port,
-                                onEditingEnded: { autosaveIf(draft.port != 22) })
+                                onEditingEnded: { autosaveIf(draft.port != 22) },
+                                focus: $focusedField, field: .port)
+                    .id(HostEditorFocusField.port)
                     .frame(width: 110)
                     .help("SSH port — 22 unless the server uses a custom one")
                 Text("port")
@@ -217,15 +316,19 @@ struct HostEditorView: View {
             EditorTextRow(icon: "person",
                           placeholder: "Username",
                           text: $draft.username,
-                          onEditingEnded: { autosaveIf(!draft.username.isEmpty) })
+                          onEditingEnded: { autosaveIf(!draft.username.isEmpty) },
+                          focus: $focusedField, field: .username)
+                .id(HostEditorFocusField.username)
                 .help("User to sign in as (empty = your macOS username)")
 
             EditorPickerRow(
                 icon: "key",
                 title: "Auth method",
                 selection: $draft.authMethod,
-                options: SavedHost.AuthMethod.allCases.map { ($0, $0.display) }
+                options: SavedHost.AuthMethod.allCases.map { ($0, $0.display) },
+                focus: $focusedField, field: .authMethod
             )
+            .id(HostEditorFocusField.authMethod)
             .help("How to authenticate: saved password, key file, ssh-agent, or ask every time")
 
             // Auth-input area — always present; renders the right control
@@ -234,7 +337,9 @@ struct HostEditorView: View {
 
             EditorBoolRow(icon: "arrow.triangle.2.circlepath",
                           title: "Agent forwarding (-A)",
-                          isOn: $draft.forwardAgent)
+                          isOn: $draft.forwardAgent,
+                          focus: $focusedField, field: .forwardAgent)
+                .id(HostEditorFocusField.forwardAgent)
                 .help("Let the remote host use your local ssh-agent for onward connections")
         }
     }
@@ -251,7 +356,12 @@ struct HostEditorView: View {
                             onEditingEnded: {
                                 passwordTouched = true
                                 autosaveIf(!draft.password.isEmpty)
+                            },
+                            focus: $focusedField, field: .password,
+                            onTabOut: { backward in
+                                shiftFocus(backward ? -1 : 1, from: .password)
                             })
+                .id(HostEditorFocusField.password)
                 .help("Password used to sign in — stored encrypted on this Mac")
             // Only nag once the user has visited the field and left it empty —
             // never on first open of a fresh editor.
@@ -271,7 +381,9 @@ struct HostEditorView: View {
                               placeholder: "~/.ssh/id_ed25519",
                               text: $draft.identityFile,
                               monospaced: true,
-                              onEditingEnded: { autosaveIf(!draft.identityFile.isEmpty) })
+                              onEditingEnded: { autosaveIf(!draft.identityFile.isEmpty) },
+                              focus: $focusedField, field: .identityFile)
+                    .id(HostEditorFocusField.identityFile)
                     .help("Path to the private key file used to sign in")
                 Button("Browse…") { pickIdentityFile() }
                     .controlSize(.small)
@@ -313,8 +425,10 @@ struct HostEditorView: View {
             EditorExpandRow(icon: "terminal.fill",
                             title: "Startup command",
                             summary: draft.initialCommand.isEmpty ? "" : oneLineSummary(draft.initialCommand),
-                            isExpanded: $showInitialCommand) {
+                            isExpanded: $showInitialCommand,
+                            focus: $focusedField, field: .startupExpander) {
                 TextEditor(text: $draft.initialCommand)
+                    .id(HostEditorFocusField.startup)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 80, maxHeight: 180)
                     .padding(6)
@@ -323,6 +437,7 @@ struct HostEditorView: View {
                             .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
                     )
                     .focused($startupFocused)
+                    .focused($focusedField, equals: .startup)
                     .onChange(of: startupFocused) { focused in
                         if !focused { autosaveIf(!draft.initialCommand.isEmpty) }
                     }
@@ -358,45 +473,59 @@ struct HostEditorView: View {
             EditorExpandRow(icon: "slider.horizontal.3",
                             title: "Advanced",
                             summary: showAdvanced ? "" : "Connection options, port forwarding",
-                            isExpanded: $showAdvanced) {
+                            isExpanded: $showAdvanced,
+                            focus: $focusedField, field: .advancedExpander) {
                 VStack(alignment: .leading, spacing: 8) {
                     EditorSubheading(text: "Connection options")
                     EditorPickerRow(
                         icon: "checkmark.shield",
                         title: "Strict host key checking",
                         selection: $draft.strictHostKeyChecking,
-                        options: SavedHost.HostKeyChecking.allCases.map { ($0, $0.display) }
+                        options: SavedHost.HostKeyChecking.allCases.map { ($0, $0.display) },
+                        focus: $focusedField, field: .strictHostKey
                     )
+                    .id(HostEditorFocusField.strictHostKey)
                     .help("What to do when the server's host key is unknown or has changed")
                     EditorIntRow(icon: "clock",
                                  placeholder: "Connect timeout in seconds",
                                  value: $draft.connectTimeoutSeconds,
-                                 onEditingEnded: { autosaveIf(draft.connectTimeoutSeconds != 0) })
+                                 onEditingEnded: { autosaveIf(draft.connectTimeoutSeconds != 0) },
+                                 focus: $focusedField, field: .connectTimeout)
+                        .id(HostEditorFocusField.connectTimeout)
                         .help("Give up connecting after this many seconds — empty uses the system default")
                     EditorIntRow(icon: "heart.text.square",
                                  placeholder: "Keep-alive interval in seconds",
                                  value: $draft.serverAliveIntervalSeconds,
-                                 onEditingEnded: { autosaveIf(draft.serverAliveIntervalSeconds != 0) })
+                                 onEditingEnded: { autosaveIf(draft.serverAliveIntervalSeconds != 0) },
+                                 focus: $focusedField, field: .keepAlive)
+                        .id(HostEditorFocusField.keepAlive)
                         .help("Ping the server every N seconds so idle sessions don't drop — empty turns it off")
                     EditorTextRow(icon: "arrow.triangle.branch",
                                   placeholder: "Proxy jump host, e.g. user@bastion",
                                   text: $draft.proxyJump,
-                                  onEditingEnded: { autosaveIf(!draft.proxyJump.isEmpty) })
+                                  onEditingEnded: { autosaveIf(!draft.proxyJump.isEmpty) },
+                                  focus: $focusedField, field: .proxyJump)
+                        .id(HostEditorFocusField.proxyJump)
                         .help("Reach this host through an intermediate jump host (-J)")
                     EditorBoolRow(icon: "arrow.down.right.and.arrow.up.left",
                                   title: "Compression (-C)",
-                                  isOn: $draft.useCompression)
+                                  isOn: $draft.useCompression,
+                                  focus: $focusedField, field: .compression)
+                        .id(HostEditorFocusField.compression)
                         .help("Compress traffic — helps on slow links, wastes CPU on fast ones")
                     EditorBoolRow(icon: "terminal",
                                   title: "Force TTY (-t)",
-                                  isOn: $draft.requestTTY)
+                                  isOn: $draft.requestTTY,
+                                  focus: $focusedField, field: .forceTTY)
+                        .id(HostEditorFocusField.forceTTY)
                         .help("Force a terminal allocation, e.g. for interactive commands run at startup")
 
                     EditorSubheading(text: "Port forwarding")
                     EditorExpandRow(icon: "arrow.right.square",
                                     title: "Local forwards",
                                     summary: countSummary(draft.localForwards),
-                                    isExpanded: $showLocalForwards) {
+                                    isExpanded: $showLocalForwards,
+                                    focus: $focusedField, field: .localForwardsExpander) {
                         TextEditor(text: $localFwdField)
                             .font(.system(.body, design: .monospaced))
                             .frame(minHeight: 60, maxHeight: 120)
@@ -409,6 +538,7 @@ struct HostEditorView: View {
                                 draft.localForwards = splitLines(localFwdField)
                             }
                             .focused($localFwdFocused)
+                            .focused($focusedField, equals: .localForwards)
                             .onChange(of: localFwdFocused) { focused in
                                 if !focused { autosaveIf(!draft.localForwards.isEmpty) }
                             }
@@ -421,7 +551,8 @@ struct HostEditorView: View {
                     EditorExpandRow(icon: "arrow.left.square",
                                     title: "Remote forwards",
                                     summary: countSummary(draft.remoteForwards),
-                                    isExpanded: $showRemoteForwards) {
+                                    isExpanded: $showRemoteForwards,
+                                    focus: $focusedField, field: .remoteForwardsExpander) {
                         TextEditor(text: $remoteFwdField)
                             .font(.system(.body, design: .monospaced))
                             .frame(minHeight: 60, maxHeight: 120)
@@ -434,6 +565,7 @@ struct HostEditorView: View {
                                 draft.remoteForwards = splitLines(remoteFwdField)
                             }
                             .focused($remoteFwdFocused)
+                            .focused($focusedField, equals: .remoteForwards)
                             .onChange(of: remoteFwdFocused) { focused in
                                 if !focused { autosaveIf(!draft.remoteForwards.isEmpty) }
                             }
@@ -446,7 +578,9 @@ struct HostEditorView: View {
                     EditorIntRow(icon: "network",
                                  placeholder: "SOCKS proxy port, e.g. 1080",
                                  value: $draft.dynamicForwardPort,
-                                 onEditingEnded: { autosaveIf(draft.dynamicForwardPort != 0) })
+                                 onEditingEnded: { autosaveIf(draft.dynamicForwardPort != 0) },
+                                 focus: $focusedField, field: .socksPort)
+                        .id(HostEditorFocusField.socksPort)
                         .help("Start a dynamic SOCKS proxy on this local port (-D) — empty turns it off")
                 }
             }
@@ -458,29 +592,15 @@ struct HostEditorView: View {
 
     private var appearanceCard: some View {
         EditorCard("Appearance") {
-            HStack(spacing: 10) {
-                Image(systemName: "desktopcomputer")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18)
-                Text("Operating system")
-                Spacer()
-                Picker("", selection: $draft.platform) {
-                    ForEach(HostPlatform.allCases) { p in
-                        Text(p.displayName).tag(p.rawValue)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(maxWidth: 220)
-                .help("Sets the host's icon. Auto detects the OS on the first successful key/agent connect.")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 11)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
+            EditorPickerRow(
+                icon: "desktopcomputer",
+                title: "Operating system",
+                selection: $draft.platform,
+                options: HostPlatform.allCases.map { ($0.rawValue, $0.displayName) },
+                focus: $focusedField, field: .osPicker
             )
+            .id(HostEditorFocusField.osPicker)
+            .help("Sets the host's icon. Auto detects the OS on the first successful key/agent connect.")
             HStack(spacing: 10) {
                 Image(systemName: "paintpalette")
                     .font(.system(size: 14))
@@ -488,7 +608,8 @@ struct HostEditorView: View {
                     .frame(width: 18)
                 Text("Theme")
                 Spacer()
-                ThemePicker(themeName: $draft.themeName)
+                ThemePicker(themeName: $draft.themeName,
+                            focus: $focusedField, field: .themePicker)
                     .frame(maxWidth: 320)
                     .help("Terminal theme used for this host's tabs")
             }
@@ -565,7 +686,6 @@ struct HostEditorView: View {
     private func syncLocalMirrors() {
         localFwdField = draft.localForwards.joined(separator: "\n")
         remoteFwdField = draft.remoteForwards.joined(separator: "\n")
-        if !draft.note.isEmpty             { showNote = true }
         if !draft.initialCommand.isEmpty   { showInitialCommand = true }
         if !draft.localForwards.isEmpty    { showLocalForwards = true }
         if !draft.remoteForwards.isEmpty   { showRemoteForwards = true }
