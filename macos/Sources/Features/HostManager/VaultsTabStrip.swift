@@ -19,6 +19,8 @@ struct VaultsTabStrip: View {
 
     @State private var renamingTab: VaultsTabsModel.TerminalTab?
     @State private var renameText: String = ""
+    /// A dragged pane is hovering the strip's empty trailing area.
+    @State private var stripDropTargeted = false
 
     private var dashboardActive: Bool {
         tabs.selection == .dashboard
@@ -56,6 +58,18 @@ struct VaultsTabStrip: View {
                     guard case let .terminal(id) = newValue else { return }
                     withAnimation(.smooth(duration: 0.2)) { proxy.scrollTo(id) }
                 }
+                // A pane dropped on the strip's empty area (past the last chip)
+                // detaches into a standalone tab at the END. Chip drops (which
+                // sit deeper in the hierarchy) win for before-a-chip placement.
+                // Same green feedback as the chips.
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(stripDropTargeted ? Color.green.opacity(0.14) : .clear)
+                )
+                .animation(.easeOut(duration: 0.12), value: stripDropTargeted)
+                .onDrop(of: [.ghosttySurfaceId], delegate: TabReorderDropDelegate(
+                    targetID: nil,
+                    dropTargeted: $stripDropTargeted))
             }
             // The "+" stays pinned on the right of the scroll area.
             newTabButton
@@ -398,12 +412,17 @@ private struct TerminalTabItem: View {
 /// Using a `DropDelegate` (rather than the closure-style `.onDrop`) is what
 /// makes the custom `vaultsTabID` type match reliably and drives the green
 /// insertion indicator via `dropEntered`/`dropExited`.
+///
+/// Accepts TWO payloads: a tab chip (reorder before this chip) or a split
+/// PANE dragged out of a multi-view tab by its header (detach into a
+/// standalone tab inserted before this chip).
 private struct TabReorderDropDelegate: DropDelegate {
-    let targetID: UUID
+    /// nil = the strip's trailing area — a dropped pane appends at the end.
+    let targetID: UUID?
     @Binding var dropTargeted: Bool
 
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.vaultsTabID])
+        info.hasItemsConforming(to: [.vaultsTabID, .ghosttySurfaceId])
     }
 
     func dropEntered(info: DropInfo) { dropTargeted = true }
@@ -415,7 +434,21 @@ private struct TabReorderDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         dropTargeted = false
-        guard let provider = info.itemProviders(for: [.vaultsTabID]).first else { return false }
+
+        // A pane dragged out of a split → standalone tab at this position.
+        if info.hasItemsConforming(to: [.ghosttySurfaceId]),
+           let provider = info.itemProviders(for: [.ghosttySurfaceId]).first {
+            _ = provider.loadTransferable(type: Ghostty.SurfaceView.self) { result in
+                guard case .success(let surface) = result else { return }
+                DispatchQueue.main.async {
+                    VaultsTabsModel.shared.detachPane(surfaceID: surface.id, before: targetID)
+                }
+            }
+            return true
+        }
+
+        guard let targetID,
+              let provider = info.itemProviders(for: [.vaultsTabID]).first else { return false }
         provider.loadVaultsTabID { dragged in
             guard let dragged else { return }
             DispatchQueue.main.async { VaultsTabsModel.shared.moveTab(dragged, before: targetID) }
@@ -517,7 +550,7 @@ private struct TabChip: View {
                 menuItems: menuItems)
         )
         .animation(.easeOut(duration: 0.12), value: dropTargeted)
-        .onDrop(of: [.vaultsTabID], delegate: TabReorderDropDelegate(
+        .onDrop(of: [.vaultsTabID, .ghosttySurfaceId], delegate: TabReorderDropDelegate(
             targetID: tab.id,
             dropTargeted: $dropTargeted))
         .popover(isPresented: $showColorPicker, arrowEdge: .bottom) {

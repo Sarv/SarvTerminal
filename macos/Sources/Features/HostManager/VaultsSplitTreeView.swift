@@ -110,6 +110,9 @@ private struct VaultsSplitLeaf: View {
 
     @State private var dropState: DropState = .idle
     @State private var isSelfDragging: Bool = false
+    /// True while THIS pane is being dragged by its header handle.
+    @State private var headerDragging: Bool = false
+    @State private var headerHovering: Bool = false
 
     var body: some View {
         Group {
@@ -144,22 +147,41 @@ private struct VaultsSplitLeaf: View {
     private var surface: some View {
         GeometryReader { geometry in
             Ghostty.InspectableSurface(surfaceView: surfaceView, isSplit: isSplit)
-                .background {
-                    if !isSelfDragging {
-                        Color.clear
-                            .onDrop(of: [.ghosttySurfaceId, .vaultsTabID], delegate: SplitDropDelegate(
-                                dropState: $dropState,
-                                viewSize: geometry.size,
-                                destinationSurface: surfaceView,
-                                action: action
-                            ))
-                    }
+                // AppKit-native drop target (see PaneDropTarget for why not
+                // SwiftUI .onDrop). Sits ABOVE the surface so AppKit delivers
+                // the drag to it; hit-testing passes normal mouse events
+                // through to the terminal.
+                .overlay {
+                    PaneDropTarget(
+                        enabled: !headerDragging && !awaiting,
+                        onZone: { zone in
+                            if let zone, !VaultsTabsModel.shared.isSelfTabDrag(over: surfaceView) {
+                                dropState = .dropping(zone)
+                            } else {
+                                dropState = .idle
+                            }
+                        },
+                        onPerform: { payload, zone in
+                            guard !VaultsTabsModel.shared.isSelfTabDrag(over: surfaceView) else { return }
+                            switch payload {
+                            case .tab(let id):
+                                VaultsTabsModel.shared.injectTab(id, into: surfaceView, zone: zone)
+                            case .surface(let uuid):
+                                guard let source = Ghostty.SurfaceView.find(uuid: uuid),
+                                      source !== surfaceView else { return }
+                                action(.drop(.init(payload: source, destination: surfaceView, zone: zone)))
+                            }
+                        })
+                        .allowsHitTesting(false)
                 }
                 .overlay {
-                    if !isSelfDragging, case .dropping(let zone) = dropState {
+                    if case .dropping(let zone) = dropState {
                         zone.overlay(in: geometry)
                             .allowsHitTesting(false)
                     }
+                }
+                .onChange(of: headerDragging) { dragging in
+                    if dragging { dropState = .idle }
                 }
                 .overlay {
                     if awaiting {
@@ -206,20 +228,35 @@ private struct VaultsSplitLeaf: View {
     }
 
     /// Per-pane header (Termius-style), shown only when a tab has >1 pane.
+    /// The icon+title region is a DRAG HANDLE (open/closed-hand cursor): drag
+    /// it onto another pane to rearrange within the tab, or onto the tab strip
+    /// to detach this pane into its own tab. The action buttons are outside
+    /// the handle, so they keep the normal cursor.
     private var header: some View {
         HStack(spacing: 6) {
-            Image(systemName: "terminal")
-                .font(.system(size: 10))
-                .foregroundStyle(.white.opacity(0.75))
-            Text(paneTitle)
-                .font(.system(size: 11, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .foregroundStyle(.white.opacity(0.95))
-                // Take the flexible space and TRUNCATE — otherwise a long title
-                // pushes the trailing buttons off a narrow pane and they get
-                // clipped by the rounded-rect mask.
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.75))
+                Text(paneTitle)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(.white.opacity(0.95))
+                    // Take the flexible space and TRUNCATE — otherwise a long
+                    // title pushes the trailing buttons off a narrow pane and
+                    // they get clipped by the rounded-rect mask.
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // As a BACKGROUND the drag source adopts the title row's size
+            // (an NSViewRepresentable placed as a sibling would greedily
+            // expand and blow up the header layout).
+            .background(
+                Ghostty.SurfaceDragSource(
+                    surfaceView: surfaceView,
+                    isDragging: $headerDragging,
+                    isHovering: $headerHovering)
+            )
             headerButton(
                 "dot.radiowaves.left.and.right",
                 help: broadcasting ? "Stop broadcasting input" : "Broadcast input to all panes",
@@ -228,7 +265,7 @@ private struct VaultsSplitLeaf: View {
             headerButton("sidebar.left", help: "Focus mode (⌘⇧M)") {
                 VaultsTabsModel.shared.toggleFocusMode()
             }
-            headerButton("xmark", help: "Close pane") {
+            PaneCloseButton {
                 VaultsTabsModel.shared.closePane(surface: surfaceView)
             }
         }
@@ -255,83 +292,36 @@ private struct VaultsSplitLeaf: View {
         .buttonStyle(.plain)
         .hoverTip(help)
     }
+}
 
-    private enum DropState: Equatable {
-        case idle
-        case dropping(TerminalSplitDropZone)
-    }
+/// Pane-close ✕ that turns red on hover — same affordance as the tab chip's
+/// close button.
+private struct PaneCloseButton: View {
+    let action: () -> Void
+    @State private var hovering = false
 
-    private struct SplitDropDelegate: DropDelegate {
-        @Binding var dropState: DropState
-        let viewSize: CGSize
-        let destinationSurface: Ghostty.SurfaceView
-        let action: (TerminalSplitOperation) -> Void
-
-        /// A tab can't be split into itself — reject (and hide zones) when the
-        /// dragged tab owns this destination surface.
-        private var isSelfTabDrag: Bool {
-            VaultsTabsModel.shared.isSelfTabDrag(over: destinationSurface)
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(hovering ? Color.white : .white.opacity(0.75))
+                .frame(width: 20, height: 18)
+                .background(RoundedRectangle(cornerRadius: 4).fill(hovering ? Color.red : .clear))
+                .contentShape(Rectangle())
         }
-
-        func validateDrop(info: DropInfo) -> Bool {
-            guard !isSelfTabDrag else { return false }
-            return info.hasItemsConforming(to: [.ghosttySurfaceId, .vaultsTabID])
-        }
-
-        func dropEntered(info: DropInfo) {
-            guard !isSelfTabDrag else { dropState = .idle; return }
-            dropState = .dropping(.calculate(at: info.location, in: viewSize))
-        }
-
-        func dropUpdated(info: DropInfo) -> DropProposal? {
-            if isSelfTabDrag { dropState = .idle; return DropProposal(operation: .forbidden) }
-            guard case .dropping = dropState else { return DropProposal(operation: .forbidden) }
-            dropState = .dropping(.calculate(at: info.location, in: viewSize))
-            return DropProposal(operation: .move)
-        }
-
-        func dropExited(info: DropInfo) {
-            dropState = .idle
-        }
-
-        func performDrop(info: DropInfo) -> Bool {
-            dropState = .idle
-            guard !isSelfTabDrag else { return false }
-            let zone = TerminalSplitDropZone.calculate(at: info.location, in: viewSize)
-
-            // A tab chip dragged from the strip (carries its UUID under the
-            // custom `vaultsTabID` type): inject that tab as a new pane here,
-            // split in the hovered direction.
-            let tabProviders = info.itemProviders(for: [.vaultsTabID])
-            if let tabProvider = tabProviders.first {
-                tabProvider.loadVaultsTabID { [weak destinationSurface] id in
-                    guard let id else { return }
-                    DispatchQueue.main.async {
-                        guard let destinationSurface else { return }
-                        VaultsTabsModel.shared.injectTab(id, into: destinationSurface, zone: zone)
-                    }
-                }
-                return true
-            }
-
-            let providers = info.itemProviders(for: [.ghosttySurfaceId])
-            guard let provider = providers.first else { return false }
-            _ = provider.loadTransferable(type: Ghostty.SurfaceView.self) { [weak destinationSurface] result in
-                switch result {
-                case .success(let sourceSurface):
-                    DispatchQueue.main.async {
-                        guard let destinationSurface else { return }
-                        guard sourceSurface !== destinationSurface else { return }
-                        action(.drop(.init(payload: sourceSurface, destination: destinationSurface, zone: zone)))
-                    }
-                case .failure:
-                    break
-                }
-            }
-            return true
-        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .hoverTip("Close pane")
     }
 }
+
+/// Drop bookkeeping for a split leaf (file-scope so both the leaf view and
+/// its delegate share the types).
+private enum DropState: Equatable {
+    case idle
+    case dropping(TerminalSplitDropZone)
+}
+
 
 /// Inline "what should this split run?" chooser shown over a fresh split pane.
 /// Reuses the command-palette model (search + saved hosts + quick connect).

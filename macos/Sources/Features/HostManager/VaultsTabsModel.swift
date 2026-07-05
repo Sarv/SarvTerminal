@@ -1116,6 +1116,45 @@ final class VaultsTabsModel: ObservableObject {
     /// directions (dragging right inserts after the target, dragging left
     /// inserts before it, so the dropped tab lands where you dropped it).
     /// Animated so chips slide into place instead of snapping.
+    /// Detach a pane from its multi-pane tab into a standalone tab — the
+    /// reverse of dragging a tab into a split. `before` = the tab chip it was
+    /// dropped on (nil = append at the end). Detaching the only pane of a tab
+    /// degenerates to a plain tab reorder. The live surface moves as-is, so a
+    /// running process / SSH session survives (connections are keyed by
+    /// surface id, not tab).
+    func detachPane(surfaceID: UUID, before targetTabID: UUID?) {
+        guard let tab = terminals.first(where: { t in
+            t.surfaceTree.root?.leaves().contains(where: { $0.id == surfaceID }) ?? false
+        }), let surface = tab.surfaceTree.root?.leaves().first(where: { $0.id == surfaceID })
+        else { return }
+
+        // Only pane in its tab → nothing to detach, just reorder the tab.
+        if (tab.surfaceTree.root?.leaves().count ?? 0) <= 1 {
+            if let targetTabID, targetTabID != tab.id { moveTab(tab.id, before: targetTabID) }
+            return
+        }
+
+        guard let node = tab.surfaceTree.root?.node(view: surface) else { return }
+        // Name the new tab from the pane's STICKY name (host label / carried
+        // tab name) when it has one; otherwise the standard deduped "Terminal"
+        // — never the live shell title, which flips between "~" and
+        // "user@host:cwd" on every prompt and reads as broken.
+        let name = uniqueTabName(base: tab.paneTitleOverrides[surfaceID] ?? "Terminal")
+        tab.paneTitleOverrides[surfaceID] = nil
+        tab.surfaceTree = tab.surfaceTree.removing(node)
+
+        let newTab = TerminalTab(tree: .init(view: surface), name: name)
+        withAnimation(.smooth(duration: 0.22)) {
+            if let targetTabID, let idx = terminals.firstIndex(where: { $0.id == targetTabID }) {
+                terminals.insert(newTab, at: idx)
+            } else {
+                terminals.append(newTab)
+            }
+        }
+        selection = .terminal(newTab.id)
+        DispatchQueue.main.async { Ghostty.moveFocus(to: surface) }
+    }
+
     func moveTab(_ draggedID: UUID, before targetID: UUID) {
         guard draggedID != targetID,
               let from = terminals.firstIndex(where: { $0.id == draggedID }),
