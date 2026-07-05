@@ -91,6 +91,9 @@ final class VaultsTabsModel: ObservableObject {
         /// The command this tab launched with (e.g. an `ssh …` invocation), so
         /// "Duplicate Tab" can re-run it. nil for a plain local shell.
         var launchCommand: String?
+        /// The saved session this tab was opened from or saved as — lets a
+        /// linked session rename propagate to its open tab. In-memory only.
+        var sessionID: UUID?
         /// When true, input typed in the focused pane is mirrored to every
         /// other pane in the tab.
         @Published var broadcasting: Bool = false
@@ -251,7 +254,13 @@ final class VaultsTabsModel: ObservableObject {
     /// full `SavedSession` so its split layout, per-pane working directories /
     /// SSH hosts, and pane titles all reopen exactly next launch.
     private func sessionSnapshot() -> [SavedSession] {
-        terminals.compactMap { makeSavedSession(from: $0, name: $0.displayName) }
+        terminals.compactMap { tab in
+            guard var snapshot = makeSavedSession(from: tab, name: tab.displayName) else { return nil }
+            // Carry the tab's saved-session link across relaunch, so ⌘S on a
+            // restored tab still offers "update existing / save as new".
+            snapshot.linkedSessionID = tab.sessionID
+            return snapshot
+        }
     }
 
     /// Persist the current open tabs so they can be reopened next launch.
@@ -1395,9 +1404,55 @@ final class VaultsTabsModel: ObservableObject {
     }
 
     /// Rename a tab (right-click → Rename Tab…). Empty clears the override.
+    /// Save (or RE-save) a tab's layout as a session — the one prompt used by
+    /// the tab context menu and the Save Session keybind (⌘S by default).
+    ///
+    /// A tab already linked to a session overwrites it by default; a "Save as
+    /// new session" checkbox forks instead. The tab is always renamed to the
+    /// session name (issue #6).
+    @MainActor
+    func promptSaveSession(for tab: TerminalTab) {
+        let existing = tab.sessionID.flatMap { id in
+            SavedSessionsStore.shared.sessions.first { $0.id == id }
+        }
+        SarvAlert.present(
+            title: "Save Session",
+            message: existing == nil
+                ? "Save this tab's split layout so you can reopen it later — local panes reopen at their directory and SSH panes reconnect."
+                : "This tab is saved as “\(existing?.name ?? "")”. Saving updates that session with the current layout.",
+            buttons: [
+                .init("Save", isDefault: true),
+                .init("Cancel", isCancel: true),
+            ],
+            rememberTitle: existing == nil ? nil : "Save as new session",
+            rememberInitial: false,
+            inputInitial: existing?.name ?? tab.displayName) { [weak self] result in
+            guard let self, result.buttonIndex == 0,
+                  var session = self.makeSavedSession(from: tab, name: result.inputText) else { return }
+            session.linkTabName = true
+            if let existing, !result.rememberChecked {
+                // Overwrite the linked session in place (keep its identity).
+                session.id = existing.id
+                session.createdAt = existing.createdAt
+            }
+            SavedSessionsStore.shared.upsert(session)
+            tab.sessionID = session.id
+            // The tab always follows the session name.
+            self.renameTab(tab.id, to: session.name)
+        }
+    }
+
     func renameTab(_ id: UUID, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         terminals.first { $0.id == id }?.customName = trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Rename every open tab linked to `sessionID` — used when a saved session
+    /// with a linked tab name is renamed.
+    func renameTabs(sessionID: UUID, to name: String) {
+        for tab in terminals where tab.sessionID == sessionID {
+            renameTab(tab.id, to: name)
+        }
     }
 
     /// Set (or clear, with nil) a tab's accent color.
@@ -1860,6 +1915,9 @@ extension VaultsTabsModel {
 
         let tab = TerminalTab(tree: SplitTree(root: root, zoomed: nil),
                               name: uniqueTabName(base: session.name))
+        // Restart snapshots carry the ORIGINAL library-session link; sessions
+        // opened from the Saved Sessions list link to themselves.
+        tab.sessionID = session.linkedSessionID ?? session.id
         tab.paneTitleOverrides = titleOverrides
         tab.color = session.colorID.flatMap { color(forOptionID: $0) }
         terminals.append(tab)

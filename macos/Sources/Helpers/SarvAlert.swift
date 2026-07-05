@@ -46,6 +46,7 @@ enum SarvAlert {
                          message: String = "",
                          buttons: [Button],
                          rememberTitle: String? = nil,
+                         rememberInitial: Bool = false,
                          inputInitial: String? = nil) -> Result {
         precondition(!buttons.isEmpty, "SarvAlert requires at least one button")
         let fallbackIndex = buttons.firstIndex(where: { $0.isCancel }) ?? buttons.count - 1
@@ -57,6 +58,7 @@ enum SarvAlert {
             message: message,
             buttons: buttons,
             rememberTitle: rememberTitle,
+            rememberInitial: rememberInitial,
             inputInitial: inputInitial) { index, remember, text in
                 chosen = Result(buttonIndex: index, rememberChecked: remember, inputText: text)
                 NSApp.stopModal()
@@ -81,11 +83,13 @@ enum SarvAlert {
                         message: String = "",
                         buttons: [Button],
                         rememberTitle: String? = nil,
+                        rememberInitial: Bool = false,
                         inputInitial: String? = nil,
                         completion: @escaping (Result) -> Void = { _ in }) {
         DispatchQueue.main.async {
             completion(runModal(title: title, message: message, buttons: buttons,
-                                rememberTitle: rememberTitle, inputInitial: inputInitial))
+                                rememberTitle: rememberTitle, rememberInitial: rememberInitial,
+                                inputInitial: inputInitial))
         }
     }
 
@@ -107,6 +111,7 @@ enum SarvAlert {
             message: message,
             buttons: buttons,
             rememberTitle: rememberTitle,
+            rememberInitial: false,
             inputInitial: inputInitial) { index, remember, text in
                 guard !finished else { return }
                 finished = true
@@ -142,6 +147,12 @@ enum SarvAlert {
         hosting.setFrameSize(hosting.fittingSize)
         panel.setContentSize(hosting.fittingSize)
         panel.contentView = hosting
+        // The insertion caret in the input field: the panel's shared field
+        // editor defaults to a color that's invisible on the dark card, so pin
+        // it to the adaptive label color.
+        if let editor = panel.fieldEditor(true, for: nil) as? NSTextView {
+            editor.insertionPointColor = .labelColor
+        }
     }
 
     private static func makePanel() -> NSPanel {
@@ -184,6 +195,8 @@ private struct SarvAlertView: View {
     let message: String
     let buttons: [SarvAlert.Button]
     let rememberTitle: String?
+    /// Initial state of the remember checkbox.
+    var rememberInitial: Bool = false
     /// Non-nil shows a text field under the message, pre-filled with this value.
     let inputInitial: String?
     let onChoose: (Int, Bool, String) -> Void
@@ -198,6 +211,9 @@ private struct SarvAlertView: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 64, height: 64)
+                // The icon asset carries transparent margins on every side —
+                // pull the title up so the visual gap matches the spacing.
+                .padding(.vertical, -10)
 
             VStack(spacing: 6) {
                 Text(title)
@@ -230,24 +246,29 @@ private struct SarvAlertView: View {
                 Toggle(rememberTitle, isOn: $remember)
                     .toggleStyle(.checkbox)
                     .font(.system(size: 11))
+                    .onAppear { remember = rememberInitial }
             }
 
             // One or two buttons sit side-by-side (macOS convention: cancel on
             // the left, primary action on the right); three or more stack.
-            if buttons.count <= 2 {
-                HStack(spacing: 10) {
-                    ForEach(rowOrdered, id: \.element.id) { index, button in
-                        SarvAlertButton(button: button) { onChoose(index, remember, inputText) }
-                            .frame(maxWidth: .infinity)
+            Group {
+                if buttons.count <= 2 {
+                    HStack(spacing: 10) {
+                        ForEach(rowOrdered, id: \.element.id) { index, button in
+                            SarvAlertButton(button: button) { onChoose(index, remember, inputText) }
+                                .frame(maxWidth: .infinity)
+                        }
                     }
-                }
-            } else {
-                VStack(spacing: 8) {
-                    ForEach(Array(buttons.enumerated()), id: \.element.id) { index, button in
-                        SarvAlertButton(button: button) { onChoose(index, remember, inputText) }
+                } else {
+                    VStack(spacing: 8) {
+                        ForEach(Array(buttons.enumerated()), id: \.element.id) { index, button in
+                            SarvAlertButton(button: button) { onChoose(index, remember, inputText) }
+                        }
                     }
                 }
             }
+            // Actions sit apart from the content above them.
+            .padding(.top, 8)
         }
         .padding(20)
         .frame(width: 300)

@@ -674,6 +674,12 @@ class AppDelegate: NSObject,
                 VaultsTabsModel.shared.selectDashboard(section: .vaults)
             case .showSFTP:
                 VaultsTabsModel.shared.selectDashboard(section: .sftp)
+            case .saveSession:
+                // Only meaningful on a terminal tab; let ⌘S fall through elsewhere.
+                guard let tab = VaultsTabsModel.shared.activeTerminal else { return event }
+                Task { @MainActor in
+                    VaultsTabsModel.shared.promptSaveSession(for: tab)
+                }
             }
             return nil
         }

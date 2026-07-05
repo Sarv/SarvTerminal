@@ -14,8 +14,18 @@ struct SavedSession: Codable, Identifiable {
     var updatedAt: Date
     /// Tab color option id (e.g. "blue"), if the tab had one.
     var colorID: String?
+    /// Tab name follows the session name: renamed at save time, and kept in
+    /// sync when the session is renamed later. Optional for back-compat with
+    /// sessions saved before the setting existed — nil reads as true.
+    var linkTabName: Bool?
+    /// Used only in RESTART snapshots: the library session the tab was linked
+    /// to, so ⌘S on a restored tab still offers "update existing session".
+    var linkedSessionID: UUID?
     /// The root of the saved split tree.
     var layout: PaneNode
+
+    /// `linkTabName` with the back-compat default applied.
+    var linksTabName: Bool { linkTabName ?? true }
 
     /// One node of the saved split tree: a single pane, or a split of two children.
     indirect enum PaneNode: Codable {
@@ -132,6 +142,13 @@ final class SavedSessionsStore: ObservableObject {
     func setColor(_ session: SavedSession, colorID: String?) {
         guard let idx = sessions.firstIndex(where: { $0.id == session.id }) else { return }
         sessions[idx].colorID = colorID
+        persist()
+    }
+
+    /// Toggle whether the tab name follows this session's name.
+    func setLinkTabName(_ session: SavedSession, linked: Bool) {
+        guard let idx = sessions.firstIndex(where: { $0.id == session.id }) else { return }
+        sessions[idx].linkTabName = linked
         persist()
     }
 

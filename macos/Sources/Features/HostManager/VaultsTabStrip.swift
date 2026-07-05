@@ -19,8 +19,6 @@ struct VaultsTabStrip: View {
 
     @State private var renamingTab: VaultsTabsModel.TerminalTab?
     @State private var renameText: String = ""
-    @State private var savingTab: VaultsTabsModel.TerminalTab?
-    @State private var saveSessionText: String = ""
 
     private var dashboardActive: Bool {
         tabs.selection == .dashboard
@@ -44,7 +42,7 @@ struct VaultsTabStrip: View {
                                 isActive: tabs.selection == .terminal(tab.id),
                                 needsAttention: tabs.attentionTabs.contains(tab.id),
                                 onRename: { renameText = tab.displayName; renamingTab = tab },
-                                onSaveSession: { saveSessionText = tab.displayName; savingTab = tab }
+                                onSaveSession: { tabs.promptSaveSession(for: tab) }
                             )
                             .id(tab.id)
                         }
@@ -79,23 +77,6 @@ struct VaultsTabStrip: View {
                 if result.buttonIndex == 0 { tabs.renameTab(tab.id, to: result.inputText) }
             }
             renamingTab = nil
-        }
-        .onChange(of: savingTab?.id) { _ in
-            guard let tab = savingTab else { return }
-            SarvAlert.present(
-                title: "Save Session",
-                message: "Save this tab's split layout so you can reopen it later — local panes reopen at their directory and SSH panes reconnect.",
-                buttons: [
-                    .init("Save", isDefault: true),
-                    .init("Cancel", isCancel: true),
-                ],
-                inputInitial: saveSessionText) { result in
-                if result.buttonIndex == 0,
-                   let session = tabs.makeSavedSession(from: tab, name: result.inputText) {
-                    SavedSessionsStore.shared.upsert(session)
-                }
-            }
-            savingTab = nil
         }
     }
 

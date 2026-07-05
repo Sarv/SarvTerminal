@@ -42,7 +42,14 @@ struct SavedSessionsSectionView: View {
                     .init("Cancel", isCancel: true),
                 ],
                 inputInitial: renameText) { result in
-                if result.buttonIndex == 0 { store.rename(session, to: result.inputText) }
+                if result.buttonIndex == 0 {
+                    store.rename(session, to: result.inputText)
+                    // Linked tab name follows the session (see issue #6).
+                    let trimmed = result.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if session.linksTabName, !trimmed.isEmpty {
+                        VaultsTabsModel.shared.renameTabs(sessionID: session.id, to: trimmed)
+                    }
+                }
             }
             renaming = nil
         }
@@ -75,6 +82,13 @@ struct SavedSessionsSectionView: View {
                         session: session,
                         onConnect: { VaultsTabsModel.shared.openSavedSession(session) },
                         onRename: { renameText = session.name; renaming = session },
+                        onToggleLink: {
+                            store.setLinkTabName(session, linked: !session.linksTabName)
+                            // Turning the link ON syncs any open tab right away.
+                            if !session.linksTabName {
+                                VaultsTabsModel.shared.renameTabs(sessionID: session.id, to: session.name)
+                            }
+                        },
                         onColor: { store.setColor(session, colorID: $0) },
                         onDelete: {
                             DeleteConfirmation.confirm(
@@ -95,6 +109,7 @@ private struct SavedSessionRow: View {
     let session: SavedSession
     let onConnect: () -> Void
     let onRename: () -> Void
+    let onToggleLink: () -> Void
     let onColor: (String?) -> Void
     let onDelete: () -> Void
     @State private var hovering = false
@@ -141,6 +156,8 @@ private struct SavedSessionRow: View {
         .contextMenu {
             Button("Connect", action: onConnect)
             Button("Rename…", action: onRename)
+            Toggle("Rename Tab with Session",
+                   isOn: Binding(get: { session.linksTabName }, set: { _ in onToggleLink() }))
             Button("Session Color…") { showColor = true }
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
