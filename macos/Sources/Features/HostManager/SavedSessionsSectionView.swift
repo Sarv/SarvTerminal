@@ -114,6 +114,10 @@ private struct SavedSessionRow: View {
     let onDelete: () -> Void
     @State private var hovering = false
     @State private var showColor = false
+    @State private var showPreview = false
+    /// Same click-to-connect preference as host cards (Settings ▸ General).
+    @AppStorage(HostConnectClickMode.storageKey)
+    private var connectClick: HostConnectClickMode = .double
 
     private static let relativeFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
@@ -141,7 +145,19 @@ private struct SavedSessionRow: View {
             Spacer(minLength: 8)
             if hovering {
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
-                    .buttonStyle(.borderless).help("Delete session")
+                    .buttonStyle(.borderless).foregroundStyle(.red).help("Delete session")
+            }
+            // Layout preview: a mini diagram of the saved split arrangement,
+            // so you can see what a session reopens without opening it.
+            Button { showPreview = true } label: {
+                Image(systemName: "eye").font(.system(size: 13))
+            }
+            .buttonStyle(.borderless)
+            .help("Preview layout")
+            .popover(isPresented: $showPreview, arrowEdge: .trailing) {
+                SessionLayoutPreview(session: session)
+                    .padding(14)
+                    .frame(width: 360, height: 250)
             }
             Button(action: onConnect) {
                 Image(systemName: "play.circle.fill").font(.system(size: 16))
@@ -152,7 +168,7 @@ private struct SavedSessionRow: View {
         .padding(.horizontal, 16).padding(.vertical, 9)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture { onConnect() }
+        .onTapGesture(count: connectClick.tapCount) { onConnect() }
         .contextMenu {
             Button("Connect", action: onConnect)
             Button("Rename…", action: onRename)

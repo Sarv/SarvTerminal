@@ -21,7 +21,7 @@ struct GeneralSectionView: View {
 
     private var hostsCard: some View {
         SettingsCard(title: "Hosts") {
-            row("Hosts connect on") {
+            row("Hosts & sessions connect on") {
                 Picker("", selection: $hostsConnectClick) {
                     ForEach(HostConnectClickMode.allCases) { opt in
                         Text(opt.label).tag(opt)
