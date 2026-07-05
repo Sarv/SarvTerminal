@@ -8,6 +8,22 @@ struct TagsField: View {
 
     @State private var input: String = ""
     @FocusState private var focused: Bool
+    /// Keyboard highlight in the suggestion list (-1 = none, typing mode).
+    @State private var highlighted: Int = -1
+
+    /// The rows currently shown in the suggestion list: matching known tags,
+    /// plus a trailing "Create Tag …" entry for a genuinely new value. ONE
+    /// source shared by rendering and keyboard navigation.
+    private var listItems: [(label: String, isCreate: Bool)] {
+        let q = input.trimmingCharacters(in: .whitespaces)
+        var items = matchingSuggestions(query: q).map { (label: $0, isCreate: false) }
+        let exists = allKnownTags.contains { $0.caseInsensitiveCompare(q) == .orderedSame }
+            || tags.contains { $0.caseInsensitiveCompare(q) == .orderedSame }
+        if !q.isEmpty && !exists {
+            items.append((label: q, isCreate: true))
+        }
+        return items
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -37,7 +53,12 @@ struct TagsField: View {
                 .textFieldStyle(.plain)
                 .focused($focused)
                 .onSubmit { commit(input) }
-                .onChange(of: input) { _ in /* triggers suggestion redraw */ }
+                // ↑/↓ walk the suggestion list, Return picks the highlight
+                // (falls through to onSubmit when nothing is highlighted).
+                .listKeyNavigation(count: listItems.count, highlighted: $highlighted) { idx in
+                    commit(listItems[idx].label)
+                }
+                .onChange(of: input) { _ in highlighted = -1 }
                 .frame(minWidth: 80)
         }
         .padding(.horizontal, 12)
@@ -55,21 +76,15 @@ struct TagsField: View {
 
     private var suggestionList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            let q = input.trimmingCharacters(in: .whitespaces)
-            let suggestions = matchingSuggestions(query: q)
-
-            if !suggestions.isEmpty {
-                ForEach(suggestions, id: \.self) { tag in
-                    suggestionRow(label: tag, prefix: nil) { commit(tag) }
+            let items = listItems
+            ForEach(items.indices, id: \.self) { idx in
+                suggestionRow(label: items[idx].label,
+                              prefix: items[idx].isCreate ? "Create Tag" : nil,
+                              highlighted: idx == highlighted) {
+                    commit(items[idx].label)
                 }
             }
-            // Offer "Create" only for genuinely new tags — not when the query
-            // exactly matches an existing tag already listed above.
-            let exists = allKnownTags.contains { $0.caseInsensitiveCompare(q) == .orderedSame }
-                || tags.contains { $0.caseInsensitiveCompare(q) == .orderedSame }
-            if !q.isEmpty && !exists {
-                suggestionRow(label: q, prefix: "Create Tag") { commit(q) }
-            } else if suggestions.isEmpty && q.isEmpty {
+            if items.isEmpty {
                 Text(allKnownTags.isEmpty
                      ? "Type to add a tag"
                      : "Pick an existing tag or type a new one")
@@ -88,7 +103,8 @@ struct TagsField: View {
         )
     }
 
-    private func suggestionRow(label: String, prefix: String?, action: @escaping () -> Void) -> some View {
+    private func suggestionRow(label: String, prefix: String?, highlighted: Bool,
+                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: prefix == nil ? "tag.fill" : "plus.circle")
@@ -103,6 +119,11 @@ struct TagsField: View {
                 Spacer()
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
+            // Keyboard highlight mirrors the hover treatment.
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(highlighted ? Color.secondary.opacity(0.14) : .clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -122,6 +143,7 @@ struct TagsField: View {
 
     private func commit(_ raw: String) {
         let value = raw.trimmingCharacters(in: .whitespaces)
+        highlighted = -1
         guard !value.isEmpty, !tags.contains(value) else {
             input = ""; return
         }

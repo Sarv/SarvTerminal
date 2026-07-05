@@ -12,6 +12,9 @@ struct ParentGroupPicker: View {
 
     @ObservedObject private var store = HostGroupsStore.shared
     @State private var isPresented = false
+    /// Keyboard highlight in the popover list (0 = root row, 1… = groups).
+    @State private var highlighted: Int = -1
+    @FocusState private var listFocused: Bool
 
     var body: some View {
         Button {
@@ -58,7 +61,20 @@ struct ParentGroupPicker: View {
     // MARK: - Popover content
 
     private var popoverContent: some View {
-        VStack(spacing: 0) {
+        let entries = menuEntries()
+        // Row 0 = "No group (root)", rows 1… = the group tree.
+        let rowCount = 1 + entries.count
+        func pick(_ idx: Int) {
+            if idx == 0 {
+                groupID = nil
+            } else {
+                let entry = entries[idx - 1]
+                guard !entry.disabled else { return }
+                groupID = entry.id
+            }
+            isPresented = false
+        }
+        return VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "square.grid.2x2")
                     .foregroundStyle(.secondary)
@@ -69,49 +85,71 @@ struct ParentGroupPicker: View {
             .padding(.vertical, 10)
             Divider()
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    optionRow(
-                        icon: "tray",
-                        label: "No group (root)",
-                        depth: 0,
-                        isSelected: groupID == nil,
-                        disabled: false
-                    ) {
-                        groupID = nil
-                        isPresented = false
-                    }
-                    Divider().padding(.leading, 12)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        optionRow(
+                            icon: "tray",
+                            label: "No group (root)",
+                            depth: 0,
+                            isSelected: groupID == nil,
+                            disabled: false,
+                            highlighted: highlighted == 0
+                        ) { pick(0) }
+                        .id(0)
+                        Divider().padding(.leading, 12)
 
-                    let entries = menuEntries()
-                    if entries.isEmpty {
-                        Text("No groups yet")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.vertical, 20)
-                    } else {
-                        ForEach(entries.indices, id: \.self) { i in
-                            let entry = entries[i]
-                            optionRow(
-                                icon: "folder",
-                                label: entry.name,
-                                depth: entry.depth,
-                                isSelected: groupID == entry.id,
-                                disabled: entry.disabled
-                            ) {
-                                guard !entry.disabled else { return }
-                                groupID = entry.id
-                                isPresented = false
-                            }
-                            if i < entries.count - 1 {
-                                Divider().padding(.leading, 12)
+                        if entries.isEmpty {
+                            Text("No groups yet")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 20)
+                        } else {
+                            ForEach(entries.indices, id: \.self) { i in
+                                let entry = entries[i]
+                                optionRow(
+                                    icon: "folder",
+                                    label: entry.name,
+                                    depth: entry.depth,
+                                    isSelected: groupID == entry.id,
+                                    disabled: entry.disabled,
+                                    highlighted: highlighted == i + 1
+                                ) { pick(i + 1) }
+                                .id(i + 1)
+                                if i < entries.count - 1 {
+                                    Divider().padding(.leading, 12)
+                                }
                             }
                         }
                     }
                 }
+                .frame(minHeight: 60, maxHeight: 320)
+                // Keyboard: ↑/↓ move (skipping disabled rows), Return picks,
+                // Esc closes (native popover behavior).
+                .focusable()
+                .focused($listFocused)
+                .listKeyNavigation(
+                    count: rowCount,
+                    highlighted: $highlighted,
+                    isSelectable: { $0 == 0 || !entries[$0 - 1].disabled },
+                    onPick: pick
+                )
+                .onChange(of: highlighted) { idx in
+                    guard idx >= 0 else { return }
+                    proxy.scrollTo(idx)
+                }
+                .onAppear {
+                    listFocused = true
+                    // Start the highlight on the current selection.
+                    if let groupID, let i = entries.firstIndex(where: { $0.id == groupID }) {
+                        highlighted = i + 1
+                        DispatchQueue.main.async { proxy.scrollTo(i + 1, anchor: .center) }
+                    } else {
+                        highlighted = 0
+                    }
+                }
             }
-            .frame(minHeight: 60, maxHeight: 320)
         }
         .frame(width: 320)
     }
@@ -122,6 +160,7 @@ struct ParentGroupPicker: View {
         depth: Int,
         isSelected: Bool,
         disabled: Bool,
+        highlighted: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -152,6 +191,11 @@ struct ParentGroupPicker: View {
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 10)
+            // Keyboard highlight mirrors the hover treatment.
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(highlighted ? Color.secondary.opacity(0.14) : .clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

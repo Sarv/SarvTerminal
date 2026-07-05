@@ -75,6 +75,9 @@ struct EditorTextRow: View {
     let placeholder: String
     @Binding var text: String
     var monospaced: Bool = false
+    /// Grab keyboard focus when the row appears — set on the FIRST field of a
+    /// form so it's immediately typable without a mouse click.
+    var autoFocus: Bool = false
     /// Fired when the field loses focus — drives the editor's autosave.
     var onEditingEnded: (() -> Void)? = nil
 
@@ -93,6 +96,14 @@ struct EditorTextRow: View {
                     .focused($focused)
                     .onChange(of: focused) { nowFocused in
                         if !nowFocused { onEditingEnded?() }
+                    }
+                    .onAppear {
+                        guard autoFocus else { return }
+                        // Deferred past the panel's slide-in transition —
+                        // focusing mid-animation silently fails.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                            focused = true
+                        }
                     }
             }
         }
@@ -421,6 +432,69 @@ extension View {
     /// Hover highlight for a clickable list/menu row.
     func listRowHover(cornerRadius: CGFloat = 6, isEnabled: Bool = true) -> some View {
         modifier(ListRowHoverModifier(cornerRadius: cornerRadius, isEnabled: isEnabled))
+    }
+}
+
+// MARK: - Keyboard navigation for suggestion/option lists
+
+/// Arrow-key navigation for a list attached to a focused control (tag
+/// suggestions, group picker, …): ↑/↓ move the highlight, Return picks it.
+/// `highlighted == -1` means nothing highlighted — Return then falls through
+/// to the control's own submit action. `isSelectable` lets pickers skip
+/// disabled rows. The SHARED implementation for every in-form list, so
+/// keyboard behavior never diverges between fields (macOS 14+; earlier
+/// systems keep mouse behavior).
+struct ListKeyNavigationModifier: ViewModifier {
+    let count: Int
+    @Binding var highlighted: Int
+    var isSelectable: (Int) -> Bool = { _ in true }
+    let onPick: (Int) -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content
+                .onKeyPress(.downArrow) { move(1) }
+                .onKeyPress(.upArrow) { move(-1) }
+                .onKeyPress(.return) {
+                    guard highlighted >= 0, highlighted < count else { return .ignored }
+                    onPick(highlighted)
+                    return .handled
+                }
+        } else {
+            content
+        }
+    }
+
+    @available(macOS 14.0, *)
+    private func move(_ delta: Int) -> KeyPress.Result {
+        guard count > 0 else { return .ignored }
+        var idx = highlighted
+        // Scan in `delta` direction for the next selectable row (skip disabled).
+        for _ in 0..<count {
+            idx += delta
+            if idx < 0 || idx >= count { break }
+            if isSelectable(idx) {
+                highlighted = idx
+                return .handled
+            }
+        }
+        // Walked off the top → clear the highlight (back to free typing).
+        if delta < 0 { highlighted = -1 }
+        return .handled
+    }
+}
+
+extension View {
+    /// Arrow-key + Return navigation for the list under a focused control.
+    func listKeyNavigation(
+        count: Int,
+        highlighted: Binding<Int>,
+        isSelectable: @escaping (Int) -> Bool = { _ in true },
+        onPick: @escaping (Int) -> Void
+    ) -> some View {
+        modifier(ListKeyNavigationModifier(
+            count: count, highlighted: highlighted,
+            isSelectable: isSelectable, onPick: onPick))
     }
 }
 

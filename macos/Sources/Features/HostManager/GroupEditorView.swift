@@ -29,7 +29,8 @@ struct GroupEditorView: View {
                             }
                             EditorTextRow(icon: "tag",
                                           placeholder: "Group name",
-                                          text: $draft.name)
+                                          text: $draft.name,
+                                          autoFocus: true)
                         }
                         ParentGroupPicker(
                             groupID: $draft.parentID,
