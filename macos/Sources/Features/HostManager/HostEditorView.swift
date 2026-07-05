@@ -70,6 +70,12 @@ struct HostEditorView: View {
         .onChange(of: draft.groupID) { _ in onAutosave?() }
         .onChange(of: draft.themeName) { _ in onAutosave?() }
         .onChange(of: draft.tags) { _ in onAutosave?() }
+        .onChange(of: draft.platform) { newValue in
+            // Re-selecting "Auto (detect)" clears the cached detection so the
+            // next connect re-probes (e.g. after a server was reinstalled).
+            if newValue == HostPlatform.auto.rawValue { draft.detectedPlatform = "" }
+            onAutosave?()
+        }
     }
 
     /// Blur handler for text inputs: autosave only when the field carries data.
