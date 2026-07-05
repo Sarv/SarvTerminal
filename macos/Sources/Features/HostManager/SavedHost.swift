@@ -54,6 +54,12 @@ struct SavedHost: Codable, Identifiable, Hashable {
     /// Looked up against the same theme directories as Settings → Appearance.
     var themeName: String
 
+    // MARK: OS / platform icon
+    /// Manual OS choice (raw `HostPlatform`; "auto" = follow detection).
+    var platform: String = HostPlatform.auto.rawValue
+    /// Last auto-detected platform (raw `HostPlatform`; "" = never detected).
+    var detectedPlatform: String = ""
+
     // MARK: Metadata
     var createdAt: Date
     var updatedAt: Date
@@ -231,6 +237,8 @@ struct SavedHost: Codable, Identifiable, Hashable {
         group                       = try c.decodeIfPresent(String.self,         forKey: .group)                       ?? ""
         tags                        = try c.decodeIfPresent([String].self,       forKey: .tags)                        ?? []
         themeName                   = try c.decodeIfPresent(String.self,         forKey: .themeName)                   ?? ""
+        platform                    = try c.decodeIfPresent(String.self,         forKey: .platform)                    ?? HostPlatform.auto.rawValue
+        detectedPlatform            = try c.decodeIfPresent(String.self,         forKey: .detectedPlatform)            ?? ""
         createdAt                   = try c.decodeIfPresent(Date.self,           forKey: .createdAt)                   ?? blank.createdAt
         updatedAt                   = try c.decodeIfPresent(Date.self,           forKey: .updatedAt)                   ?? blank.updatedAt
     }

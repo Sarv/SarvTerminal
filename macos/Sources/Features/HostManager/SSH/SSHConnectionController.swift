@@ -278,6 +278,12 @@ final class SSHConnectionController {
             Task { await HostKeyScanner.remove(token) }
         }
         tabsModel?.connectionDidConnect(for: model)
+        // First successful connect: probe the server's OS in the background so
+        // the host card can show the right distro logo (no-op if the host has a
+        // manual platform, was already detected, or uses interactive auth).
+        if let host = model.host {
+            HostPlatformDetector.probeIfNeeded(host)
+        }
         // Keep watching for the session ending (no log reset).
         startTimer()
     }
