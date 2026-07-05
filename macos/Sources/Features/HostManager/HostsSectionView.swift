@@ -611,7 +611,9 @@ struct HostsSectionView: View {
     private func currentHosts() -> [SavedHost] {
         let base: [SavedHost]
         if let id = focusedGroupID {
-            base = hostsStore.hosts(in: id)
+            // Same pattern as root: a group level shows EVERY host beneath it
+            // (its own + all descendant groups'), not just direct children.
+            base = hostsStore.recursiveHosts(in: id, groupsStore: groupsStore)
         } else {
             base = hostsStore.hosts
         }

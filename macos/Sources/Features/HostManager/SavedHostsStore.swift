@@ -114,12 +114,16 @@ final class SavedHostsStore: ObservableObject {
         hosts.filter { $0.groupID == groupID }
     }
 
+    /// All hosts inside a group INCLUDING every descendant group — the same
+    /// "everything below this level" scope the root view uses for all hosts.
+    func recursiveHosts(in groupID: UUID, groupsStore: HostGroupsStore) -> [SavedHost] {
+        let ids = groupsStore.descendants(of: groupID).union([groupID])
+        return hosts.filter { $0.groupID.map(ids.contains) ?? false }
+    }
+
     /// Total host count including all descendant groups.
     func recursiveCount(in groupID: UUID, groupsStore: HostGroupsStore) -> Int {
-        let descendants = groupsStore.descendants(of: groupID).union([groupID])
-        return hosts.reduce(0) { partial, host in
-            partial + ((host.groupID.map { descendants.contains($0) } ?? false) ? 1 : 0)
-        }
+        recursiveHosts(in: groupID, groupsStore: groupsStore).count
     }
 
     /// Strip a `groupID` from every host that referenced it — call after
