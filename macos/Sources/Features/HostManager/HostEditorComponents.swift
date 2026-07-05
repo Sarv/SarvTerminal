@@ -666,6 +666,9 @@ struct EditorExpandRow<Expanded: View>: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            // Focus/activation live on the HEADER only — on the whole VStack
+            // they'd swallow Space/Return typed into the expanded content
+            // (e.g. "cd /app" collapsing the startup command mid-word).
             RowShell(isInteractive: true, onTap: { isExpanded.toggle() }, isFocused: chainFocused,
                      hoverCursor: .pointingHand) {
                 HStack(spacing: 10) {
@@ -687,15 +690,15 @@ struct EditorExpandRow<Expanded: View>: View {
                         .foregroundStyle(.tertiary)
                 }
             }
+            .focusable()
+            .editorFocus(focus, field)
+            .modifier(ActivateOnKeyPress { isExpanded.toggle() })
             if isExpanded {
                 expanded()
                     .padding(.horizontal, 12)
                     .padding(.bottom, 4)
             }
         }
-        .focusable()
-        .editorFocus(focus, field)
-        .modifier(ActivateOnKeyPress { isExpanded.toggle() })
     }
 }
 
