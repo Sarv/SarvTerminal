@@ -477,7 +477,7 @@ struct HostEditorView: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
             )
-            Text("Saved per host. Per-tab theme override is coming in a follow-up — currently the new tab inherits the global theme.")
+            Text("Saved per host — this host's tabs use this theme; other tabs keep the global theme.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .padding(.leading, 4)

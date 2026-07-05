@@ -197,6 +197,20 @@ extension Ghostty {
         /// based on the background image (see `themeColors`) so the text stays
         /// readable. `backgroundHex == nil` lets the theme's own background show
         /// (translucent, image visible); a non-nil hex pins an opaque backing.
+        /// `theme` only provides DEFAULTS in ghostty's config semantics — any
+        /// color the user set explicitly in their config file (background,
+        /// foreground, palette…) beats it. So a per-surface theme override must
+        /// re-state the theme file's own keys explicitly, or the user's colors
+        /// silently win and the theme appears to "not apply".
+        private func themeOverrideBlock(_ name: String) -> String {
+            var block = "theme = \(name)\n"
+            if let url = ThemeFileResolver.candidateURLs(for: name).first,
+               let body = try? String(contentsOf: url, encoding: .utf8) {
+                block += body + "\n"
+            }
+            return block
+        }
+
         func applyTheme(_ themeName: String, to surface: ghostty_surface_t,
                         backgroundHex: String?, foregroundHex: String? = nil,
                         opacity: Double) {
@@ -205,7 +219,7 @@ extension Ghostty {
             defer { ghostty_config_free(cfg) }
             Config.loadUserBaseConfig(into: cfg)
 
-            var override = "theme = \(trimmed)\nbackground-opacity = \(opacity)\n"
+            var override = themeOverrideBlock(trimmed) + "background-opacity = \(opacity)\n"
             if let backgroundHex {
                 override += "background = \(backgroundHex)\nbackground-blur = false\n"
             }
@@ -252,7 +266,7 @@ extension Ghostty {
             Config.loadUserBaseConfig(into: cfg)
             let tmp = FileManager.default.temporaryDirectory
                 .appendingPathComponent("sarv-theme-probe-\(UUID().uuidString).conf")
-            guard (try? "theme = \(themeName)\n".write(to: tmp, atomically: true, encoding: .utf8)) != nil else { return nil }
+            guard (try? themeOverrideBlock(themeName).write(to: tmp, atomically: true, encoding: .utf8)) != nil else { return nil }
             ghostty_config_load_file(cfg, tmp.path)
             ghostty_config_finalize(cfg)
             try? FileManager.default.removeItem(at: tmp)
