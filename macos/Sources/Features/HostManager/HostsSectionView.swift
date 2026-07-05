@@ -37,6 +37,7 @@ struct HostsSectionView: View {
     @State private var sortMode: HostsSortMode = .azAscending
     @State private var tagFilter: String? = nil
     @State private var showImporter = false
+    @State private var contentWidth: CGFloat = 0
 
     enum HostsViewMode: String, CaseIterable, Identifiable {
         case grid   // adaptive card grid
@@ -144,6 +145,13 @@ struct HostsSectionView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { contentWidth = geo.size.width }
+                        .onChange(of: geo.size.width) { contentWidth = $0 }
+                }
+            )
         }
     }
 
@@ -453,6 +461,16 @@ struct HostsSectionView: View {
 
     // MARK: - Sections
 
+    /// At least 4 cards per row; wider windows fit more (one extra column per
+    /// ~342pt). On narrow windows cards shrink instead of wrapping below 4.
+    private var gridColumns: [GridItem] {
+        let spacing: CGFloat = 12
+        let preferredCardWidth: CGFloat = 330
+        let fit = Int((contentWidth + spacing) / (preferredCardWidth + spacing))
+        let count = max(4, fit)
+        return Array(repeating: GridItem(.flexible(minimum: 200, maximum: 360), spacing: spacing), count: count)
+    }
+
     private var groupsSection: some View {
         let groups = sortGroups(
             groupsStore.children(of: focusedGroupID).filter { groupShouldBeVisible($0) }
@@ -462,7 +480,7 @@ struct HostsSectionView: View {
                 sectionHeader("Groups")
                 if viewMode == .grid {
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 12)],
+                        columns: gridColumns,
                         alignment: .leading, spacing: 12
                     ) {
                         ForEach(groups) { group in
@@ -487,7 +505,7 @@ struct HostsSectionView: View {
                 sectionHeader("Hosts")
                 if viewMode == .grid {
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 12)],
+                        columns: gridColumns,
                         alignment: .leading, spacing: 12
                     ) {
                         ForEach(hosts) { host in
