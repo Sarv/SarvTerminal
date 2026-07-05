@@ -30,11 +30,13 @@ enum SarvAlert {
         }
     }
 
-    /// The user's choice: which button (by index in the `buttons` array) and
-    /// whether the optional "remember" checkbox was ticked.
+    /// The user's choice: which button (by index in the `buttons` array),
+    /// whether the optional "remember" checkbox was ticked, and the text of
+    /// the optional input field.
     struct Result {
         let buttonIndex: Int
         let rememberChecked: Bool
+        var inputText: String = ""
     }
 
     /// Show the alert modally and block until the user chooses. If the window is
@@ -43,7 +45,8 @@ enum SarvAlert {
     static func runModal(title: String,
                          message: String = "",
                          buttons: [Button],
-                         rememberTitle: String? = nil) -> Result {
+                         rememberTitle: String? = nil,
+                         inputInitial: String? = nil) -> Result {
         precondition(!buttons.isEmpty, "SarvAlert requires at least one button")
         let fallbackIndex = buttons.firstIndex(where: { $0.isCancel }) ?? buttons.count - 1
         var chosen = Result(buttonIndex: fallbackIndex, rememberChecked: false)
@@ -53,8 +56,9 @@ enum SarvAlert {
             title: title,
             message: message,
             buttons: buttons,
-            rememberTitle: rememberTitle) { index, remember in
-                chosen = Result(buttonIndex: index, rememberChecked: remember)
+            rememberTitle: rememberTitle,
+            inputInitial: inputInitial) { index, remember, text in
+                chosen = Result(buttonIndex: index, rememberChecked: remember, inputText: text)
                 NSApp.stopModal()
             }
 
@@ -67,13 +71,33 @@ enum SarvAlert {
         return chosen
     }
 
+
+    /// Non-blocking variant — REQUIRED when calling from a SwiftUI button
+    /// action, gesture, or onChange: starting the app-modal session inside
+    /// SwiftUI's event pass leaves the panel deaf to mouse events (buttons
+    /// render but never receive clicks). This defers one runloop turn so the
+    /// triggering event finishes first, then runs the normal modal.
+    static func present(title: String,
+                        message: String = "",
+                        buttons: [Button],
+                        rememberTitle: String? = nil,
+                        inputInitial: String? = nil,
+                        completion: @escaping (Result) -> Void = { _ in }) {
+        DispatchQueue.main.async {
+            completion(runModal(title: title, message: message, buttons: buttons,
+                                rememberTitle: rememberTitle, inputInitial: inputInitial))
+        }
+    }
+
     /// Show the alert as a sheet attached to `parent`, calling `completion` with
-    /// the user's choice.
+    /// the user's choice. `inputInitial` (non-nil) adds a text field under the
+    /// message; its final text comes back in `Result.inputText`.
     static func beginSheet(for parent: NSWindow,
                            title: String,
                            message: String = "",
                            buttons: [Button],
                            rememberTitle: String? = nil,
+                           inputInitial: String? = nil,
                            completion: @escaping (Result) -> Void) {
         precondition(!buttons.isEmpty, "SarvAlert requires at least one button")
         let panel = makePanel()
@@ -82,15 +106,33 @@ enum SarvAlert {
             title: title,
             message: message,
             buttons: buttons,
-            rememberTitle: rememberTitle) { index, remember in
+            rememberTitle: rememberTitle,
+            inputInitial: inputInitial) { index, remember, text in
                 guard !finished else { return }
                 finished = true
                 parent.endSheet(panel)
-                completion(Result(buttonIndex: index, rememberChecked: remember))
+                completion(Result(buttonIndex: index, rememberChecked: remember, inputText: text))
             }
 
         install(root, in: panel)
         parent.beginSheet(panel) { _ in }
+    }
+
+    /// Async variant of `beginSheet` for callers using structured concurrency.
+    @MainActor
+    static func beginSheet(for parent: NSWindow,
+                           title: String,
+                           message: String = "",
+                           buttons: [Button],
+                           rememberTitle: String? = nil,
+                           inputInitial: String? = nil) async -> Result {
+        await withCheckedContinuation { continuation in
+            beginSheet(for: parent, title: title, message: message,
+                       buttons: buttons, rememberTitle: rememberTitle,
+                       inputInitial: inputInitial) { result in
+                continuation.resume(returning: result)
+            }
+        }
     }
 
     // MARK: - Presentation plumbing
@@ -103,17 +145,26 @@ enum SarvAlert {
     }
 
     private static func makePanel() -> NSPanel {
+        // NOT .borderless: borderless windows get degraded mouse-event routing
+        // for SwiftUI content under NSApp.runModal (buttons render but clicks
+        // never fire). A titled window with hidden chrome behaves like a normal
+        // key window — same card look, working clicks.
         let panel = ModalPanel(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
-            styleMask: [.borderless],
+            styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false)
         panel.level = .modalPanel
         panel.isFloatingPanel = true
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.closeButton)?.isHidden = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
-        panel.isMovableByWindowBackground = true
+        panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         return panel
     }
@@ -133,9 +184,13 @@ private struct SarvAlertView: View {
     let message: String
     let buttons: [SarvAlert.Button]
     let rememberTitle: String?
-    let onChoose: (Int, Bool) -> Void
+    /// Non-nil shows a text field under the message, pre-filled with this value.
+    let inputInitial: String?
+    let onChoose: (Int, Bool, String) -> Void
 
     @State private var remember = false
+    @State private var inputText = ""
+    @FocusState private var inputFocused: Bool
 
     var body: some View {
         VStack(spacing: 16) {
@@ -158,15 +213,39 @@ private struct SarvAlertView: View {
                 }
             }
 
+            if inputInitial != nil {
+                TextField("", text: $inputText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .focused($inputFocused)
+                    // Return in the field = the default button.
+                    .onSubmit { chooseDefault() }
+                    .onAppear {
+                        inputText = inputInitial ?? ""
+                        DispatchQueue.main.async { inputFocused = true }
+                    }
+            }
+
             if let rememberTitle {
                 Toggle(rememberTitle, isOn: $remember)
                     .toggleStyle(.checkbox)
                     .font(.system(size: 11))
             }
 
-            VStack(spacing: 8) {
-                ForEach(Array(buttons.enumerated()), id: \.element.id) { index, button in
-                    SarvAlertButton(button: button) { onChoose(index, remember) }
+            // One or two buttons sit side-by-side (macOS convention: cancel on
+            // the left, primary action on the right); three or more stack.
+            if buttons.count <= 2 {
+                HStack(spacing: 10) {
+                    ForEach(rowOrdered, id: \.element.id) { index, button in
+                        SarvAlertButton(button: button) { onChoose(index, remember, inputText) }
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(Array(buttons.enumerated()), id: \.element.id) { index, button in
+                        SarvAlertButton(button: button) { onChoose(index, remember, inputText) }
+                    }
                 }
             }
         }
@@ -177,27 +256,58 @@ private struct SarvAlertView: View {
                 .fill(Color(nsColor: .windowBackgroundColor))
         )
     }
+
+    /// Display order for the side-by-side row: cancel/secondary on the left,
+    /// the default action on the right — regardless of the caller's array
+    /// order. Original indices are preserved for the choice callback.
+    private var rowOrdered: [(offset: Int, element: SarvAlert.Button)] {
+        Array(buttons.enumerated()).sorted { a, b in
+            func rank(_ btn: SarvAlert.Button) -> Int {
+                if btn.isCancel { return 0 }
+                if btn.isDefault { return 2 }
+                return 1
+            }
+            return rank(a.element) < rank(b.element)
+        }
+    }
+
+    private func chooseDefault() {
+        guard let idx = buttons.firstIndex(where: { $0.isDefault }) else { return }
+        onChoose(idx, remember, inputText)
+    }
 }
 
 private struct SarvAlertButton: View {
     let button: SarvAlert.Button
     let action: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        let label = Button(action: action) {
-            Text(button.title).frame(maxWidth: .infinity)
+        // Explicit pill styling — the system bordered styles render
+        // inconsistently on borderless panels (destructive buttons could lose
+        // their fill entirely), so every button draws its own background.
+        Button(action: action) {
+            Text(button.title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(textColor)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+                .background(Capsule().fill(fillColor.opacity(hovering ? 1.0 : 0.88)))
+                .contentShape(Capsule())
         }
-        .controlSize(.large)
-
-        Group {
-            if button.isDefault {
-                label.buttonStyle(.borderedProminent)
-            } else {
-                label.buttonStyle(.bordered)
-            }
-        }
-        .tint(button.isDestructive ? .red : (button.isDefault ? .accentColor : nil))
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
         .keyboardShortcut(shortcut)
+    }
+
+    private var fillColor: Color {
+        if button.isDestructive { return .red }
+        if button.isDefault { return .accentColor }
+        return Color.secondary.opacity(0.25)
+    }
+
+    private var textColor: Color {
+        (button.isDestructive || button.isDefault) ? .white : .primary
     }
 
     private var shortcut: KeyboardShortcut? {
