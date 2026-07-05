@@ -33,11 +33,59 @@ struct HostsSectionView: View {
         nonmutating set { hostSelection.hostsFocusedGroupID = newValue }
     }
 
-    @State private var viewMode: HostsViewMode = .grid   // grid is default
+    /// Root-level view mode — the default for every level without an override
+    /// of its own. Persisted across launches.
+    @State private var defaultViewMode: HostsViewMode =
+        HostsViewMode(rawValue: UserDefaults.standard.string(forKey: HostsSectionView.defaultViewModeKey) ?? "") ?? .grid
+    /// Per-group view overrides, keyed by group id. Set when the user picks a
+    /// view while drilled into a group; levels without an entry fall back to
+    /// `defaultViewMode`. Persisted across launches.
+    @State private var viewModeOverrides: [UUID: HostsViewMode] = HostsSectionView.loadViewModeOverrides()
     @State private var sortMode: HostsSortMode = .azAscending
     @State private var tagFilter: String? = nil
     @State private var showImporter = false
     @State private var contentWidth: CGFloat = 0
+
+    // MARK: - View mode persistence
+
+    private static let defaultViewModeKey = "SarvHostsViewModeDefault"
+    private static let viewModeOverridesKey = "SarvHostsViewModeByGroup"
+
+    private static func loadViewModeOverrides() -> [UUID: HostsViewMode] {
+        guard let raw = UserDefaults.standard.dictionary(forKey: viewModeOverridesKey) as? [String: String]
+        else { return [:] }
+        var result: [UUID: HostsViewMode] = [:]
+        for (key, value) in raw {
+            guard let id = UUID(uuidString: key), let mode = HostsViewMode(rawValue: value) else { continue }
+            result[id] = mode
+        }
+        return result
+    }
+
+    /// View mode for the current level: the group's own override if it has
+    /// one, otherwise the root default.
+    private var viewMode: HostsViewMode {
+        if let id = focusedGroupID, let override = viewModeOverrides[id] { return override }
+        return defaultViewMode
+    }
+
+    /// At root the picker sets the default; inside a group it saves an
+    /// override for just that group.
+    private func setViewMode(_ mode: HostsViewMode) {
+        if let id = focusedGroupID {
+            viewModeOverrides[id] = mode
+            let raw = Dictionary(uniqueKeysWithValues:
+                viewModeOverrides.map { ($0.key.uuidString, $0.value.rawValue) })
+            UserDefaults.standard.set(raw, forKey: Self.viewModeOverridesKey)
+        } else {
+            defaultViewMode = mode
+            UserDefaults.standard.set(mode.rawValue, forKey: Self.defaultViewModeKey)
+        }
+    }
+
+    private var viewModeBinding: Binding<HostsViewMode> {
+        Binding(get: { viewMode }, set: { setViewMode($0) })
+    }
 
     enum HostsViewMode: String, CaseIterable, Identifiable {
         case grid   // adaptive card grid
@@ -290,7 +338,7 @@ struct HostsSectionView: View {
     private var rightActionIcons: some View {
         HStack(spacing: 6) {
             Menu {
-                Picker("View", selection: $viewMode) {
+                Picker("View", selection: viewModeBinding) {
                     ForEach(HostsViewMode.allCases) { mode in
                         Label(mode.label, systemImage: mode.systemImage).tag(mode)
                     }
