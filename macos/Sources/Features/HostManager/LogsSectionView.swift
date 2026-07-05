@@ -56,6 +56,7 @@ struct LogsSectionView: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
+            .foregroundStyle(.red)
             .disabled(log.entries.isEmpty)
             .help("Clear all activity")
             // Centered-logo SarvAlert — same dialog semantics everywhere.

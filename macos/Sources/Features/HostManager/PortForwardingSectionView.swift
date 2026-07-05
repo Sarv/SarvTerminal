@@ -137,7 +137,7 @@ private struct PortForwardRow: View {
                 Button(action: onEdit) { Image(systemName: "pencil") }
                     .buttonStyle(.borderless).help("Edit")
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
-                    .buttonStyle(.borderless).help("Delete")
+                    .buttonStyle(.borderless).foregroundStyle(.red).help("Delete")
             }
             Button(action: onToggle) {
                 Text(running ? "Stop" : "Start")

@@ -117,6 +117,7 @@ private struct KnownHostRow: View {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
+                .foregroundStyle(.red)
                 .help("Remove from known_hosts")
             }
         }

@@ -171,7 +171,7 @@ private struct SnippetRow: View {
                 Button(action: onCopy) { Image(systemName: "doc.on.doc") }
                     .buttonStyle(.borderless).help("Copy command")
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
-                    .buttonStyle(.borderless).help("Delete snippet")
+                    .buttonStyle(.borderless).foregroundStyle(.red).help("Delete snippet")
             }
             runMenu
         }

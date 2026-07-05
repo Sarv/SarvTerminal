@@ -161,7 +161,7 @@ private struct KeyRow: View {
                 Button(action: onReveal) { Image(systemName: "folder") }
                     .buttonStyle(.borderless).help("Reveal in Finder")
                 Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
-                    .buttonStyle(.borderless).help("Delete key")
+                    .buttonStyle(.borderless).foregroundStyle(.red).help("Delete key")
             }
             Button(action: onCopyPublic) {
                 Image(systemName: "doc.on.doc").font(.system(size: 15))
