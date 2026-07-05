@@ -133,6 +133,7 @@ struct FontFamilyPicker: View {
             .padding(.vertical, 6)
             .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
             .contentShape(Rectangle())
+            .listRowHover(cornerRadius: 0)
         }
         .buttonStyle(.plain)
     }

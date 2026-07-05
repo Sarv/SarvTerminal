@@ -95,19 +95,33 @@ struct ThemePicker: View {
 
             Divider()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    defaultRow
-                    if !themes.isEmpty { Divider() }
-                    ForEach(filteredThemes, id: \.name) { entry in
-                        themeRow(entry)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        defaultRow
+                        if !themes.isEmpty { Divider() }
+                        ForEach(filteredThemes, id: \.name) { entry in
+                            themeRow(entry)
+                                .id(entry.name)
+                        }
+                        if filteredThemes.isEmpty && !themes.isEmpty {
+                            Text("No matches")
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                        }
                     }
-                    if filteredThemes.isEmpty && !themes.isEmpty {
-                        Text("No matches")
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                    }
+                }
+                // Land on the CURRENT theme when the dropdown opens — with 500+
+                // themes the selection is otherwise lost below the fold. Theme
+                // discovery is async, so also fire when the list populates.
+                .onAppear {
+                    guard !themeName.isEmpty else { return }
+                    proxy.scrollTo(themeName, anchor: .center)
+                }
+                .onChange(of: themes.count) { _ in
+                    guard !themeName.isEmpty else { return }
+                    DispatchQueue.main.async { proxy.scrollTo(themeName, anchor: .center) }
                 }
             }
             .frame(maxHeight: 400)
@@ -157,6 +171,7 @@ struct ThemePicker: View {
             .padding(.vertical, 6)
             .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
             .contentShape(Rectangle())
+            .listRowHover(cornerRadius: 0)
         }
         .buttonStyle(.plain)
     }
@@ -190,6 +205,7 @@ struct ThemePicker: View {
             .padding(.vertical, 5)
             .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
             .contentShape(Rectangle())
+            .listRowHover(cornerRadius: 0)
         }
         .buttonStyle(.plain)
     }
@@ -239,12 +255,14 @@ struct ThemePicker: View {
     private func ensureLoaded() {
         guard !didLoad else { return }
         didLoad = true
-        let entries = Self.discover()
-        themes = entries
-
-        // Parse previews off the main thread so the popover opens fast.
-        // `entries` is captured by value so the detached task has stable input.
+        // Discovery lists a few hundred bundled theme files — keep it (and the
+        // preview parsing) off the main thread so views embedding this picker
+        // (e.g. the host editor sidebar) open without a hitch.
         Task.detached(priority: .userInitiated) {
+            let entries = Self.discover()
+            await MainActor.run {
+                self.themes = entries
+            }
             let parsed = Self.parseAll(themes: entries)
             await MainActor.run {
                 self.previews = parsed

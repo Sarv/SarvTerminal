@@ -487,14 +487,28 @@ private struct ThemeTab: View {
             fontSection
             Divider()
             SidebarSearchField(placeholder: "Search themes", text: $query)
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    themeRow(name: "", preview: nil, isDefault: true)
-                    ForEach(filtered, id: \.name) { entry in
-                        themeRow(name: entry.name, preview: previews[entry.name], isDefault: false)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        themeRow(name: "", preview: nil, isDefault: true)
+                        ForEach(filtered, id: \.name) { entry in
+                            themeRow(name: entry.name, preview: previews[entry.name], isDefault: false)
+                                .id(entry.name)
+                        }
                     }
+                    .padding(.horizontal, 8).padding(.vertical, 8)
                 }
-                .padding(.horizontal, 8).padding(.vertical, 8)
+                // Land on the current theme — the selection is otherwise lost
+                // in the 500+ entry list. Also fires when the async discovery
+                // populates the list after first appear.
+                .onAppear {
+                    guard !appearance.themeName.isEmpty else { return }
+                    DispatchQueue.main.async { proxy.scrollTo(appearance.themeName, anchor: .center) }
+                }
+                .onChange(of: themes.count) { _ in
+                    guard !appearance.themeName.isEmpty else { return }
+                    DispatchQueue.main.async { proxy.scrollTo(appearance.themeName, anchor: .center) }
+                }
             }
         }
         .onAppear(perform: load)
@@ -571,6 +585,7 @@ private struct ThemeTab: View {
             .background(RoundedRectangle(cornerRadius: 8)
                 .fill(selected ? Color.accentColor.opacity(0.18) : Color.clear))
             .contentShape(Rectangle())
+            .listRowHover(cornerRadius: 8)
         }
         .buttonStyle(.plain)
     }
