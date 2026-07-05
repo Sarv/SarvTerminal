@@ -451,7 +451,7 @@ struct HostEditorView: View {
                         if !focused { autosaveIf(!draft.initialCommand.isEmpty) }
                     }
                 HStack {
-                    Text("Runs on the remote shell once the connection is established.")
+                    Text("Runs on the remote shell once connected. Multiple commands: one per line, or chain with && — e.g. cd /app && ls -al.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Spacer()

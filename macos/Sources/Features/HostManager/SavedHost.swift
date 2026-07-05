@@ -197,13 +197,11 @@ struct SavedHost: Codable, Identifiable, Hashable {
         let target = username.isEmpty ? hostname : "\(username)@\(hostname)"
         args.append(target)
 
-        // Initial command: if multiline, pass as a single `-- bash -lc '...'`
-        // style remote command. ssh joins remaining args with spaces, so we
-        // shell-quote the whole script.
-        let trimmedCmd = initialCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedCmd.isEmpty {
-            args.append(shellQuote(trimmedCmd))
-        }
+        // NOTE: `initialCommand` is intentionally NOT passed as ssh's remote
+        // command — that would replace the interactive login shell (no prompt,
+        // staged connect never sees a session and hangs). It's typed into the
+        // shell after the connection is established instead
+        // (VaultsTabsModel.connectionDidConnect).
         return args.joined(separator: " ")
     }
 

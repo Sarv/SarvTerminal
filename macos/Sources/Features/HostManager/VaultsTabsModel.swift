@@ -873,6 +873,13 @@ final class VaultsTabsModel: ObservableObject {
         model.passwordFilePath = nil
         if let id = surfaceID(for: model), let surface = surface(withID: id) {
             Ghostty.moveFocus(to: surface)
+            // Startup command (host editor → Startup): typed into the freshly
+            // opened remote shell exactly as entered — one command per line,
+            // and `&&` chains work like in any shell.
+            if let host = model.host {
+                let startup = host.initialCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !startup.isEmpty { send(startup, to: surface) }
+            }
         }
     }
 
