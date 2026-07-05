@@ -1270,6 +1270,10 @@ private struct HostCard<MoveMenu: View>: View {
                             RoundedRectangle(cornerRadius: 5).fill(Color.accentColor)
                         )
                         .foregroundStyle(.white)
+                        // Whole pill (not just the glyph) is the hit target, so
+                        // edge clicks can't fall through to the card's
+                        // connect/open tap gesture.
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Edit")
@@ -1350,6 +1354,9 @@ private struct HostListRow<MoveMenu: View>: View {
                             .fill(Color.accentColor.opacity(hovering ? 1.0 : 0.85))
                     )
                     .foregroundStyle(.white)
+                    // Whole pill is the hit target — edge clicks must not fall
+                    // through to the row's connect/open tap gesture.
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Edit")
