@@ -58,11 +58,19 @@ struct LogsSectionView: View {
             .buttonStyle(.borderless)
             .disabled(log.entries.isEmpty)
             .help("Clear all activity")
-            .confirmationDialog("Clear all activity?", isPresented: $showClearConfirm, titleVisibility: .visible) {
-                Button("Clear", role: .destructive) { log.clear() }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This removes the local activity history. It can't be undone.")
+            // Centered-logo SarvAlert — same dialog semantics everywhere.
+            .onChange(of: showClearConfirm) { show in
+                guard show else { return }
+                SarvAlert.present(
+                    title: "Clear all activity?",
+                    message: "This removes the local activity history. It can't be undone.",
+                    buttons: [
+                        .init("Clear", isDefault: true, isDestructive: true),
+                        .init("Cancel", isCancel: true),
+                    ]) { result in
+                    if result.buttonIndex == 0 { log.clear() }
+                }
+                showClearConfirm = false
             }
         }
         .padding(.horizontal, 16)

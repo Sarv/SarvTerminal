@@ -40,9 +40,10 @@ struct PortForwardingSectionView: View {
                 hosts: hosts.hosts,
                 onSave: { store.upsert($0); draft = nil },
                 onDelete: isNew ? nil : {
-                    if DeleteConfirmation.confirm(
+                    DeleteConfirmation.confirm(
                         forward.displayName,
-                        detail: "This stops the tunnel (if running) and removes the saved port forward.") {
+                        detail: "This stops the tunnel (if running) and removes the saved port forward.") { confirmed in
+                        guard confirmed else { return }
                         manager.stop(forward.id)
                         store.delete(forward)
                         draft = nil
@@ -74,10 +75,10 @@ struct PortForwardingSectionView: View {
                         onToggle: { manager.toggle(forward) },
                         onEdit: { edit(forward) },
                         onDelete: {
-                            if DeleteConfirmation.confirm(
+                            DeleteConfirmation.confirm(
                                 forward.displayName,
-                                detail: "This stops the tunnel (if running) and removes the saved port forward.") {
-                                manager.stop(forward.id); store.delete(forward)
+                                detail: "This stops the tunnel (if running) and removes the saved port forward.") { confirmed in
+                                if confirmed { manager.stop(forward.id); store.delete(forward) }
                             }
                         })
                     Divider().padding(.leading, 52)

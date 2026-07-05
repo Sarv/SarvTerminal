@@ -65,32 +65,37 @@ struct VaultsTabStrip: View {
         .padding(.leading, 8)
         .padding(.trailing, 4)
         .padding(.vertical, 4)
-        .alert(
-            "Rename Tab",
-            isPresented: Binding(get: { renamingTab != nil }, set: { if !$0 { renamingTab = nil } })
-        ) {
-            TextField("Tab name", text: $renameText)
-            Button("Rename") {
-                if let tab = renamingTab { tabs.renameTab(tab.id, to: renameText) }
-                renamingTab = nil
+        // Centered-logo SarvAlert with input — same dialog semantics as
+        // everywhere else in the app.
+        .onChange(of: renamingTab?.id) { _ in
+            guard let tab = renamingTab else { return }
+            SarvAlert.present(
+                title: "Rename Tab",
+                buttons: [
+                    .init("Rename", isDefault: true),
+                    .init("Cancel", isCancel: true),
+                ],
+                inputInitial: renameText) { result in
+                if result.buttonIndex == 0 { tabs.renameTab(tab.id, to: result.inputText) }
             }
-            Button("Cancel", role: .cancel) { renamingTab = nil }
+            renamingTab = nil
         }
-        .alert(
-            "Save Session",
-            isPresented: Binding(get: { savingTab != nil }, set: { if !$0 { savingTab = nil } })
-        ) {
-            TextField("Session name", text: $saveSessionText)
-            Button("Save") {
-                if let tab = savingTab,
-                   let session = tabs.makeSavedSession(from: tab, name: saveSessionText) {
+        .onChange(of: savingTab?.id) { _ in
+            guard let tab = savingTab else { return }
+            SarvAlert.present(
+                title: "Save Session",
+                message: "Save this tab's split layout so you can reopen it later — local panes reopen at their directory and SSH panes reconnect.",
+                buttons: [
+                    .init("Save", isDefault: true),
+                    .init("Cancel", isCancel: true),
+                ],
+                inputInitial: saveSessionText) { result in
+                if result.buttonIndex == 0,
+                   let session = tabs.makeSavedSession(from: tab, name: result.inputText) {
                     SavedSessionsStore.shared.upsert(session)
                 }
-                savingTab = nil
             }
-            Button("Cancel", role: .cancel) { savingTab = nil }
-        } message: {
-            Text("Save this tab's split layout so you can reopen it later — local panes reopen at their directory and SSH panes reconnect.")
+            savingTab = nil
         }
     }
 

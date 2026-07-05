@@ -54,40 +54,51 @@ struct KeybindsSectionView: View {
                 onCancel: { capturingFor = nil }
             )
         }
-        .alert(item: $pendingConflict) { conflict in
-            Alert(
-                title: Text("Shortcut already in use"),
-                message: Text("""
+        // Dialogs go through SarvAlert (the centered-logo card) — same
+        // semantics as every other popup in the app.
+        .onChange(of: pendingConflict) { conflict in
+            guard let conflict else { return }
+            SarvAlert.present(
+                title: "Shortcut already in use",
+                message: """
                     \(conflict.symbolicCombo) is currently bound to: \
                     \(conflict.conflictSummary).
 
                     Replace it with “\(conflict.newActionLabel)”? \
                     The existing binding will be removed.
-                    """),
-                primaryButton: .destructive(Text("Replace")) {
-                    resolveConflictByReplacing(conflict)
-                },
-                secondaryButton: .cancel()
-            )
-        }
-        .alert("Reset all keybindings to defaults?", isPresented: $showResetConfirm) {
-            Button("Cancel", role: .cancel) { }
-            Button("Reset", role: .destructive) {
-                resetToDefaults()
+                    """,
+                buttons: [
+                    .init("Replace", isDefault: true, isDestructive: true),
+                    .init("Cancel", isCancel: true),
+                ]) { result in
+                if result.buttonIndex == 0 { resolveConflictByReplacing(conflict) }
             }
-        } message: {
-            Text("""
-                All your custom keybindings will be removed from the config \
-                file. Ghostty's built-in defaults (Copy ⌘C, Paste ⌘V, …) will \
-                take effect again. This can't be undone.
-                """)
+            pendingConflict = nil
         }
-        .alert(item: $reservedBlock) { block in
-            Alert(
-                title: Text("Shortcut reserved"),
-                message: Text("\(block.symbolic) is reserved for “\(block.ownerLabel)” and can't be reassigned."),
-                dismissButton: .default(Text("OK"))
-            )
+        .onChange(of: showResetConfirm) { show in
+            guard show else { return }
+            SarvAlert.present(
+                title: "Reset all keybindings to defaults?",
+                message: """
+                    All your custom keybindings will be removed from the config \
+                    file. The built-in defaults (Copy ⌘C, Paste ⌘V, …) will \
+                    take effect again. This can't be undone.
+                    """,
+                buttons: [
+                    .init("Reset", isDefault: true, isDestructive: true),
+                    .init("Cancel", isCancel: true),
+                ]) { result in
+                if result.buttonIndex == 0 { resetToDefaults() }
+            }
+            showResetConfirm = false
+        }
+        .onChange(of: reservedBlock) { block in
+            guard let block else { return }
+            SarvAlert.present(
+                title: "Shortcut reserved",
+                message: "\(block.symbolic) is reserved for “\(block.ownerLabel)” and can't be reassigned.",
+                buttons: [.init("OK", isDefault: true)])
+            reservedBlock = nil
         }
     }
 
@@ -527,14 +538,14 @@ extension KeybindAction: Identifiable {
 // MARK: - Conflict info
 
 /// Data for the "shortcut reserved by a fixed shortcut" hard-block alert.
-struct ReservedComboBlock: Identifiable {
+struct ReservedComboBlock: Identifiable, Equatable {
     let id = UUID()
     let symbolic: String
     let ownerLabel: String
 }
 
 /// Data for the "shortcut already used" confirm-replace alert.
-struct KeybindConflict: Identifiable {
+struct KeybindConflict: Identifiable, Equatable {
     let id = UUID()
     let combo: String
     let newActionName: String

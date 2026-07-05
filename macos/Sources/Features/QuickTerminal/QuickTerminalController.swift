@@ -641,13 +641,11 @@ class QuickTerminalController: BaseTerminalController {
 
     private func showNoNewTabAlert() {
         guard let window else { return }
-        let alert = NSAlert()
-        alert.icon = .sarvBrandIcon
-        alert.messageText = "Cannot Create New Tab"
-        alert.informativeText = "Tabs aren't supported in the Quick Terminal."
-        alert.addButton(withTitle: "OK")
-        alert.alertStyle = .warning
-        alert.beginSheetModal(for: window)
+        SarvAlert.beginSheet(
+            for: window,
+            title: "Cannot Create New Tab",
+            message: "Tabs aren't supported in the Quick Terminal.",
+            buttons: [.init("OK", isDefault: true)]) { _ in }
     }
     // MARK: First Responder
 

@@ -609,33 +609,9 @@ extension Ghostty {
 
         /// Set the title by prompting the user.
         func promptTitle() {
-            // Create an alert dialog
-            let alert = NSAlert()
-            alert.icon = .sarvBrandIcon
-            alert.messageText = "Change Terminal Title"
-            alert.informativeText = "Leave blank to restore the default."
-            alert.alertStyle = .informational
-
-            // Add a text field to the alert
-            let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-            textField.stringValue = title
-            alert.accessoryView = textField
-
-            // Add buttons
-            alert.addButton(withTitle: "OK")
-            alert.addButton(withTitle: "Cancel")
-
-            // Make the text field the first responder so it gets focus
-            alert.window.initialFirstResponder = textField
-
-            let completionHandler: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-                guard let self else { return }
-
-                // Check if the user clicked "OK"
-                guard response == .alertFirstButtonReturn  else { return }
-
-                // Get the input text
-                let newTitle = textField.stringValue
+            let apply: (SarvAlert.Result) -> Void = { [weak self] result in
+                guard let self, result.buttonIndex == 0 else { return }
+                let newTitle = result.inputText
                 if newTitle.isEmpty {
                     // Empty means that user wants the title to be set automatically
                     // We also need to reload the config for the "title" property to be
@@ -649,15 +625,25 @@ extension Ghostty {
                     title = newTitle
                 }
             }
-
-            // We prefer to run our alert in a sheet modal if we have a window.
+            let buttons: [SarvAlert.Button] = [
+                .init("OK", isDefault: true),
+                .init("Cancel", isCancel: true),
+            ]
+            // Prefer a sheet when we have a window; fall back to app-modal.
             if let window {
-                alert.beginSheetModal(for: window, completionHandler: completionHandler)
+                SarvAlert.beginSheet(
+                    for: window,
+                    title: "Change Terminal Title",
+                    message: "Leave blank to restore the default.",
+                    buttons: buttons,
+                    inputInitial: title,
+                    completion: apply)
             } else {
-                // On macOS 26 RC, this codepath results in the "OK" button not being
-                // visible. The above codepath should be taken most times but I'm just
-                // noting this as something I noticed consistently.
-                completionHandler(alert.runModal())
+                apply(SarvAlert.runModal(
+                    title: "Change Terminal Title",
+                    message: "Leave blank to restore the default.",
+                    buttons: buttons,
+                    inputInitial: title))
             }
         }
 

@@ -558,19 +558,13 @@ class AppDelegate: NSObject,
             // Confirmation required. We use an app-wide NSAlert for now. In the future we
             // may want to show this as a sheet on the focused window (especially if we're
             // opening a tab). I'm not sure.
-            let alert = NSAlert()
-            alert.icon = .sarvBrandIcon
-            alert.messageText = "Allow Ghostty to execute \"\(filename)\"?"
-            alert.addButton(withTitle: "Allow")
-            alert.addButton(withTitle: "Cancel")
-            alert.alertStyle = .warning
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                break
-
-            default:
-                return false
-            }
+            let result = SarvAlert.runModal(
+                title: "Allow Sarv Terminal to execute \"\(filename)\"?",
+                buttons: [
+                    .init("Allow", isDefault: true),
+                    .init("Cancel", isCancel: true),
+                ])
+            guard result.buttonIndex == 0 else { return false }
         }
 
         switch ghostty.config.macosDockDropBehavior {
@@ -1499,16 +1493,14 @@ extension AppDelegate {
         NSWorkspace.shared.setDefaultApplication(at: Bundle.main.bundleURL, toOpen: .unixExecutable) { error in
             guard let error else { return }
             Task { @MainActor in
-                let alert = NSAlert()
-                alert.icon = .sarvBrandIcon
-                alert.messageText = "Failed to Set Default Terminal"
-                alert.informativeText = """
-                Ghostty could not be set as the default terminal application.
+                SarvAlert.runModal(
+                    title: "Failed to Set Default Terminal",
+                    message: """
+                    Sarv Terminal could not be set as the default terminal application.
 
-                Error: \(error.localizedDescription)
-                """
-                alert.alertStyle = .warning
-                alert.runModal()
+                    Error: \(error.localizedDescription)
+                    """,
+                    buttons: [.init("OK", isDefault: true)])
             }
         }
     }
@@ -1565,7 +1557,7 @@ extension AppDelegate {
         if controllersNeedConfirmation.count == 1 {
             Task {
                 let response = await controllersNeedConfirmation[0].confirmCloseAsync(
-                    messageText: "Quit Ghostty?",
+                    messageText: "Quit Sarv Terminal?",
                     informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
                     confirmButtonTitle: "Terminate",
                 )
@@ -1579,20 +1571,24 @@ extension AppDelegate {
 
             return .terminateLater
         } else {
-            let alert = NSAlert()
-            alert.icon = .sarvBrandIcon
-            alert.messageText = "You have \(controllersNeedConfirmation.count) windows with running processes. Do you want to review these windows before quitting?"
-            alert.informativeText = "If you don't review your windows, any running processes will be terminated"
-            alert.addButton(withTitle: "Review Windows...")
-            alert.addButton(withTitle: "Terminate Processes")
-            alert.addButton(withTitle: "Cancel")
-            alert.alertStyle = .warning
+            // terminate() is invoked on the main thread (applicationShouldTerminate)
+            // but isn't statically actor-isolated.
+            let result = MainActor.assumeIsolated {
+                SarvAlert.runModal(
+                    title: "You have \(controllersNeedConfirmation.count) windows with running processes. Do you want to review these windows before quitting?",
+                    message: "If you don't review your windows, any running processes will be terminated",
+                    buttons: [
+                        .init("Review Windows...", isDefault: true),
+                        .init("Terminate Processes", isDestructive: true),
+                        .init("Cancel", isCancel: true),
+                    ])
+            }
 
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
+            switch result.buttonIndex {
+            case 0:
                 reviewWindows(controllersNeedConfirmation)
                 return .terminateLater
-            case .alertSecondButtonReturn:
+            case 1:
                 return .terminateNow
             default:
                 return .terminateCancel
@@ -1604,7 +1600,7 @@ extension AppDelegate {
         Task {
             for controller in controllers {
                 let response = await controller.confirmCloseAsync(
-                    messageText: "Quit Ghostty?",
+                    messageText: "Quit Sarv Terminal?",
                     informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
                     confirmButtonTitle: "Terminate",
                 )

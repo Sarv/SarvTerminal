@@ -1362,17 +1362,19 @@ struct FooterBarView: View {
         .padding(.vertical, 14)
         .background(.bar)
         .animation(.easeInOut(duration: 0.2), value: viewModel.showSavedFlash)
-        .confirmationDialog(
-            "Reset \(section?.title ?? "section") to defaults?",
-            isPresented: $showResetConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Reset to Default", role: .destructive) {
-                if let section { viewModel.resetToDefault(section: section) }
+        // Centered-logo SarvAlert — same dialog semantics everywhere.
+        .onChange(of: showResetConfirm) { show in
+            guard show else { return }
+            SarvAlert.present(
+                title: "Reset \(section?.title ?? "section") to defaults?",
+                message: "This restores every option in this section to its default value. You can undo it with Revert until you close Settings.",
+                buttons: [
+                    .init("Reset to Default", isDefault: true, isDestructive: true),
+                    .init("Cancel", isCancel: true),
+                ]) { result in
+                if result.buttonIndex == 0, let section { viewModel.resetToDefault(section: section) }
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This restores every option in this section to its default value. You can undo it with Revert until you close Settings.")
+            showResetConfirm = false
         }
     }
 

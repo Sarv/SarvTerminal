@@ -438,13 +438,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // See: https://github.com/mitchellh/ghostty/issues/392
         if let fullscreenStyle = parentController.fullscreenStyle,
            fullscreenStyle.isFullscreen && !fullscreenStyle.supportsTabs {
-            let alert = NSAlert()
-            alert.icon = .sarvBrandIcon
-            alert.messageText = "Cannot Create New Tab"
-            alert.informativeText = "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again."
-            alert.addButton(withTitle: "OK")
-            alert.alertStyle = .warning
-            alert.beginSheetModal(for: parent)
+            SarvAlert.beginSheet(
+                for: parent,
+                title: "Cannot Create New Tab",
+                message: "New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again.",
+                buttons: [.init("OK", isDefault: true)]) { _ in }
             return nil
         }
 
@@ -972,21 +970,18 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
-        let alert = NSAlert()
-        alert.icon = .sarvBrandIcon
-        alert.messageText = "Close All Windows?"
-        alert.informativeText = "All terminal sessions will be terminated."
-        alert.addButton(withTitle: "Close All Windows")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .warning
-        alert.beginSheetModal(for: confirmWindow, completionHandler: { response in
-            if response == .alertFirstButtonReturn {
-                // This is important so that we avoid losing focus when Stage
-                // Manager is used (#8336)
-                alert.window.orderOut(nil)
+        SarvAlert.beginSheet(
+            for: confirmWindow,
+            title: "Close All Windows?",
+            message: "All terminal sessions will be terminated.",
+            buttons: [
+                .init("Close All Windows", isDefault: true, isDestructive: true),
+                .init("Cancel", isCancel: true),
+            ]) { result in
+            if result.buttonIndex == 0 {
                 closeAllWindowsImmediately()
             }
-        })
+        }
     }
 
     static private func closeAllWindowsImmediately() {

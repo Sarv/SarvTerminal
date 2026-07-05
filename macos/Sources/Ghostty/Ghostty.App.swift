@@ -939,13 +939,12 @@ extension Ghostty {
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
                 guard let appState = self.appState(fromView: surfaceView) else { return }
                 guard appState.config.windowDecorations else {
-                    let alert = NSAlert()
-                    alert.icon = .sarvBrandIcon
-                    alert.messageText = "Tabs are disabled"
-                    alert.informativeText = "Enable window decorations to use tabs"
-                    alert.addButton(withTitle: "OK")
-                    alert.alertStyle = .warning
-                    _ = alert.runModal()
+                    DispatchQueue.main.async {
+                        SarvAlert.runModal(
+                            title: "Tabs are disabled",
+                            message: "Enable window decorations to use tabs",
+                            buttons: [.init("OK", isDefault: true)])
+                    }
                     return
                 }
 

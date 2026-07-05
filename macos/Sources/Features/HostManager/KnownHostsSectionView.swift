@@ -41,15 +41,19 @@ struct KnownHostsSectionView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { store.reload() }
-        .alert("Remove this host key?",
-               isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })) {
-            Button("Remove", role: .destructive) {
-                if let e = pendingDelete { store.delete(e) }
-                pendingDelete = nil
+        // Centered-logo SarvAlert — same delete semantics as everywhere else.
+        .onChange(of: pendingDelete) { entry in
+            guard let entry else { return }
+            SarvAlert.present(
+                title: "Remove this host key?",
+                message: "Removes \(entry.hostDisplay) from ~/.ssh/known_hosts. SSH will re-verify it on the next connection.",
+                buttons: [
+                    .init("Remove", isDefault: true, isDestructive: true),
+                    .init("Cancel", isCancel: true),
+                ]) { result in
+                if result.buttonIndex == 0 { store.delete(entry) }
             }
-            Button("Cancel", role: .cancel) { pendingDelete = nil }
-        } message: {
-            Text("Removes \(pendingDelete?.hostDisplay ?? "this entry") from ~/.ssh/known_hosts. SSH will re-verify it on the next connection.")
+            pendingDelete = nil
         }
     }
 

@@ -49,15 +49,15 @@ struct KeychainSectionView: View {
         .sheet(isPresented: $showGenerator) {
             KeyGeneratorView(manager: manager) { showToast("Key generated") }
         }
-        .alert("Delete “\(pendingDelete?.name ?? "")”?",
-               isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })) {
-            Button("Cancel", role: .cancel) { pendingDelete = nil }
-            Button("Delete", role: .destructive) {
-                if let k = pendingDelete { manager.delete(k); showToast("Deleted") }
-                pendingDelete = nil
+        // Shared centered-logo confirm — one delete semantic everywhere.
+        .onChange(of: pendingDelete?.name) { _ in
+            guard let key = pendingDelete else { return }
+            DeleteConfirmation.confirm(
+                key.name,
+                detail: "This permanently removes the private and public key files from ~/.ssh. This can't be undone.") { confirmed in
+                if confirmed { manager.delete(key); showToast("Deleted") }
             }
-        } message: {
-            Text("This permanently removes the private and public key files from ~/.ssh. This can't be undone.")
+            pendingDelete = nil
         }
     }
 

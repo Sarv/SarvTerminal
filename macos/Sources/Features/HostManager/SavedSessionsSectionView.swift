@@ -32,16 +32,19 @@ struct SavedSessionsSectionView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .alert(
-            "Rename Session",
-            isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })
-        ) {
-            TextField("Session name", text: $renameText)
-            Button("Rename") {
-                if let session = renaming { store.rename(session, to: renameText) }
-                renaming = nil
+        // Centered-logo SarvAlert with input — same dialog semantics everywhere.
+        .onChange(of: renaming?.id) { _ in
+            guard let session = renaming else { return }
+            SarvAlert.present(
+                title: "Rename Session",
+                buttons: [
+                    .init("Rename", isDefault: true),
+                    .init("Cancel", isCancel: true),
+                ],
+                inputInitial: renameText) { result in
+                if result.buttonIndex == 0 { store.rename(session, to: result.inputText) }
             }
-            Button("Cancel", role: .cancel) { renaming = nil }
+            renaming = nil
         }
     }
 
@@ -74,10 +77,10 @@ struct SavedSessionsSectionView: View {
                         onRename: { renameText = session.name; renaming = session },
                         onColor: { store.setColor(session, colorID: $0) },
                         onDelete: {
-                            if DeleteConfirmation.confirm(
+                            DeleteConfirmation.confirm(
                                 session.name,
-                                detail: "This removes the saved session. Your open tabs aren't affected.") {
-                                store.delete(session)
+                                detail: "This removes the saved session. Your open tabs aren't affected.") { confirmed in
+                                if confirmed { store.delete(session) }
                             }
                         })
                     Divider().padding(.leading, 52)

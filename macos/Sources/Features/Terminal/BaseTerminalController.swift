@@ -59,8 +59,9 @@ class BaseTerminalController: NSWindowController,
         self.derivedConfig.focusFollowsMouse
     }
 
-    /// Non-nil when an alert is active so we don't overlap multiple.
-    private var alert: NSAlert?
+    /// True while a close-confirmation alert is active so we don't overlap
+    /// multiple.
+    private var alertActive = false
 
     /// The clipboard confirmation window, if shown.
     private var clipboardConfirmation: ClipboardConfirmationController?
@@ -323,7 +324,7 @@ class BaseTerminalController: NSWindowController,
         confirmButtonTitle: String = "Close",
     ) async -> NSApplication.ModalResponse? {
         // If we already have an alert, we need to wait for that one.
-        guard alert == nil else { return nil }
+        guard !alertActive else { return nil }
 
         // If there is no window to attach the modal then we assume success
         // since we'll never be able to show the modal.
@@ -332,23 +333,18 @@ class BaseTerminalController: NSWindowController,
         }
 
         // If we need confirmation by any, show one confirmation for all windows
-        // in the tab group.
-        let alert = NSAlert()
-        alert.icon = .sarvBrandIcon
-        alert.messageText = messageText
-        alert.informativeText = informativeText
-        alert.addButton(withTitle: confirmButtonTitle)
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .warning
-        // Store our alert so we only ever show one.
-        self.alert = alert
-        defer {
-            // This is important so that we avoid losing focus when Stage
-            // Manager is used (#8336)
-            alert.window.orderOut(nil)
-            self.alert = nil
-        }
-        return await alert.beginSheetModal(for: window)
+        // in the tab group (the shared centered-logo card).
+        alertActive = true
+        defer { alertActive = false }
+        let result = await SarvAlert.beginSheet(
+            for: window,
+            title: messageText,
+            message: informativeText,
+            buttons: [
+                .init(confirmButtonTitle, isDefault: true, isDestructive: true),
+                .init("Cancel", isCancel: true),
+            ])
+        return result.buttonIndex == 0 ? .alertFirstButtonReturn : .cancel
     }
 
     func confirmClose(
@@ -372,26 +368,18 @@ class BaseTerminalController: NSWindowController,
     func promptTabTitle() {
         guard let window else { return }
 
-        let alert = NSAlert()
-        alert.icon = .sarvBrandIcon
-        alert.messageText = "Change Tab Title"
-        alert.informativeText = "Leave blank to restore the default."
-        alert.alertStyle = .informational
-
-        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-        textField.stringValue = titleOverride ?? window.title
-        alert.accessoryView = textField
-
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
-
-        alert.window.initialFirstResponder = textField
-
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self else { return }
-            guard response == .alertFirstButtonReturn else { return }
-
-            let newTitle = textField.stringValue
+        SarvAlert.beginSheet(
+            for: window,
+            title: "Change Tab Title",
+            message: "Leave blank to restore the default.",
+            buttons: [
+                .init("OK", isDefault: true),
+                .init("Cancel", isCancel: true),
+            ],
+            inputInitial: titleOverride ?? window.title
+        ) { [weak self] result in
+            guard let self, result.buttonIndex == 0 else { return }
+            let newTitle = result.inputText
             if newTitle.isEmpty {
                 self.titleOverride = nil
             } else {
@@ -1211,7 +1199,7 @@ class BaseTerminalController: NSWindowController,
         if surfaceTree.isEmpty { return true }
 
         // If we already have an alert, continue with it
-        guard alert == nil else { return false }
+        guard !alertActive else { return false }
 
         // If our surfaces don't require confirmation, close.
         if !surfaceTree.contains(where: { $0.needsConfirmQuit }) { return true }

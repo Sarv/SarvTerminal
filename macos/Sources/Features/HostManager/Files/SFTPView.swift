@@ -80,21 +80,37 @@ struct SFTPView: View {
                 hostPickerSide = nil
             } onCancel: { hostPickerSide = nil }
         }
-        .alert("New Folder", isPresented: Binding(get: { newFolderSide != nil }, set: { if !$0 { newFolderSide = nil } })) {
-            TextField("Folder name", text: $newFolderName)
-            Button("Cancel", role: .cancel) { newFolderSide = nil }
-            Button("Create") {
-                if let s = newFolderSide, !newFolderName.isEmpty { Task { await model(s).newFolder(named: newFolderName) } }
-                newFolderSide = nil; newFolderName = ""
+        // Dialogs go through SarvAlert (centered-logo card) — same semantics as
+        // every other popup in the app.
+        .onChange(of: newFolderSide) { side in
+            guard let side else { return }
+            SarvAlert.present(
+                title: "New Folder",
+                buttons: [
+                    .init("Create", isDefault: true),
+                    .init("Cancel", isCancel: true),
+                ],
+                inputInitial: "") { result in
+                if result.buttonIndex == 0, !result.inputText.isEmpty {
+                    Task { await model(side).newFolder(named: result.inputText) }
+                }
             }
+            newFolderSide = nil
         }
-        .alert("Rename", isPresented: Binding(get: { renameTarget != nil }, set: { if !$0 { renameTarget = nil } })) {
-            TextField("New name", text: $renameText)
-            Button("Cancel", role: .cancel) { renameTarget = nil }
-            Button("Rename") {
-                if let t = renameTarget, !renameText.isEmpty { Task { await model(t.side).rename(t.item, to: renameText) } }
-                renameTarget = nil
+        .onChange(of: renameTarget?.item.name) { _ in
+            guard let target = renameTarget else { return }
+            SarvAlert.present(
+                title: "Rename",
+                buttons: [
+                    .init("Rename", isDefault: true),
+                    .init("Cancel", isCancel: true),
+                ],
+                inputInitial: renameText) { result in
+                if result.buttonIndex == 0, !result.inputText.isEmpty {
+                    Task { await model(target.side).rename(target.item, to: result.inputText) }
+                }
             }
+            renameTarget = nil
         }
         .sheet(isPresented: Binding(get: { permTarget != nil }, set: { if !$0 { permTarget = nil } })) {
             if let t = permTarget {
@@ -109,14 +125,14 @@ struct SFTPView: View {
                     onCancel: { permTarget = nil })
             }
         }
-        .alert("Delete “\(pendingDelete?.item.name ?? "")”?",
-               isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })) {
-            Button("Cancel", role: .cancel) { pendingDelete = nil }
-            Button("Delete", role: .destructive) {
-                if let d = pendingDelete { Task { await model(d.side).delete(d.item) } }
-                pendingDelete = nil
+        // Shared centered-logo confirm — one delete semantic everywhere.
+        .onChange(of: pendingDelete?.item.name) { _ in
+            guard let d = pendingDelete else { return }
+            DeleteConfirmation.confirm(d.item.name, detail: "This can't be undone.") { confirmed in
+                if confirmed { Task { await model(d.side).delete(d.item) } }
             }
-        } message: { Text("This can't be undone.") }
+            pendingDelete = nil
+        }
         .overlay {
             if let c = conflict { ConflictDialog(name: c.item.name) { resolve(c, $0) } }
         }

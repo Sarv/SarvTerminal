@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 
 /// One parsed entry from `~/.ssh/known_hosts`.
-struct KnownHostEntry: Identifiable {
+struct KnownHostEntry: Identifiable, Equatable {
     let id = UUID()
     let raw: String            // original line, used to match on delete
     let hostDisplay: String    // e.g. "[127.0.0.1]:2222" or "(hashed host)"

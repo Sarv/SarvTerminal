@@ -901,14 +901,22 @@ struct HostsSectionView: View {
     /// editor whenever a field with data loses focus or a toggle/picker
     /// changes, so the list card updates live field by field. New drafts
     /// with no label get a unique "Unnamed" label until the user names them.
-    private func autosaveDraftNow() {
-        guard var d = hostDraft, hostDraftHasContent(d) else { return }
+    @discardableResult
+    private func autosaveDraftNow() -> Bool {
+        guard var d = hostDraft, hostDraftHasContent(d) else { return false }
         if isNew, d.label.trimmingCharacters(in: .whitespaces).isEmpty {
             if draftAutoLabel == nil { draftAutoLabel = nextUnnamedLabel() }
             d.label = draftAutoLabel ?? "Unnamed"
         }
+        // No-op when nothing actually changed (e.g. focusing a field and
+        // leaving without editing) — the "Saved" flash only shows real saves.
+        if let existing = hostsStore.hosts.first(where: { $0.id == d.id }),
+           existing.contentEquals(d) {
+            return false
+        }
         d.updatedAt = Date()
         hostsStore.upsert(d)
+        return true
     }
 
     /// "Filled at least one info" — any non-default field worth keeping.
@@ -929,14 +937,11 @@ struct HostsSectionView: View {
     }
 
     private func confirmDeleteHost(_ host: SavedHost, fromEditor: Bool) {
-        let alert = NSAlert()
-        alert.icon = .sarvBrandIcon
-        alert.messageText = "Delete \"\(host.displayLabel)\"?"
-        alert.informativeText = "This removes the saved host from Sarv Terminal. The remote server isn't affected."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
+        // Shared centered-logo confirm — ONE delete semantic everywhere.
+        DeleteConfirmation.confirm(
+            host.displayLabel,
+            detail: "This removes the saved host from Sarv Terminal. The remote server isn't affected.") { confirmed in
+            guard confirmed else { return }
             hostsStore.delete(host)
             if fromEditor {
                 // Drop the draft BEFORE cancel() — its close-flush would
@@ -950,9 +955,6 @@ struct HostsSectionView: View {
     private func confirmDeleteGroup(_ group: HostGroup, fromEditor: Bool) {
         let inGroup = hostsStore.recursiveCount(in: group.id, groupsStore: groupsStore)
         let subGroups = groupsStore.descendants(of: group.id).count
-        let alert = NSAlert()
-        alert.icon = .sarvBrandIcon
-        alert.messageText = "Delete group \"\(group.displayName)\"?"
         var detail: [String] = []
         if inGroup > 0 {
             detail.append("\(inGroup) host\(inGroup == 1 ? "" : "s") inside will become ungrouped (the hosts aren't deleted).")
@@ -961,11 +963,9 @@ struct HostsSectionView: View {
             detail.append("\(subGroups) sub-group\(subGroups == 1 ? "" : "s") will move up to this group's parent.")
         }
         if detail.isEmpty { detail.append("This group is empty.") }
-        alert.informativeText = detail.joined(separator: "\n")
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn {
+        // Shared centered-logo confirm — ONE delete semantic everywhere.
+        DeleteConfirmation.confirm(group.displayName, detail: detail.joined(separator: "\n")) { confirmed in
+            guard confirmed else { return }
             // Drill out if we were focused on this group.
             if focusedGroupID == group.id { focusedGroupID = group.parentID }
             hostsStore.unsetGroup(group.id)
@@ -1037,15 +1037,13 @@ struct HostsSectionView: View {
             hostsStore.upsert(saved)
             added += 1
         }
-        let alert = NSAlert()
-        alert.icon = .sarvBrandIcon
-        alert.messageText = added == 0 ? "Nothing to import"
-                                        : "Imported \(added) host\(added == 1 ? "" : "s")"
-        alert.informativeText = added == 0
-            ? "All hosts in ~/.ssh/config are already saved."
-            : "Imported from ~/.ssh/config."
-        alert.alertStyle = .informational
-        alert.runModal()
+        SarvAlert.present(
+            title: added == 0 ? "Nothing to import"
+                              : "Imported \(added) host\(added == 1 ? "" : "s")",
+            message: added == 0
+                ? "All hosts in ~/.ssh/config are already saved."
+                : "Imported from ~/.ssh/config.",
+            buttons: [.init("OK", isDefault: true)])
     }
 }
 

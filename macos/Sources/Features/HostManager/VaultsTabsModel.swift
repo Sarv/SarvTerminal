@@ -288,14 +288,18 @@ final class VaultsTabsModel: ObservableObject {
         // autosaving regardless, so re-enabling restores on a later launch.
         guard UserDefaults.standard.object(forKey: "SarvRestoreSession") as? Bool ?? true else { return }
 
-        let alert = NSAlert()
-        alert.icon = .sarvBrandIcon
-        alert.messageText = "Reopen your last session?"
         let n = entries.count
-        alert.informativeText = "Reopen the \(n) tab\(n == 1 ? "" : "s") you had open when you last quit."
-        alert.addButton(withTitle: "Reopen All")
-        alert.addButton(withTitle: "Not Now")
-        if alert.runModal() == .alertFirstButtonReturn {
+        // Called from app-launch on the main thread; not statically isolated.
+        let result = MainActor.assumeIsolated {
+            SarvAlert.runModal(
+                title: "Reopen your last session?",
+                message: "Reopen the \(n) tab\(n == 1 ? "" : "s") you had open when you last quit.",
+                buttons: [
+                    .init("Reopen All", isDefault: true),
+                    .init("Not Now", isCancel: true),
+                ])
+        }
+        if result.buttonIndex == 0 {
             restoreSession(entries)
         } else {
             // Declined → the current (empty) state replaces the saved session.

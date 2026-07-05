@@ -54,10 +54,10 @@ struct SnippetsSectionView: View {
                 isNew: isNew,
                 onSave: { store.upsert($0); draft = nil },
                 onDelete: isNew ? nil : {
-                    if DeleteConfirmation.confirm(
+                    DeleteConfirmation.confirm(
                         snippet.displayName,
-                        detail: "This permanently removes the snippet.") {
-                        store.delete(snippet); draft = nil
+                        detail: "This permanently removes the snippet.") { confirmed in
+                        if confirmed { store.delete(snippet); draft = nil }
                     }
                 },
                 onCancel: { draft = nil })
@@ -85,10 +85,10 @@ struct SnippetsSectionView: View {
                         onCopy: { copy(snippet) },
                         onEdit: { edit(snippet) },
                         onDelete: {
-                            if DeleteConfirmation.confirm(
+                            DeleteConfirmation.confirm(
                                 snippet.displayName,
-                                detail: "This permanently removes the snippet.") {
-                                store.delete(snippet)
+                                detail: "This permanently removes the snippet.") { confirmed in
+                                if confirmed { store.delete(snippet) }
                             }
                         })
                     Divider().padding(.leading, 52)
