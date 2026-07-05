@@ -58,6 +58,35 @@ enum HostPlatform: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Official brand color, used as the icon tile's background (white logo on
+    /// top — all picks keep white readable). nil for `.auto` (accent tile).
+    var brandHex: String? {
+        switch self {
+        case .auto: return nil
+        case .linux: return "#333940"        // slate — Tux has no flat brand color
+        case .ubuntu: return "#E95420"       // Ubuntu orange
+        case .debian: return "#A81D33"       // Debian red
+        case .fedora: return "#3C6EB4"       // Fedora blue
+        case .redhat: return "#EE0000"       // Red Hat red
+        case .centos: return "#932279"       // CentOS magenta
+        case .rocky: return "#10B981"        // Rocky green
+        case .alma: return "#0F4266"         // AlmaLinux navy
+        case .arch: return "#1793D1"         // Arch cyan-blue
+        case .suse: return "#73BA25"         // openSUSE green
+        case .alpine: return "#0D597F"       // Alpine steel blue
+        case .raspberrypi: return "#C51A4A"  // Raspberry red
+        case .freebsd: return "#AB2B28"      // FreeBSD dark red
+        case .macos: return "#6E6E73"        // Apple graphite
+        case .windows: return "#0078D4"      // Windows blue
+        }
+    }
+
+    /// Tile background: brand color when known, accent otherwise.
+    var tileColor: Color {
+        if let brandHex, let color = ColorSwatchPicker.color(fromHex: brandHex) { return color }
+        return Color.accentColor.opacity(0.85)
+    }
+
     /// Map an `/etc/os-release` ID (or `uname -s` output) to a platform.
     static func from(osReleaseID id: String) -> HostPlatform? {
         switch id.lowercased() {
@@ -111,12 +140,14 @@ struct HostOSIconView: View {
     var side: CGFloat = 44
 
     var body: some View {
+        let platform = HostPlatform.effective(for: host)
         ZStack {
             RoundedRectangle(cornerRadius: side * 0.25, style: .continuous)
-                .fill(Color.accentColor.opacity(0.85))
+                // The distro's BRAND color (Ubuntu orange, Fedora blue, …) so
+                // hosts are scannable at a glance; accent for unknown OS.
+                .fill(platform?.tileColor ?? Color.accentColor.opacity(0.85))
                 .frame(width: side, height: side)
-            if let platform = HostPlatform.effective(for: host),
-               let image = platform.templateImage {
+            if let platform, let image = platform.templateImage {
                 Image(nsImage: image)
                     .renderingMode(.template)
                     .resizable()
