@@ -53,7 +53,7 @@ struct HostEditorView: View {
                                              .port, .username, .authMethod]
         switch draft.authMethod {
         case .password:  order.append(.password)
-        case .publicKey: order.append(.identityFile)
+        case .publicKey: order += [.identityFile, .browseKey]
         case .agent, .ask: break
         }
         order += [.forwardAgent, .startupExpander]
@@ -387,6 +387,15 @@ struct HostEditorView: View {
                     .help("Path to the private key file used to sign in")
                 Button("Browse…") { pickIdentityFile() }
                     .controlSize(.small)
+                    .focusable()
+                    .focused($focusedField, equals: .browseKey)
+                    .modifier(ActivateOnKeyPress { pickIdentityFile() })
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(focusedField == .browseKey ? Color.accentColor.opacity(0.7) : .clear,
+                                    lineWidth: 1.5)
+                    )
+                    .hoverCursor(.pointingHand)
                     .help("Choose a key file from ~/.ssh")
             }
         case .agent:

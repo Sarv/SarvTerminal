@@ -72,8 +72,14 @@ private struct RowShell<Content: View>: View {
             .contentShape(Rectangle())
             .onHover { inside in
                 hovering = inside && isInteractive
-                if let hoverCursor {
-                    if inside { hoverCursor.push() } else { NSCursor.pop() }
+            }
+            // Continuous set (not push/pop): the embedded NSTextField's own
+            // cursor rects keep resetting a pushed cursor to the arrow.
+            .onContinuousHover { phase in
+                guard let hoverCursor else { return }
+                switch phase {
+                case .active: hoverCursor.set()
+                case .ended: NSCursor.arrow.set()
                 }
             }
             .onTapGesture { onTap?() }
@@ -88,7 +94,7 @@ private struct RowShell<Content: View>: View {
 /// fields break the native key-view loop (Shift+Tab dead-ends).
 enum HostEditorFocusField: Hashable {
     case hostname, label, group, tags, note
-    case port, username, authMethod, password, identityFile, forwardAgent
+    case port, username, authMethod, password, identityFile, browseKey, forwardAgent
     case startupExpander, startup
     case osPicker, themePicker
     case advancedExpander
@@ -272,6 +278,8 @@ struct EditorPortField: View {
                 .stroke(focused ? Color.accentColor.opacity(0.7) : Color.secondary.opacity(0.22),
                         lineWidth: focused ? 1.5 : 1)
         )
+        // Hover must cover the whole pill (incl. padding), not just the glyphs.
+        .contentShape(Rectangle())
         .hoverCursor(.iBeam)
         .onAppear {
             // Show empty (so placeholder is visible) when value is the default.
@@ -564,9 +572,13 @@ struct EditorPickerRow<T: Hashable>: View {
 
     private var chainFocused: Bool { field != nil && focus?.wrappedValue == field }
 
+    @State private var isPresented = false
+
     var body: some View {
-        RowShell(isInteractive: false, onTap: nil, isFocused: chainFocused,
-                 hoverCursor: .pointingHand) {
+        // A plain row + popover list (NOT a SwiftUI Menu — macOS flattens
+        // complex Menu labels, dropping the value capsule entirely). The whole
+        // row opens the picker; the capsule makes it read as a select box.
+        RowShell(isInteractive: true, onTap: { isPresented = true }, isFocused: chainFocused) {
             HStack(spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 14))
@@ -574,27 +586,56 @@ struct EditorPickerRow<T: Hashable>: View {
                     .frame(width: 18)
                 Text(title)
                 Spacer()
-                Menu {
-                    ForEach(options, id: \.value) { opt in
-                        Button(opt.label) { selection = opt.value }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(currentLabel)
-                            .foregroundStyle(.secondary)
-                            .font(.callout)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
+                // Value styled like a native popup button — the visual cue
+                // that this row is a selection control. The select cursor
+                // shows over THIS control only, not the whole row.
+                HStack(spacing: 4) {
+                    Text(currentLabel)
+                        .font(.callout)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color(NSColor.controlColor))
+                )
+                .hoverCursor(.pointingHand)
             }
         }
         .focusable()
         .editorFocus(focus, field)
+        .modifier(ActivateOnKeyPress { isPresented = true })
         .modifier(CycleOnArrowKeys { cycle($0) })
+        // RULE: a selection control closes its dropdown the moment the value
+        // changes — no matter how it changed (click, arrow-cycling, …).
+        .onChange(of: selection) { _ in isPresented = false }
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(options, id: \.value) { opt in
+                    Button {
+                        selection = opt.value
+                        isPresented = false
+                    } label: {
+                        HStack {
+                            Text(opt.label)
+                            Spacer()
+                            if opt.value == selection {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowHover()
+                }
+            }
+            .padding(6)
+            .frame(minWidth: 220)
+        }
     }
 
     private var currentLabel: String {
@@ -666,8 +707,13 @@ struct HoverCursorModifier: ViewModifier {
     let cursor: NSCursor
 
     func body(content: Content) -> some View {
-        content.onHover { inside in
-            if inside { cursor.push() } else { NSCursor.pop() }
+        // Continuous set (not push/pop) — AppKit cursor rects under the
+        // pointer keep resetting a pushed cursor.
+        content.onContinuousHover { phase in
+            switch phase {
+            case .active: cursor.set()
+            case .ended: NSCursor.arrow.set()
+            }
         }
     }
 }
