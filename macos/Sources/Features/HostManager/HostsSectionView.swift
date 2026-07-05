@@ -1266,22 +1266,6 @@ private struct HostCard<MoveMenu: View>: View {
                 }
             }
             Spacer()
-            if hovering {
-                Button(action: onOpen) {
-                    Image(systemName: "square.and.pencil")
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5).fill(Color.accentColor)
-                        )
-                        .foregroundStyle(.white)
-                        // Whole pill (not just the glyph) is the hit target, so
-                        // edge clicks can't fall through to the card's
-                        // connect/open tap gesture.
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Edit")
-            }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
@@ -1297,7 +1281,6 @@ private struct HostCard<MoveMenu: View>: View {
         .onTapGesture(count: connectClick.tapCount) {
             if host.canConnect { onConnect() } else { onOpen() }
         }
-        .onHover { hovering = $0 }
         .contextMenu {
             Button("Connect", action: onConnect).disabled(!host.canConnect)
             Button("Edit", action: onOpen)
@@ -1306,6 +1289,29 @@ private struct HostCard<MoveMenu: View>: View {
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
         }
+        // Edit pill ABOVE (after) the card's tap gesture — inside it, every
+        // click waits out double-click disambiguation and sometimes loses,
+        // making Edit feel laggy / needing two clicks.
+        .overlay(alignment: .trailing) {
+            if hovering {
+                Button(action: onOpen) {
+                    Image(systemName: "square.and.pencil")
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5).fill(Color.accentColor)
+                        )
+                        .foregroundStyle(.white)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .hoverCursor(.pointingHand)
+                .help("Edit")
+                .padding(.trailing, 12)
+            }
+        }
+        // AFTER the overlay so the tracking area covers the pill too —
+        // otherwise entering the pill reads as "left the card" and hides it.
+        .onHover { hovering = $0 }
     }
 }
 
@@ -1350,20 +1356,9 @@ private struct HostListRow<MoveMenu: View>: View {
                     )
                     .foregroundStyle(.secondary)
             }
-            Button(action: onOpen) {
-                Image(systemName: "square.and.pencil")
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.accentColor.opacity(hovering ? 1.0 : 0.85))
-                    )
-                    .foregroundStyle(.white)
-                    // Whole pill is the hit target — edge clicks must not fall
-                    // through to the row's connect/open tap gesture.
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Edit")
+            // Space reserved for the edit pill, drawn in the overlay below so
+            // its clicks bypass the row's double-click gesture arena.
+            Color.clear.frame(width: 44, height: 28)
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .background(
@@ -1378,7 +1373,6 @@ private struct HostListRow<MoveMenu: View>: View {
         .onTapGesture(count: connectClick.tapCount) {
             if host.canConnect { onConnect() } else { onOpen() }
         }
-        .onHover { hovering = $0 }
         .contextMenu {
             Button("Connect", action: onConnect).disabled(!host.canConnect)
             Button("Edit", action: onOpen)
@@ -1387,5 +1381,25 @@ private struct HostListRow<MoveMenu: View>: View {
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
         }
+        // Edit pill ABOVE (after) the row's tap gesture — inside it, every
+        // click waits out double-click disambiguation and sometimes loses.
+        .overlay(alignment: .trailing) {
+            Button(action: onOpen) {
+                Image(systemName: "square.and.pencil")
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.accentColor.opacity(hovering ? 1.0 : 0.85))
+                    )
+                    .foregroundStyle(.white)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .hoverCursor(.pointingHand)
+            .help("Edit")
+            .padding(.trailing, 12)
+        }
+        // AFTER the overlay so the tracking area covers the pill too.
+        .onHover { hovering = $0 }
     }
 }
