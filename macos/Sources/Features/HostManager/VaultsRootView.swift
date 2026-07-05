@@ -235,11 +235,11 @@ private struct VaultsHostEditorSidebar: View {
             HostEditorView(
                 draft: $draft,
                 isNew: false,
-                onSave: {
+                onCancel: {
+                    // Close is the commit point — flush the last edit first.
                     SavedHostsStore.shared.upsert(draft)
                     onClose()
                 },
-                onCancel: onClose,
                 onDelete: nil,
                 onConnect: nil,
                 onAutosave: { SavedHostsStore.shared.upsert(draft) }

@@ -7,7 +7,6 @@ import AppKit
 struct HostEditorView: View {
     @Binding var draft: SavedHost
     let isNew: Bool
-    let onSave: () -> Void
     let onCancel: () -> Void
     let onDelete: (() -> Void)?
     let onConnect: (() -> Void)?
@@ -27,6 +26,9 @@ struct HostEditorView: View {
     /// The user has focused-and-left the password field (or tried to save) —
     /// only then is an empty password worth flagging.
     @State private var passwordTouched = false
+    /// Transient "Saved" footer indicator, flashed on every autosave.
+    @State private var showSaved = false
+    @State private var savedIndicatorHide: DispatchWorkItem? = nil
 
     // Local mirrors for fields that need text⇆list conversion.
     @State private var localFwdField = ""
@@ -60,27 +62,34 @@ struct HostEditorView: View {
             footer
         }
         .onAppear { syncLocalMirrors() }
-        // Discrete controls (toggles, pickers, tags) autosave on every change —
-        // there's no "blur" moment for them.
-        .onChange(of: draft.forwardAgent) { _ in onAutosave?() }
-        .onChange(of: draft.useCompression) { _ in onAutosave?() }
-        .onChange(of: draft.requestTTY) { _ in onAutosave?() }
-        .onChange(of: draft.authMethod) { _ in onAutosave?() }
-        .onChange(of: draft.strictHostKeyChecking) { _ in onAutosave?() }
-        .onChange(of: draft.groupID) { _ in onAutosave?() }
-        .onChange(of: draft.themeName) { _ in onAutosave?() }
-        .onChange(of: draft.tags) { _ in onAutosave?() }
+        // ONE blanket watcher for every discrete control (toggles, pickers,
+        // tags, …): the signature hashes the whole draft with the type-in
+        // fields blanked out, so ANY future non-text field autosaves without
+        // being registered here. Text fields save on blur instead (autosaveIf).
+        .onChange(of: draft.discreteAutosaveSignature) { _ in fireAutosave() }
         .onChange(of: draft.platform) { newValue in
             // Re-selecting "Auto (detect)" clears the cached detection so the
             // next connect re-probes (e.g. after a server was reinstalled).
             if newValue == HostPlatform.auto.rawValue { draft.detectedPlatform = "" }
-            onAutosave?()
         }
     }
 
     /// Blur handler for text inputs: autosave only when the field carries data.
     private func autosaveIf(_ fieldHasData: Bool) {
-        if fieldHasData { onAutosave?() }
+        if fieldHasData { fireAutosave() }
+    }
+
+    /// Run the owner's autosave and flash the "Saved" footer indicator.
+    private func fireAutosave() {
+        guard let onAutosave else { return }
+        onAutosave()
+        withAnimation(.easeIn(duration: 0.1)) { showSaved = true }
+        savedIndicatorHide?.cancel()
+        let work = DispatchWorkItem {
+            withAnimation(.easeOut(duration: 0.4)) { showSaved = false }
+        }
+        savedIndicatorHide = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
     }
 
     // MARK: - Header
@@ -109,10 +118,21 @@ struct HostEditorView: View {
 
             if let onDelete {
                 Button(action: onDelete) {
-                    Image(systemName: "trash")
+                    if isNew {
+                        // New host: the draft may already be autosaved — this
+                        // throws it away entirely instead of keeping it.
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash")
+                                .font(.caption)
+                            Text("Discard")
+                        }
+                        .contentShape(Rectangle())
+                    } else {
+                        Image(systemName: "trash")
+                    }
                 }
                 .buttonStyle(.plain)
-                .help("Delete host")
+                .help(isNew ? "Discard this draft — nothing is kept" : "Delete host")
                 .foregroundStyle(.red)
             } else {
                 // keep header symmetric
@@ -139,6 +159,7 @@ struct HostEditorView: View {
                 EditorTextRow(icon: "network",
                               placeholder: "IP or Hostname",
                               text: $draft.hostname,
+                              autoFocus: true,
                               onEditingEnded: { autosaveIf(!draft.hostname.isEmpty) })
                     .help("Server IP address or DNS hostname")
             }
@@ -507,14 +528,23 @@ struct HostEditorView: View {
                 .buttonStyle(.plain)
                 .disabled(!draft.canConnect)
             }
-            Spacer()
-            Button("Cancel", action: onCancel)
-            Button("Save") {
-                guard requireValidDraft() else { return }
-                onSave()
+            // Autosave feedback — flashes on every blur/toggle save so the
+            // user knows their edits are already persisted.
+            if showSaved {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Saved")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .transition(.opacity)
             }
-            .keyboardShortcut(.defaultAction)
-            .disabled(!draft.canConnect)
+            Spacer()
+            // No explicit Save — every field autosaves on blur/change, so the
+            // only actions left are Close and Save & Connect.
+            Button("Close", action: onCancel)
+                .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -604,5 +634,37 @@ struct HostEditorView: View {
             draft.identityFile = url.path
             autosaveIf(true)
         }
+    }
+}
+
+private extension SavedHost {
+    /// Change signature for every DISCRETE control in the editor (toggles,
+    /// pickers, tags, …): the whole host hashed with the type-in fields
+    /// blanked out. `onChange(of: discreteAutosaveSignature)` is the single
+    /// blanket autosave hook — a future toggle/picker is covered automatically
+    /// with no registration. Only a NEW type-in field needs excluding here;
+    /// forgetting that fails loud (saves per keystroke), never silent.
+    var discreteAutosaveSignature: Int {
+        var copy = self
+        // Type-in fields — these autosave on BLUR, not per keystroke.
+        copy.hostname = ""
+        copy.label = ""
+        copy.username = ""
+        copy.password = ""
+        copy.note = ""
+        copy.identityFile = ""
+        copy.proxyJump = ""
+        copy.initialCommand = ""
+        copy.localForwards = []
+        copy.remoteForwards = []
+        copy.port = 0
+        copy.connectTimeoutSeconds = 0
+        copy.serverAliveIntervalSeconds = 0
+        copy.dynamicForwardPort = 0
+        // Programmatic/metadata fields — not user controls.
+        copy.detectedPlatform = ""
+        copy.createdAt = .distantPast
+        copy.updatedAt = .distantPast
+        return copy.hashValue
     }
 }

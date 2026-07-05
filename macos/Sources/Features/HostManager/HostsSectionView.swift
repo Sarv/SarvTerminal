@@ -149,9 +149,10 @@ struct HostsSectionView: View {
                         draft: Binding(get: { hostDraft ?? .blank() },
                                        set: { if hostDraft != nil { hostDraft = $0 } }),
                         isNew: isNew,
-                        onSave:   { saveHostDraft() },
                         onCancel: { cancel() },
-                        onDelete: isNew ? nil : { confirmDeleteHost(hostDraft!, fromEditor: true) },
+                        onDelete: isNew
+                            ? { discardNewHostDraft() }
+                            : { confirmDeleteHost(hostDraft!, fromEditor: true) },
                         onConnect: { connectHostDraft() },
                         onAutosave: { autosaveDraftNow() }
                     )
@@ -867,21 +868,6 @@ struct HostsSectionView: View {
         isNew = false
     }
 
-    private func saveHostDraft() {
-        guard var d = hostDraft else { return }
-        if d.label.trimmingCharacters(in: .whitespaces).isEmpty {
-            // Keep the session's "Unnamed (n)" identity if one was assigned,
-            // so explicit Save doesn't suddenly rename the card.
-            d.label = draftAutoLabel ?? d.hostname
-        }
-        if d.port <= 0 || d.port > 65_535 { d.port = 22 }
-        hostsStore.upsert(d)
-        // Clear before cancel() so its autosave flush can't re-upsert the
-        // pre-normalization draft (e.g. without the label defaulting above).
-        hostDraft = nil
-        cancel()
-    }
-
     private func saveGroupDraft() {
         guard let d = groupDraft,
               !d.name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
@@ -890,11 +876,21 @@ struct HostsSectionView: View {
     }
 
     private func cancel() {
-        // Keep whatever a new-host draft holds before closing, so partial
-        // input survives and can be edited later.
-        if isNew { autosaveDraftNow() }
+        // With no explicit Save button, Close is the commit point for any
+        // still-focused field — flush the draft (new or edit) before closing.
+        autosaveDraftNow()
         draftAutoLabel = nil
         hostDraft = nil
+        groupDraft = nil
+        newHostSeed = ""
+    }
+
+    /// Throw away a new-host draft entirely: remove any autosaved copy from
+    /// the store and close WITHOUT the usual close-flush (which would re-save).
+    private func discardNewHostDraft() {
+        if let d = hostDraft { hostsStore.delete(d) }   // no-op if never autosaved
+        hostDraft = nil
+        draftAutoLabel = nil
         groupDraft = nil
         newHostSeed = ""
     }
@@ -942,7 +938,12 @@ struct HostsSectionView: View {
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn {
             hostsStore.delete(host)
-            if fromEditor { cancel() }
+            if fromEditor {
+                // Drop the draft BEFORE cancel() — its close-flush would
+                // otherwise re-upsert (resurrect) the host just deleted.
+                hostDraft = nil
+                cancel()
+            }
         }
     }
 
@@ -975,10 +976,15 @@ struct HostsSectionView: View {
 
     private func connectHostDraft() {
         guard var d = hostDraft, d.canConnect else { return }
-        // Normalize exactly like Save so "Save & Connect" persists the same host.
-        if d.label.trimmingCharacters(in: .whitespaces).isEmpty { d.label = d.hostname }
+        // Normalize, keeping the session's "Unnamed (n)" identity if assigned.
+        if d.label.trimmingCharacters(in: .whitespaces).isEmpty {
+            d.label = draftAutoLabel ?? d.hostname
+        }
         if d.port <= 0 || d.port > 65_535 { d.port = 22 }
         hostsStore.upsert(d)
+        // Clear before cancel() so its flush can't re-upsert the
+        // pre-normalization draft over the version saved above.
+        hostDraft = nil
         cancel()
         connect(d)
     }
