@@ -26,6 +26,8 @@ struct TabChipInteraction: NSViewRepresentable {
     let onActivate: () -> Void
     let onClose: () -> Void
     let onHoverChanged: (Bool) -> Void
+    /// Mouse is over the leading close-button region specifically.
+    let onCloseHoverChanged: (Bool) -> Void
     let menuItems: [TabChipMenuItem]
 
     func makeNSView(context: Context) -> TabChipInteractionView {
@@ -44,6 +46,7 @@ struct TabChipInteraction: NSViewRepresentable {
         view.onActivate = onActivate
         view.onClose = onClose
         view.onHoverChanged = onHoverChanged
+        view.onCloseHoverChanged = onCloseHoverChanged
         view.menuItems = menuItems
     }
 }
@@ -54,9 +57,11 @@ final class TabChipInteractionView: NSView, NSDraggingSource {
     var onActivate: (() -> Void)?
     var onClose: (() -> Void)?
     var onHoverChanged: ((Bool) -> Void)?
+    var onCloseHoverChanged: ((Bool) -> Void)?
     var menuItems: [TabChipMenuItem] = []
 
     private var isTracking = false
+    private var isCloseHovering = false
     private var mouseDownLocation: NSPoint?
     private var menuActions: [() -> Void] = []
 
@@ -68,17 +73,46 @@ final class TabChipInteractionView: NSView, NSDraggingSource {
         trackingAreas.forEach { removeTrackingArea($0) }
         addTrackingArea(NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp],
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp],
             owner: self,
             userInfo: nil))
     }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: isTracking ? .closedHand : .openHand)
+        if isTracking {
+            addCursorRect(bounds, cursor: .closedHand)
+            return
+        }
+        // Normal arrow over the close button; grab hand over the rest.
+        let closeRect = NSRect(x: 0, y: 0, width: min(closeHitWidth, bounds.width), height: bounds.height)
+        addCursorRect(closeRect, cursor: .arrow)
+        let rest = NSRect(x: closeRect.maxX, y: 0,
+                          width: max(0, bounds.width - closeRect.maxX), height: bounds.height)
+        if !rest.isEmpty { addCursorRect(rest, cursor: .openHand) }
     }
 
-    override func mouseEntered(with event: NSEvent) { onHoverChanged?(true) }
-    override func mouseExited(with event: NSEvent) { onHoverChanged?(false) }
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChanged?(true)
+        updateCloseHover(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChanged?(false)
+        setCloseHover(false)
+    }
+
+    override func mouseMoved(with event: NSEvent) { updateCloseHover(with: event) }
+
+    private func updateCloseHover(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        setCloseHover(bounds.contains(p) && p.x <= closeHitWidth)
+    }
+
+    private func setCloseHover(_ value: Bool) {
+        guard value != isCloseHovering else { return }
+        isCloseHovering = value
+        onCloseHoverChanged?(value)
+    }
 
     // Don't call super: we decide click-vs-drag ourselves, and consuming the
     // event keeps the enclosing scroll view / window from stealing the press.

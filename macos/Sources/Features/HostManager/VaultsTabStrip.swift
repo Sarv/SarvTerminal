@@ -457,6 +457,8 @@ private struct TabChip: View {
     @State private var dropTargeted = false
     /// Mouse over the chip (from the AppKit interaction layer) — reveals close.
     @State private var hovering = false
+    /// Mouse directly over the close button — turns the X red.
+    @State private var hoveringClose = false
     private var tabs: VaultsTabsModel { .shared }
 
     /// Leading region (points) that closes on click: left padding (10) + the
@@ -489,11 +491,14 @@ private struct TabChip: View {
         // the AppKit layer below handles the click (by location).
         .overlay(alignment: .leading) {
             if hovering {
+                // On direct hover the button goes red. White-on-red (not a red
+                // X on the neutral circle) so it stays legible when the tab
+                // color itself is red.
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
                     .frame(width: 14, height: 14)
-                    .background(Circle().fill(Color.secondary.opacity(0.20)))
-                    .foregroundStyle(.primary)
+                    .background(Circle().fill(hoveringClose ? Color.red : Color.secondary.opacity(0.20)))
+                    .foregroundStyle(hoveringClose ? Color.white : .primary)
                     .padding(.leading, 10)
                     .allowsHitTesting(false)
             }
@@ -522,6 +527,7 @@ private struct TabChip: View {
                 onActivate: { tabs.selectTerminal(tab.id) },
                 onClose: { tabs.closeTerminal(tab.id) },
                 onHoverChanged: { hovering = $0 },
+                onCloseHoverChanged: { hoveringClose = $0 },
                 menuItems: menuItems)
         )
         .animation(.easeOut(duration: 0.12), value: dropTargeted)
