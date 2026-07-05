@@ -42,6 +42,8 @@ struct VaultsView: View {
     }
 
     @ObservedObject private var sel = HostManagerSelection.shared
+    /// Sidebar row currently under the pointer (hover highlight).
+    @State private var hoveredSection: Section?
     private var selection: Section {
         get { sel.vaultsSection }
         nonmutating set { sel.vaultsSection = newValue }
@@ -50,7 +52,9 @@ struct VaultsView: View {
     var body: some View {
         HStack(spacing: 0) {
             sidebar
-                .frame(width: 190)
+                // Just wide enough that "Port Forwarding" / "Saved Sessions"
+                // stay on one line even in the selected (semibold) weight.
+                .frame(width: 180)
                 .background(Color.black.opacity(0.18))
             Divider()
             Group {
@@ -84,6 +88,7 @@ struct VaultsView: View {
 
     private func sidebarRow(_ sec: Section) -> some View {
         let isSelected = selection == sec
+        let isHovered = hoveredSection == sec
         return Button {
             selection = sec
         } label: {
@@ -92,6 +97,10 @@ struct VaultsView: View {
                     .frame(width: 18)
                     .foregroundStyle(isSelected ? Color.white : .secondary)
                 Text(sec.label)
+                    // Always render the full label — never truncate, never wrap
+                    // (the sidebar width is tuned around the longest label).
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 Spacer()
             }
             .font(.callout.weight(isSelected ? .semibold : .regular))
@@ -100,11 +109,14 @@ struct VaultsView: View {
             .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Color.accentColor : Color.clear)
+                    .fill(isSelected ? Color.accentColor
+                          : isHovered ? Color.primary.opacity(0.08)
+                          : Color.clear)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hoveredSection = $0 ? sec : nil }
     }
 
 }

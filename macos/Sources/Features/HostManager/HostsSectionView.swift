@@ -509,14 +509,16 @@ struct HostsSectionView: View {
 
     // MARK: - Sections
 
-    /// At least 4 cards per row; wider windows fit more (one extra column per
-    /// ~342pt). On narrow windows cards shrink instead of wrapping below 4.
+    /// Responsive grid, always ≥4 cards per row: an extra column appears per
+    /// ~342pt of width, and the cards STRETCH to fill the row at every size —
+    /// no max cap, so small windows shrink the cards and big screens give each
+    /// card the extra width instead of leaving dead space.
     private var gridColumns: [GridItem] {
         let spacing: CGFloat = 12
         let preferredCardWidth: CGFloat = 330
         let fit = Int((contentWidth + spacing) / (preferredCardWidth + spacing))
         let count = max(4, fit)
-        return Array(repeating: GridItem(.flexible(minimum: 200, maximum: 360), spacing: spacing), count: count)
+        return Array(repeating: GridItem(.flexible(minimum: 200), spacing: spacing), count: count)
     }
 
     private var groupsSection: some View {
