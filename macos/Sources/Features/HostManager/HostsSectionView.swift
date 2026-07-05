@@ -24,6 +24,10 @@ struct HostsSectionView: View {
     @State private var groupDraft: HostGroup? = nil
     @State private var isNew: Bool = false
     @State private var newHostSeed: String = ""
+    /// Auto-label given to an unnamed in-progress draft ("Unnamed",
+    /// "Unnamed (2)", …) — assigned once per editing session so the list
+    /// entry doesn't jump around while typing.
+    @State private var draftAutoLabel: String? = nil
 
     /// nil = root level ("All hosts"). When set, the user has drilled into
     /// a group. Backed by the shared selection store so drilling survives a
@@ -131,28 +135,44 @@ struct HostsSectionView: View {
     }
 
     var body: some View {
-        Group {
+        listMode
+        // Editors slide in as a trailing side panel over the dashboard (same
+        // pattern as the SSH popup's "Edit host"), so the list stays visible
+        // and navigation is never lost.
+        .overlay {
             if hostDraft != nil {
-                HostEditorView(
-                    draft: Binding(get: { hostDraft ?? .blank() }, set: { hostDraft = $0 }),
-                    isNew: isNew,
-                    onSave:   { saveHostDraft() },
-                    onCancel: { cancel() },
-                    onDelete: isNew ? nil : { confirmDeleteHost(hostDraft!, fromEditor: true) },
-                    onConnect: { connectHostDraft() }
-                )
+                VaultsEditorSidebar(onClose: { cancel() }) {
+                    HostEditorView(
+                        // The set ignores writes after close: fields committing
+                        // on focus-loss during the dismiss animation must not
+                        // resurrect the draft (= the panel popping back open).
+                        draft: Binding(get: { hostDraft ?? .blank() },
+                                       set: { if hostDraft != nil { hostDraft = $0 } }),
+                        isNew: isNew,
+                        onSave:   { saveHostDraft() },
+                        onCancel: { cancel() },
+                        onDelete: isNew ? nil : { confirmDeleteHost(hostDraft!, fromEditor: true) },
+                        onConnect: { connectHostDraft() },
+                        onAutosave: { autosaveDraftNow() }
+                    )
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             } else if groupDraft != nil {
-                GroupEditorView(
-                    draft: Binding(get: { groupDraft ?? .blank() }, set: { groupDraft = $0 }),
-                    isNew: isNew,
-                    onSave:   { saveGroupDraft() },
-                    onCancel: { cancel() },
-                    onDelete: isNew ? nil : { confirmDeleteGroup(groupDraft!, fromEditor: true) }
-                )
-            } else {
-                listMode
+                VaultsEditorSidebar(onClose: { cancel() }) {
+                    GroupEditorView(
+                        draft: Binding(get: { groupDraft ?? .blank() },
+                                       set: { if groupDraft != nil { groupDraft = $0 } }),
+                        isNew: isNew,
+                        onSave:   { saveGroupDraft() },
+                        onCancel: { cancel() },
+                        onDelete: isNew ? nil : { confirmDeleteGroup(groupDraft!, fromEditor: true) }
+                    )
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
+        .animation(.easeOut(duration: 0.12), value: hostDraft == nil)
+        .animation(.easeOut(duration: 0.12), value: groupDraft == nil)
         // "Edit host" from the SSH connection popup sets a pending host id;
         // open its editor when we appear / when it changes (using the freshest
         // host from the store so a just-saved password shows).
@@ -850,10 +870,15 @@ struct HostsSectionView: View {
     private func saveHostDraft() {
         guard var d = hostDraft else { return }
         if d.label.trimmingCharacters(in: .whitespaces).isEmpty {
-            d.label = d.hostname
+            // Keep the session's "Unnamed (n)" identity if one was assigned,
+            // so explicit Save doesn't suddenly rename the card.
+            d.label = draftAutoLabel ?? d.hostname
         }
         if d.port <= 0 || d.port > 65_535 { d.port = 22 }
         hostsStore.upsert(d)
+        // Clear before cancel() so its autosave flush can't re-upsert the
+        // pre-normalization draft (e.g. without the label defaulting above).
+        hostDraft = nil
         cancel()
     }
 
@@ -865,9 +890,46 @@ struct HostsSectionView: View {
     }
 
     private func cancel() {
+        // Keep whatever a new-host draft holds before closing, so partial
+        // input survives and can be edited later.
+        if isNew { autosaveDraftNow() }
+        draftAutoLabel = nil
         hostDraft = nil
         groupDraft = nil
         newHostSeed = ""
+    }
+
+    // MARK: - Draft autosave
+
+    /// Persists the in-progress host draft (new AND edit) — fired by the
+    /// editor whenever a field with data loses focus or a toggle/picker
+    /// changes, so the list card updates live field by field. New drafts
+    /// with no label get a unique "Unnamed" label until the user names them.
+    private func autosaveDraftNow() {
+        guard var d = hostDraft, hostDraftHasContent(d) else { return }
+        if isNew, d.label.trimmingCharacters(in: .whitespaces).isEmpty {
+            if draftAutoLabel == nil { draftAutoLabel = nextUnnamedLabel() }
+            d.label = draftAutoLabel ?? "Unnamed"
+        }
+        d.updatedAt = Date()
+        hostsStore.upsert(d)
+    }
+
+    /// "Filled at least one info" — any non-default field worth keeping.
+    private func hostDraftHasContent(_ h: SavedHost) -> Bool {
+        let texts = [h.hostname, h.label, h.username, h.password, h.note,
+                     h.identityFile, h.proxyJump, h.initialCommand]
+        if texts.contains(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) { return true }
+        return !h.tags.isEmpty || !h.localForwards.isEmpty || !h.remoteForwards.isEmpty
+            || h.dynamicForwardPort != 0 || h.port != 22
+    }
+
+    private func nextUnnamedLabel() -> String {
+        let existing = Set(hostsStore.hosts.map(\.label))
+        if !existing.contains("Unnamed") { return "Unnamed" }
+        var n = 2
+        while existing.contains("Unnamed (\(n))") { n += 1 }
+        return "Unnamed (\(n))"
     }
 
     private func confirmDeleteHost(_ host: SavedHost, fromEditor: Bool) {
@@ -1180,14 +1242,9 @@ private struct HostCard<MoveMenu: View>: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.85))
-                    .frame(width: 44, height: 44)
-                Image(systemName: "server.rack")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(.white)
-            }
+            // OS logo when known (manual pick or auto-detected), generic
+            // server glyph otherwise — shared with the list row.
+            HostOSIconView(host: host)
             VStack(alignment: .leading, spacing: 2) {
                 Text(host.displayLabel)
                     .fontWeight(.medium)
@@ -1259,10 +1316,8 @@ private struct HostListRow<MoveMenu: View>: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "server.rack")
-                .font(.system(size: 16))
-                .foregroundStyle(.secondary)
-                .frame(width: 28)
+            // Same OS-aware icon as the grid card, row-sized.
+            HostOSIconView(host: host, side: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(host.displayLabel).fontWeight(.medium)
                 Text(host.subtitle.isEmpty ? host.hostname : host.subtitle)

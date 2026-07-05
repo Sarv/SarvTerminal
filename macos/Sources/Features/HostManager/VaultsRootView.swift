@@ -231,13 +231,7 @@ private struct VaultsHostEditorSidebar: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Dimmed scrim over the rest of the screen; click to dismiss.
-            Color.black.opacity(0.35)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture { onClose() }
-
+        VaultsEditorSidebar(onClose: onClose) {
             HostEditorView(
                 draft: $draft,
                 isNew: false,
@@ -247,14 +241,9 @@ private struct VaultsHostEditorSidebar: View {
                 },
                 onCancel: onClose,
                 onDelete: nil,
-                onConnect: nil
+                onConnect: nil,
+                onAutosave: { SavedHostsStore.shared.upsert(draft) }
             )
-            .frame(width: 480)
-            .frame(maxHeight: .infinity)
-            .background(Color(NSColor.windowBackgroundColor))
-            .overlay(alignment: .leading) {
-                Divider()
-            }
         }
     }
 }

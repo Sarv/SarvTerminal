@@ -75,6 +75,10 @@ struct EditorTextRow: View {
     let placeholder: String
     @Binding var text: String
     var monospaced: Bool = false
+    /// Fired when the field loses focus — drives the editor's autosave.
+    var onEditingEnded: (() -> Void)? = nil
+
+    @FocusState private var focused: Bool
 
     var body: some View {
         RowShell(isInteractive: false, onTap: nil) {
@@ -86,6 +90,10 @@ struct EditorTextRow: View {
                 TextField(placeholder, text: $text)
                     .textFieldStyle(.plain)
                     .font(monospaced ? .system(.body, design: .monospaced) : .body)
+                    .focused($focused)
+                    .onChange(of: focused) { nowFocused in
+                        if !nowFocused { onEditingEnded?() }
+                    }
             }
         }
     }
@@ -100,8 +108,11 @@ struct EditorTextRow: View {
 struct EditorPortField: View {
     @Binding var value: Int
     var defaultPort: Int = 22
+    /// Fired when the field loses focus — drives the editor's autosave.
+    var onEditingEnded: (() -> Void)? = nil
 
     @State private var text: String = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -112,6 +123,10 @@ struct EditorPortField: View {
             TextField("\(defaultPort)", text: $text)
                 .textFieldStyle(.plain)
                 .font(.system(.body, design: .monospaced))
+                .focused($focused)
+                .onChange(of: focused) { nowFocused in
+                    if !nowFocused { onEditingEnded?() }
+                }
         }
         .padding(.horizontal, 12).padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -135,19 +150,17 @@ struct EditorPortField: View {
 
 // MARK: - Number field row
 
+/// Int input where 0 means "unset": the field shows the placeholder (not a
+/// literal `0`) until the user types a real value, and clearing it restores 0.
 struct EditorIntRow: View {
     let icon: String
     let placeholder: String
     @Binding var value: Int
+    /// Fired when the field loses focus — drives the editor's autosave.
+    var onEditingEnded: (() -> Void)? = nil
 
-    private static let formatter: NumberFormatter = {
-        let f = NumberFormatter()
-        f.minimum = 0
-        f.maximum = 65_535
-        f.allowsFloats = false
-        f.numberStyle = .none
-        return f
-    }()
+    @State private var text: String = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
         RowShell(isInteractive: false, onTap: nil) {
@@ -156,10 +169,22 @@ struct EditorIntRow: View {
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                     .frame(width: 18)
-                TextField(placeholder, value: $value, formatter: Self.formatter)
+                TextField(placeholder, text: $text)
                     .textFieldStyle(.plain)
                     .font(.system(.body, design: .monospaced))
+                    .focused($focused)
+                    .onChange(of: focused) { nowFocused in
+                        if !nowFocused { onEditingEnded?() }
+                    }
             }
+        }
+        .onAppear {
+            text = value == 0 ? "" : "\(value)"
+        }
+        .onChange(of: text) { newValue in
+            let digits = String(newValue.filter(\.isNumber).prefix(5))
+            if digits != newValue { text = digits }
+            value = min(Int(digits) ?? 0, 65_535)
         }
     }
 }
@@ -170,7 +195,12 @@ struct EditorSecureRow: View {
     let icon: String
     let placeholder: String
     @Binding var text: String
+    /// Fired when the field loses focus — lets the editor defer "required"
+    /// validation until the user has actually visited the field.
+    var onEditingEnded: (() -> Void)? = nil
+
     @State private var revealed = false
+    @FocusState private var revealedFocused: Bool
 
     var body: some View {
         RowShell(isInteractive: false, onTap: nil) {
@@ -183,11 +213,16 @@ struct EditorSecureRow: View {
                     if revealed {
                         TextField(placeholder, text: $text)
                             .textFieldStyle(.plain)
+                            .focused($revealedFocused)
+                            .onChange(of: revealedFocused) { focused in
+                                if !focused { onEditingEnded?() }
+                            }
                     } else {
                         // NOTE: SwiftUI's `SecureField` + `.textFieldStyle(.plain)`
                         // is not editable on macOS (you can't focus or type into
                         // it), so back it with an AppKit NSSecureTextField.
-                        BorderlessSecureField(placeholder: placeholder, text: $text)
+                        BorderlessSecureField(placeholder: placeholder, text: $text,
+                                              onEditingEnded: onEditingEnded)
                     }
                 }
                 Button { revealed.toggle() } label: {
@@ -195,6 +230,7 @@ struct EditorSecureRow: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .help(revealed ? "Hide password" : "Show password")
             }
         }
     }
@@ -207,6 +243,7 @@ struct EditorSecureRow: View {
 struct BorderlessSecureField: NSViewRepresentable {
     let placeholder: String
     @Binding var text: String
+    var onEditingEnded: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> NSSecureTextField {
         let field = NSSecureTextField()
@@ -228,14 +265,23 @@ struct BorderlessSecureField: NSViewRepresentable {
         field.placeholderString = placeholder
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, onEditingEnded: onEditingEnded)
+    }
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
         private let text: Binding<String>
-        init(text: Binding<String>) { self.text = text }
+        private let onEditingEnded: (() -> Void)?
+        init(text: Binding<String>, onEditingEnded: (() -> Void)?) {
+            self.text = text
+            self.onEditingEnded = onEditingEnded
+        }
         func controlTextDidChange(_ note: Notification) {
             guard let field = note.object as? NSTextField else { return }
             text.wrappedValue = field.stringValue
+        }
+        func controlTextDidEndEditing(_ note: Notification) {
+            onEditingEnded?()
         }
     }
 }
@@ -348,6 +394,33 @@ struct EditorExpandRow<Expanded: View>: View {
                     .padding(.bottom, 4)
             }
         }
+    }
+}
+
+// MARK: - Hover highlight for list rows
+
+/// Standard hover highlight for rows in dropdown lists, suggestion lists and
+/// popover menus — every clickable list row should carry this so hover state
+/// is always visible.
+struct ListRowHoverModifier: ViewModifier {
+    var cornerRadius: CGFloat = 6
+    var isEnabled: Bool = true
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(hovering && isEnabled ? Color.secondary.opacity(0.14) : .clear)
+            )
+            .onHover { hovering = $0 }
+    }
+}
+
+extension View {
+    /// Hover highlight for a clickable list/menu row.
+    func listRowHover(cornerRadius: CGFloat = 6, isEnabled: Bool = true) -> some View {
+        modifier(ListRowHoverModifier(cornerRadius: cornerRadius, isEnabled: isEnabled))
     }
 }
 

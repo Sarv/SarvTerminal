@@ -63,7 +63,11 @@ struct TagsField: View {
                     suggestionRow(label: tag, prefix: nil) { commit(tag) }
                 }
             }
-            if !q.isEmpty && !tags.contains(q) {
+            // Offer "Create" only for genuinely new tags — not when the query
+            // exactly matches an existing tag already listed above.
+            let exists = allKnownTags.contains { $0.caseInsensitiveCompare(q) == .orderedSame }
+                || tags.contains { $0.caseInsensitiveCompare(q) == .orderedSame }
+            if !q.isEmpty && !exists {
                 suggestionRow(label: q, prefix: "Create Tag") { commit(q) }
             } else if suggestions.isEmpty && q.isEmpty {
                 Text(allKnownTags.isEmpty
@@ -102,6 +106,7 @@ struct TagsField: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .listRowHover(cornerRadius: 8)
     }
 
     // MARK: - Logic

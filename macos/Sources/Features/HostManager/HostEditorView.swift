@@ -11,18 +11,32 @@ struct HostEditorView: View {
     let onCancel: () -> Void
     let onDelete: (() -> Void)?
     let onConnect: (() -> Void)?
+    /// Called whenever a field with data commits (blur of text inputs, any
+    /// toggle/picker change) so the owner can persist the draft live.
+    var onAutosave: (() -> Void)? = nil
 
     @ObservedObject private var store = SavedHostsStore.shared
+    @ObservedObject private var snippetsStore = SnippetsStore.shared
 
     // Inline expansion / always-shown states for the more advanced rows.
     @State private var showLocalForwards = false
     @State private var showRemoteForwards = false
     @State private var showInitialCommand = false
     @State private var showNote = false
+    @State private var showAdvanced = false
+    /// The user has focused-and-left the password field (or tried to save) —
+    /// only then is an empty password worth flagging.
+    @State private var passwordTouched = false
 
     // Local mirrors for fields that need text⇆list conversion.
     @State private var localFwdField = ""
     @State private var remoteFwdField = ""
+
+    // Focus tracking for the free-text editors, so leaving them autosaves.
+    @FocusState private var noteFocused: Bool
+    @FocusState private var startupFocused: Bool
+    @FocusState private var localFwdFocused: Bool
+    @FocusState private var remoteFwdFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,9 +47,9 @@ struct HostEditorView: View {
                     addressCard
                     generalCard
                     credentialsCard
-                    optionsCard
-                    forwardingCard
+                    startupCard
                     appearanceCard
+                    advancedCard
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 18)
@@ -46,6 +60,21 @@ struct HostEditorView: View {
             footer
         }
         .onAppear { syncLocalMirrors() }
+        // Discrete controls (toggles, pickers, tags) autosave on every change —
+        // there's no "blur" moment for them.
+        .onChange(of: draft.forwardAgent) { _ in onAutosave?() }
+        .onChange(of: draft.useCompression) { _ in onAutosave?() }
+        .onChange(of: draft.requestTTY) { _ in onAutosave?() }
+        .onChange(of: draft.authMethod) { _ in onAutosave?() }
+        .onChange(of: draft.strictHostKeyChecking) { _ in onAutosave?() }
+        .onChange(of: draft.groupID) { _ in onAutosave?() }
+        .onChange(of: draft.themeName) { _ in onAutosave?() }
+        .onChange(of: draft.tags) { _ in onAutosave?() }
+    }
+
+    /// Blur handler for text inputs: autosave only when the field carries data.
+    private func autosaveIf(_ fieldHasData: Bool) {
+        if fieldHasData { onAutosave?() }
     }
 
     // MARK: - Header
@@ -57,9 +86,15 @@ struct HostEditorView: View {
                     Image(systemName: "chevron.left")
                     Text("Hosts")
                 }
+                // Pad + explicit hit shape so the whole "< Hosts" area (not
+                // just the glyphs) is clickable.
+                .padding(.vertical, 4)
+                .padding(.trailing, 6)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+            .help("Back to hosts")
 
             Spacer()
             Text(isNew ? "New host" : "Edit host")
@@ -97,7 +132,9 @@ struct HostEditorView: View {
                 }
                 EditorTextRow(icon: "network",
                               placeholder: "IP or Hostname",
-                              text: $draft.hostname)
+                              text: $draft.hostname,
+                              onEditingEnded: { autosaveIf(!draft.hostname.isEmpty) })
+                    .help("Server IP address or DNS hostname")
             }
         }
     }
@@ -106,9 +143,13 @@ struct HostEditorView: View {
 
     private var generalCard: some View {
         EditorCard("General") {
-            EditorTextRow(icon: "tag", placeholder: "Label", text: $draft.label)
+            EditorTextRow(icon: "tag", placeholder: "Label", text: $draft.label,
+                          onEditingEnded: { autosaveIf(!draft.label.isEmpty) })
+                .help("Display name shown in host lists (empty = hostname)")
             ParentGroupPicker(groupID: $draft.groupID, placeholder: "Parent Group")
+                .help("Group this host lives in")
             TagsField(tags: $draft.tags, allKnownTags: knownTags)
+                .help("Tags for search and filtering")
             EditorExpandRow(icon: "text.alignleft",
                             title: "Description",
                             summary: draft.note.isEmpty ? "" : oneLineSummary(draft.note),
@@ -121,6 +162,10 @@ struct HostEditorView: View {
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
                     )
+                    .focused($noteFocused)
+                    .onChange(of: noteFocused) { focused in
+                        if !focused { autosaveIf(!draft.note.isEmpty) }
+                    }
             }
         }
     }
@@ -132,8 +177,10 @@ struct HostEditorView: View {
             HStack(spacing: 10) {
                 Text("SSH on")
                     .foregroundStyle(.secondary)
-                EditorPortField(value: $draft.port)
+                EditorPortField(value: $draft.port,
+                                onEditingEnded: { autosaveIf(draft.port != 22) })
                     .frame(width: 110)
+                    .help("SSH port — 22 unless the server uses a custom one")
                 Text("port")
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -142,7 +189,9 @@ struct HostEditorView: View {
 
             EditorTextRow(icon: "person",
                           placeholder: "Username",
-                          text: $draft.username)
+                          text: $draft.username,
+                          onEditingEnded: { autosaveIf(!draft.username.isEmpty) })
+                .help("User to sign in as (empty = your macOS username)")
 
             EditorPickerRow(
                 icon: "key",
@@ -150,6 +199,7 @@ struct HostEditorView: View {
                 selection: $draft.authMethod,
                 options: SavedHost.AuthMethod.allCases.map { ($0, $0.display) }
             )
+            .help("How to authenticate: saved password, key file, ssh-agent, or ask every time")
 
             // Auth-input area — always present; renders the right control
             // for the currently selected method.
@@ -158,6 +208,7 @@ struct HostEditorView: View {
             EditorBoolRow(icon: "arrow.triangle.2.circlepath",
                           title: "Agent forwarding (-A)",
                           isOn: $draft.forwardAgent)
+                .help("Let the remote host use your local ssh-agent for onward connections")
         }
     }
 
@@ -169,8 +220,15 @@ struct HostEditorView: View {
         case .password:
             EditorSecureRow(icon: "lock",
                             placeholder: "Password",
-                            text: $draft.password)
-            if draft.password.trimmingCharacters(in: .whitespaces).isEmpty {
+                            text: $draft.password,
+                            onEditingEnded: {
+                                passwordTouched = true
+                                autosaveIf(!draft.password.isEmpty)
+                            })
+                .help("Password used to sign in — stored encrypted on this Mac")
+            // Only nag once the user has visited the field and left it empty —
+            // never on first open of a fresh editor.
+            if passwordTouched, draft.password.trimmingCharacters(in: .whitespaces).isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.circle")
                         .foregroundStyle(.red)
@@ -180,22 +238,17 @@ struct HostEditorView: View {
                 }
                 .padding(.leading, 4)
             }
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.shield")
-                    .foregroundStyle(.orange)
-                Text("Stored in plaintext at ~/.config/sarvterminal/hosts.json. SSH keys are recommended.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.leading, 4)
         case .publicKey:
             HStack(spacing: 6) {
                 EditorTextRow(icon: "doc.text",
                               placeholder: "~/.ssh/id_ed25519",
                               text: $draft.identityFile,
-                              monospaced: true)
+                              monospaced: true,
+                              onEditingEnded: { autosaveIf(!draft.identityFile.isEmpty) })
+                    .help("Path to the private key file used to sign in")
                 Button("Browse…") { pickIdentityFile() }
                     .controlSize(.small)
+                    .help("Choose a key file from ~/.ssh")
             }
         case .agent:
             authInfoRow(icon: "key.horizontal",
@@ -226,85 +279,13 @@ struct HostEditorView: View {
         )
     }
 
-    // MARK: - Options
+    // MARK: - Startup command
 
-    private var optionsCard: some View {
-        EditorCard("Connection options") {
-            EditorPickerRow(
-                icon: "checkmark.shield",
-                title: "Strict host key checking",
-                selection: $draft.strictHostKeyChecking,
-                options: SavedHost.HostKeyChecking.allCases.map { ($0, $0.display) }
-            )
-            EditorIntRow(icon: "clock",
-                         placeholder: "Connect timeout (s)  0 = default",
-                         value: $draft.connectTimeoutSeconds)
-            EditorIntRow(icon: "heart.text.square",
-                         placeholder: "Keep-alive interval (s)  0 = off",
-                         value: $draft.serverAliveIntervalSeconds)
-            EditorTextRow(icon: "arrow.triangle.branch",
-                          placeholder: "Proxy jump  e.g. user@bastion",
-                          text: $draft.proxyJump)
-            EditorBoolRow(icon: "arrow.down.right.and.arrow.up.left",
-                          title: "Compression (-C)",
-                          isOn: $draft.useCompression)
-            EditorBoolRow(icon: "terminal",
-                          title: "Force TTY (-t)",
-                          isOn: $draft.requestTTY)
-        }
-    }
-
-    // MARK: - Forwarding
-
-    private var forwardingCard: some View {
-        EditorCard("Port forwarding") {
-            EditorExpandRow(icon: "arrow.right.square",
-                            title: "Local forwards",
-                            summary: countSummary(draft.localForwards),
-                            isExpanded: $showLocalForwards) {
-                TextEditor(text: $localFwdField)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 60, maxHeight: 120)
-                    .padding(6)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
-                    )
-                    .onChange(of: localFwdField) { _ in
-                        draft.localForwards = splitLines(localFwdField)
-                    }
-                Text("One per line, e.g. 8080:localhost:80")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, 4)
-            }
-            EditorExpandRow(icon: "arrow.left.square",
-                            title: "Remote forwards",
-                            summary: countSummary(draft.remoteForwards),
-                            isExpanded: $showRemoteForwards) {
-                TextEditor(text: $remoteFwdField)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 60, maxHeight: 120)
-                    .padding(6)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
-                    )
-                    .onChange(of: remoteFwdField) { _ in
-                        draft.remoteForwards = splitLines(remoteFwdField)
-                    }
-                Text("One per line, e.g. 9000:localhost:9000")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, 4)
-            }
-            EditorIntRow(icon: "network",
-                         placeholder: "Dynamic SOCKS port  0 = off",
-                         value: $draft.dynamicForwardPort)
-
+    private var startupCard: some View {
+        EditorCard("Startup") {
             EditorExpandRow(icon: "terminal.fill",
                             title: "Startup command",
-                            summary: draft.initialCommand.isEmpty ? "" : "Set",
+                            summary: draft.initialCommand.isEmpty ? "" : oneLineSummary(draft.initialCommand),
                             isExpanded: $showInitialCommand) {
                 TextEditor(text: $draft.initialCommand)
                     .font(.system(.body, design: .monospaced))
@@ -314,11 +295,135 @@ struct HostEditorView: View {
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
                     )
-                Text("Runs on the remote shell once the connection is established.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, 4)
+                    .focused($startupFocused)
+                    .onChange(of: startupFocused) { focused in
+                        if !focused { autosaveIf(!draft.initialCommand.isEmpty) }
+                    }
+                HStack {
+                    Text("Runs on the remote shell once the connection is established.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    if !snippetsStore.snippets.isEmpty {
+                        Menu {
+                            ForEach(snippetsStore.snippets) { snippet in
+                                Button(snippet.displayName) { insertSnippet(snippet) }
+                            }
+                        } label: {
+                            Label("Insert snippet", systemImage: "curlybraces")
+                                .font(.caption)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("Append one of your saved snippets to the startup command")
+                    }
+                }
+                .padding(.leading, 4)
             }
+            .help("Command to run on the remote shell right after connecting")
+        }
+    }
+
+    // MARK: - Advanced (connection options + port forwarding)
+
+    private var advancedCard: some View {
+        EditorCard {
+            EditorExpandRow(icon: "slider.horizontal.3",
+                            title: "Advanced",
+                            summary: showAdvanced ? "" : "Connection options, port forwarding",
+                            isExpanded: $showAdvanced) {
+                VStack(alignment: .leading, spacing: 8) {
+                    EditorSubheading(text: "Connection options")
+                    EditorPickerRow(
+                        icon: "checkmark.shield",
+                        title: "Strict host key checking",
+                        selection: $draft.strictHostKeyChecking,
+                        options: SavedHost.HostKeyChecking.allCases.map { ($0, $0.display) }
+                    )
+                    .help("What to do when the server's host key is unknown or has changed")
+                    EditorIntRow(icon: "clock",
+                                 placeholder: "Connect timeout in seconds",
+                                 value: $draft.connectTimeoutSeconds,
+                                 onEditingEnded: { autosaveIf(draft.connectTimeoutSeconds != 0) })
+                        .help("Give up connecting after this many seconds — empty uses the system default")
+                    EditorIntRow(icon: "heart.text.square",
+                                 placeholder: "Keep-alive interval in seconds",
+                                 value: $draft.serverAliveIntervalSeconds,
+                                 onEditingEnded: { autosaveIf(draft.serverAliveIntervalSeconds != 0) })
+                        .help("Ping the server every N seconds so idle sessions don't drop — empty turns it off")
+                    EditorTextRow(icon: "arrow.triangle.branch",
+                                  placeholder: "Proxy jump host, e.g. user@bastion",
+                                  text: $draft.proxyJump,
+                                  onEditingEnded: { autosaveIf(!draft.proxyJump.isEmpty) })
+                        .help("Reach this host through an intermediate jump host (-J)")
+                    EditorBoolRow(icon: "arrow.down.right.and.arrow.up.left",
+                                  title: "Compression (-C)",
+                                  isOn: $draft.useCompression)
+                        .help("Compress traffic — helps on slow links, wastes CPU on fast ones")
+                    EditorBoolRow(icon: "terminal",
+                                  title: "Force TTY (-t)",
+                                  isOn: $draft.requestTTY)
+                        .help("Force a terminal allocation, e.g. for interactive commands run at startup")
+
+                    EditorSubheading(text: "Port forwarding")
+                    EditorExpandRow(icon: "arrow.right.square",
+                                    title: "Local forwards",
+                                    summary: countSummary(draft.localForwards),
+                                    isExpanded: $showLocalForwards) {
+                        TextEditor(text: $localFwdField)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 60, maxHeight: 120)
+                            .padding(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
+                            )
+                            .onChange(of: localFwdField) { _ in
+                                draft.localForwards = splitLines(localFwdField)
+                            }
+                            .focused($localFwdFocused)
+                            .onChange(of: localFwdFocused) { focused in
+                                if !focused { autosaveIf(!draft.localForwards.isEmpty) }
+                            }
+                        Text("One per line, e.g. 8080:localhost:80")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, 4)
+                    }
+                    .help("Expose a remote port on your Mac (-L)")
+                    EditorExpandRow(icon: "arrow.left.square",
+                                    title: "Remote forwards",
+                                    summary: countSummary(draft.remoteForwards),
+                                    isExpanded: $showRemoteForwards) {
+                        TextEditor(text: $remoteFwdField)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(minHeight: 60, maxHeight: 120)
+                            .padding(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
+                            )
+                            .onChange(of: remoteFwdField) { _ in
+                                draft.remoteForwards = splitLines(remoteFwdField)
+                            }
+                            .focused($remoteFwdFocused)
+                            .onChange(of: remoteFwdFocused) { focused in
+                                if !focused { autosaveIf(!draft.remoteForwards.isEmpty) }
+                            }
+                        Text("One per line, e.g. 9000:localhost:9000")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, 4)
+                    }
+                    .help("Expose a local port on the remote host (-R)")
+                    EditorIntRow(icon: "network",
+                                 placeholder: "SOCKS proxy port, e.g. 1080",
+                                 value: $draft.dynamicForwardPort,
+                                 onEditingEnded: { autosaveIf(draft.dynamicForwardPort != 0) })
+                        .help("Start a dynamic SOCKS proxy on this local port (-D) — empty turns it off")
+                }
+            }
+            .help("Less-used options: host key policy, timeouts, proxy jump, port forwarding")
         }
     }
 
@@ -326,6 +431,29 @@ struct HostEditorView: View {
 
     private var appearanceCard: some View {
         EditorCard("Appearance") {
+            HStack(spacing: 10) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                Text("Operating system")
+                Spacer()
+                Picker("", selection: $draft.platform) {
+                    ForEach(HostPlatform.allCases) { p in
+                        Text(p.displayName).tag(p.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 220)
+                .help("Sets the host's icon. Auto detects the OS on the first successful key/agent connect.")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 11)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
+            )
             HStack(spacing: 10) {
                 Image(systemName: "paintpalette")
                     .font(.system(size: 14))
@@ -335,6 +463,7 @@ struct HostEditorView: View {
                 Spacer()
                 ThemePicker(themeName: $draft.themeName)
                     .frame(maxWidth: 320)
+                    .help("Terminal theme used for this host's tabs")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 11)
@@ -355,6 +484,7 @@ struct HostEditorView: View {
         HStack {
             if let onConnect {
                 Button {
+                    guard requireValidDraft() else { return }
                     onConnect()
                 } label: {
                     HStack(spacing: 6) {
@@ -369,19 +499,32 @@ struct HostEditorView: View {
                     .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
-                .disabled(!draft.canSave)
+                .disabled(!draft.canConnect)
             }
             Spacer()
             Button("Cancel", action: onCancel)
-            Button("Save", action: onSave)
-                .keyboardShortcut(.defaultAction)
-                .disabled(!draft.canSave)
+            Button("Save") {
+                guard requireValidDraft() else { return }
+                onSave()
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(!draft.canConnect)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
     }
 
     // MARK: - Helpers
+
+    /// Gate for Save / Save & Connect: a save attempt with a missing required
+    /// password reveals the inline error instead of silently doing nothing.
+    private func requireValidDraft() -> Bool {
+        guard draft.canSave else {
+            passwordTouched = true
+            return false
+        }
+        return true
+    }
 
     private func syncLocalMirrors() {
         localFwdField = draft.localForwards.joined(separator: "\n")
@@ -390,6 +533,30 @@ struct HostEditorView: View {
         if !draft.initialCommand.isEmpty   { showInitialCommand = true }
         if !draft.localForwards.isEmpty    { showLocalForwards = true }
         if !draft.remoteForwards.isEmpty   { showRemoteForwards = true }
+        // Open Advanced when any of its values differ from the defaults, so
+        // nothing configured is ever hidden behind the collapsed row.
+        if draft.strictHostKeyChecking != .ask
+            || draft.connectTimeoutSeconds != 0
+            || draft.serverAliveIntervalSeconds != 0
+            || !draft.proxyJump.isEmpty
+            || draft.useCompression
+            || draft.requestTTY
+            || !draft.localForwards.isEmpty
+            || !draft.remoteForwards.isEmpty
+            || draft.dynamicForwardPort != 0 {
+            showAdvanced = true
+        }
+    }
+
+    /// Appends a saved snippet's command to the startup command.
+    private func insertSnippet(_ snippet: Snippet) {
+        if draft.initialCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft.initialCommand = snippet.command
+        } else {
+            draft.initialCommand += "\n" + snippet.command
+        }
+        showInitialCommand = true
+        autosaveIf(true)
     }
 
     /// All tags currently used across saved hosts — deduped + alphabetized.
@@ -429,6 +596,7 @@ struct HostEditorView: View {
         panel.showsHiddenFiles = true
         if panel.runModal() == .OK, let url = panel.url {
             draft.identityFile = url.path
+            autosaveIf(true)
         }
     }
 }

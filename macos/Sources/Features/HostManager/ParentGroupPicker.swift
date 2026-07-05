@@ -156,6 +156,7 @@ struct ParentGroupPicker: View {
         }
         .buttonStyle(.plain)
         .disabled(disabled)
+        .listRowHover(isEnabled: !disabled)
     }
 
     // MARK: - Helpers
