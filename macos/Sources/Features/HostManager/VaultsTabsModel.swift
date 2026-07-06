@@ -172,14 +172,18 @@ final class VaultsTabsModel: ObservableObject {
 
     @Published private(set) var terminals: [TerminalTab] = [] {
         didSet {
-            observeTabChanges()
             persistSession()
         }
     }
     /// Per-tab `objectWillChange` subscriptions so a change to a tab's OWN state
-    /// (color, custom name, split layout, pane titles) re-persists the session —
-    /// not just adding/removing tabs. Rebuilt whenever `terminals` changes.
+    /// (color, custom name, split layout, pane-title overrides) re-persists the
+    /// session — not just adding/removing tabs. Rebuilt on every persist.
     private var tabObservers: [AnyCancellable] = []
+    /// Per-surface `$title` subscriptions: pane titles live on the SURFACES,
+    /// not the tab, so a manual rename (Change Terminal Title) or a shell
+    /// retitle would otherwise never re-persist — and the terminate-time
+    /// persist can't catch it when the app dies without a graceful quit.
+    private var titleObservers: [AnyCancellable] = []
     /// Coalesce a burst of tab changes into a single write per runloop tick.
     private var persistScheduled = false
     /// Tabs from the previous run, loaded at init and offered for reopen once
@@ -265,6 +269,9 @@ final class VaultsTabsModel: ObservableObject {
 
     /// Persist the current open tabs so they can be reopened next launch.
     func persistSession() {
+        // Splits and pane drags add surfaces without touching `terminals`, so
+        // re-sync the tab and per-surface subscriptions on every persist.
+        observeTabChanges()
         TabSessionStore.save(sessionSnapshot())
     }
 
@@ -273,6 +280,14 @@ final class VaultsTabsModel: ObservableObject {
     private func observeTabChanges() {
         tabObservers = terminals.map { tab in
             tab.objectWillChange.sink { [weak self] in self?.schedulePersist() }
+        }
+        titleObservers = terminals.flatMap { tab in
+            (tab.surfaceTree.root?.leaves() ?? []).map { leaf in
+                leaf.$title
+                    .dropFirst()
+                    .removeDuplicates()
+                    .sink { [weak self] _ in self?.schedulePersist() }
+            }
         }
     }
 
@@ -1937,8 +1952,11 @@ extension VaultsTabsModel {
     }
 
     private func savedPane(for view: Ghostty.SurfaceView, tab: TerminalTab) -> SavedSession.Pane {
-        let title = tab.paneTitleOverrides[view.id]
-            ?? (view.title.isEmpty ? nil : view.title)
+        // A manual rename (Change Terminal Title) wins, matching the pane
+        // header; otherwise the sticky override, then the live title.
+        let title = view.isUserTitled && !view.title.isEmpty
+            ? view.title
+            : tab.paneTitleOverrides[view.id] ?? (view.title.isEmpty ? nil : view.title)
         // A pane with a live SSH connection is saved as SSH; everything else
         // (plain shells, unresolved choosers) is saved as a local shell.
         if let conn = connections[view.id] {
