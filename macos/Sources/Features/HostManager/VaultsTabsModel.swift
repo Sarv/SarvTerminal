@@ -1645,6 +1645,57 @@ final class VaultsTabsModel: ObservableObject {
         }
     }
 
+    /// libghostty asks for confirmation before completing a clipboard action —
+    /// most commonly a paste it flags as unsafe (e.g. a browser copy carrying a
+    /// trailing newline when the shell isn't in bracketed-paste mode), plus
+    /// OSC 52 clipboard reads/writes. `BaseTerminalController` only answers this
+    /// for surfaces in its own windows; embedded Vaults surfaces have no such
+    /// controller, so without a handler here the request is dropped and the
+    /// paste silently does nothing.
+    private func handleConfirmClipboard(_ note: Notification) {
+        guard let surfaceView = note.object as? Ghostty.SurfaceView,
+              tab(containing: surfaceView) != nil,
+              let contents = note.userInfo?[Ghostty.Notification.ConfirmClipboardStrKey] as? String,
+              let state = note.userInfo?[Ghostty.Notification.ConfirmClipboardStateKey] as? UnsafeMutableRawPointer?,
+              let request = note.userInfo?[Ghostty.Notification.ConfirmClipboardRequestKey] as? Ghostty.ClipboardRequest
+        else { return }
+
+        let title: String
+        switch request {
+        case .paste: title = "Potentially Unsafe Paste"
+        case .osc_52_read, .osc_52_write: title = "Authorize Clipboard Access"
+        }
+
+        // The alert shows a short preview, not the full contents — pastes can
+        // be arbitrarily large.
+        let preview = contents.count > 300 ? "\(contents.prefix(300))…" : contents
+        Task { @MainActor in
+            SarvAlert.present(
+                title: title,
+                message: "\(request.text())\n\n\(preview)",
+                buttons: [
+                    .init(ClipboardConfirmationView.Action.text(.confirm, request), isDefault: true),
+                    .init(ClipboardConfirmationView.Action.text(.cancel, request), isCancel: true),
+                ]) { result in
+                    let confirmed = result.buttonIndex == 0
+                    switch request {
+                    case let .osc_52_write(pasteboard):
+                        guard confirmed else { return }
+                        let pb = pasteboard ?? NSPasteboard.general
+                        pb.declareTypes([.string], owner: nil)
+                        pb.setString(contents, forType: .string)
+                    case .osc_52_read, .paste:
+                        guard let surface = surfaceView.surface else { return }
+                        Ghostty.App.completeClipboardRequest(
+                            surface,
+                            data: confirmed ? contents : "",
+                            state: state,
+                            confirmed: true)
+                    }
+                }
+        }
+    }
+
     private func installObservers() {
         let nc = NotificationCenter.default
         func observe(_ name: Notification.Name, _ handler: @escaping (Notification) -> Void) {
@@ -1653,6 +1704,7 @@ final class VaultsTabsModel: ObservableObject {
             })
         }
 
+        observe(Ghostty.Notification.confirmClipboard) { [weak self] in self?.handleConfirmClipboard($0) }
         observe(Ghostty.Notification.ghosttyCloseSurface) { [weak self] in self?.handleClose($0) }
         observe(Ghostty.Notification.ghosttyNewSplit) { [weak self] in self?.handleNewSplit($0) }
         observe(Ghostty.Notification.ghosttyFocusSplit) { [weak self] in self?.handleFocusSplit($0) }
