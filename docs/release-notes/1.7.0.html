@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sarv Terminal 1.7.0</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Sarv Terminal 1.7.0</h1>
+  <div class="meta">Improvements &amp; fixes</div>
+  <h2>Clipboard</h2>
+  <ul>
+    <li>paste single-line text without confirmation</li>
+    <li>answer paste confirmation for embedded Vaults terminals</li>
+  </ul>
+  <h2>Hosts</h2>
+  <ul>
+    <li>persist manually set pane titles so they survive relaunch and reopen (fixes #11)</li>
+    <li>let a manually set terminal title win over the stored pane-name override (fixes #10)</li>
+    <li>route staged ssh connects through +ssh for remote terminfo setup (#9)</li>
+  </ul>
+  <h2>Splits</h2>
+  <ul>
+    <li>write pane drag UUID to the pasteboard eagerly so pane-to-pane drops resolve (fixes #5)</li>
+  </ul>
+  <h2>Config</h2>
+  <ul>
+    <li>enable ssh-env and ssh-terminfo shell integration by default (#9)</li>
+  </ul>
+</body>
+</html>
