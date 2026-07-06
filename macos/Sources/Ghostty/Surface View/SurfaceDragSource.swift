@@ -153,8 +153,16 @@ extension Ghostty {
         override func mouseDragged(with event: NSEvent) {
             guard !isTracking, let surfaceView = surfaceView else { return }
 
-            // Create our dragging item from our transferable
-            guard let pasteboardItem = surfaceView.pasteboardItem() else { return }
+            // Write the surface UUID EAGERLY (16 raw bytes, the same encoding
+            // as the Transferable). The lazy `pasteboardItem()` bridge cannot
+            // fulfill a synchronous main-thread `data(forType:)` read at drop
+            // time (its NSItemProvider load blocks on the main thread), which
+            // made pane→pane drops silently no-op while the async-loading tab
+            // strip path worked.
+            let pasteboardItem = NSPasteboardItem()
+            pasteboardItem.setData(
+                withUnsafeBytes(of: surfaceView.id.uuid) { Data($0) },
+                forType: .ghosttySurfaceId)
             let item = NSDraggingItem(pasteboardWriter: pasteboardItem)
 
             // Create a scaled preview image from the surface snapshot
