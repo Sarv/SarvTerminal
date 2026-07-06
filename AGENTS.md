@@ -31,6 +31,17 @@ A file for [guiding coding agents](https://agents.md/).
 - macOS app: `macos/`
 - GTK (Linux and FreeBSD) app: `src/apprt/gtk`
 
+## Demo App & Screenshots
+
+- The **demo app** (isolated sample workspace for capturing README/marketing
+  screenshots) and the **screenshot capture workflow** are NOT committed to this
+  repo. Their source of truth + full docs live at
+  `../workspace/scripts/sarvterminal/demo/` (`demo.sh`, `DemoSeeder.swift`,
+  `demo-integration.patch`, and `README.md`).
+- If the user talks about the "demo app" or taking screenshots for it, read that
+  folder's `README.md` first and use those files (restore via its instructions if
+  the demo code isn't present in the working tree).
+
 ## Issue and PR Guidelines
 
 - Never create an issue.
