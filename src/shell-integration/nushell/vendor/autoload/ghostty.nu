@@ -12,7 +12,7 @@ export module ghostty {
       return
     }
 
-    let ghostty = ($env.GHOSTTY_BIN_DIR? | default "") | path join "ghostty"
+    let ghostty = ($env.GHOSTTY_EXE? | default (($env.GHOSTTY_BIN_DIR? | default "") | path join "ghostty"))
     mut flags = []
     if not (has_feature "ssh-env") {
       $flags = ($flags ++ ["--forward-env=false"])

@@ -683,6 +683,11 @@ const Subprocess = struct {
             // running in Ghostty.
             try env.put("GHOSTTY_BIN_DIR", exe_dir);
 
+            // The full executable path. The shell-integration ssh wrapper
+            // uses this because the binary is not named `ghostty` in this
+            // fork (the macOS bundle executable is `SarvTerminal`).
+            try env.put("GHOSTTY_EXE", exe_bin_path);
+
             // Append if we have a path. We want to append so that ghostty is
             // the last priority in the path. If we don't have a path set
             // then we just set it to the directory of the binary.
