@@ -980,9 +980,9 @@ let kShellIntegrationFeatures: [ShellIntegrationFeature] = [
     .init(tag: "title", label: "Title",
           detail: "Update window title via shell integration.", defaultOn: true),
     .init(tag: "ssh-env", label: "SSH env",
-          detail: "Forward TERM and color env vars over SSH.", defaultOn: false),
+          detail: "Forward TERM and color env vars over SSH.", defaultOn: true),
     .init(tag: "ssh-terminfo", label: "SSH terminfo",
-          detail: "Install Ghostty's terminfo on remote hosts.", defaultOn: false),
+          detail: "Install Ghostty's terminfo on remote hosts.", defaultOn: true),
     .init(tag: "path", label: "PATH",
           detail: "Add Ghostty's binary directory to PATH.", defaultOn: true),
 ]

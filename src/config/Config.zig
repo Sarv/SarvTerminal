@@ -2835,7 +2835,7 @@ keybind: Keybinds = .{},
 ///     remote hosts and propagates COLORTERM, TERM_PROGRAM, and TERM_PROGRAM_VERSION.
 ///     Whether or not these variables will be accepted by the remote host(s) will
 ///     depend on whether or not the variables are allowed in their sshd_config.
-///     (Available since: 1.2.0)
+///     Enabled by default. (Available since: 1.2.0)
 ///
 ///   * `ssh-terminfo` - Enable automatic terminfo installation on remote hosts.
 ///     Attempts to install Ghostty's terminfo entry using `infocmp` and `tic` when
@@ -2844,7 +2844,7 @@ keybind: Keybinds = .{},
 ///     remote host, it will be automatically "cached" to avoid repeat installations.
 ///     If desired, the `+ssh-cache` CLI action can be used to manage the installation
 ///     cache manually using various arguments.
-///     (Available since: 1.2.0)
+///     Enabled by default. (Available since: 1.2.0)
 ///
 ///   * `path` - Add Ghostty's binary directory to PATH. This ensures the `ghostty`
 ///     command is available in the shell even if shell init scripts reset PATH.
@@ -8678,8 +8678,8 @@ pub const ShellIntegrationFeatures = packed struct {
     cursor: bool = true,
     sudo: bool = false,
     title: bool = true,
-    @"ssh-env": bool = false,
-    @"ssh-terminfo": bool = false,
+    @"ssh-env": bool = true,
+    @"ssh-terminfo": bool = true,
     path: bool = true,
 };
 
