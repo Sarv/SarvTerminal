@@ -1022,7 +1022,15 @@ final class VaultsTabsModel: ObservableObject {
     /// though the surface's own live title is generic/ghost. nil → live title.
     func paneTitleOverride(for surfaceID: UUID) -> String? {
         for tab in terminals {
-            if let name = tab.paneTitleOverrides[surfaceID], !name.isEmpty { return name }
+            if let name = tab.paneTitleOverrides[surfaceID], !name.isEmpty {
+                // A manual rename (Change Terminal Title) beats the stored
+                // override — otherwise the override masks it forever. Renaming
+                // back to blank restores the override.
+                for surface in tab.surfaceTree where surface.id == surfaceID {
+                    if surface.isUserTitled { return nil }
+                }
+                return name
+            }
         }
         return nil
     }

@@ -63,7 +63,7 @@ struct VaultsFocusModeView: View {
                     ForEach(panes, id: \.id) { pane in
                         FocusSidebarRow(
                             surfaceView: pane,
-                            overrideTitle: tab.paneTitleOverrides[pane.id],
+                            overrideTitle: tabs.paneTitleOverride(for: pane.id),
                             isSelected: selected?.id == pane.id,
                             broadcasting: tab.broadcasting,
                             onSelect: { tabs.selectFocusModePane(pane) },

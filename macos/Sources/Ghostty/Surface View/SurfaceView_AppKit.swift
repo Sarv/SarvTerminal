@@ -607,6 +607,11 @@ extension Ghostty {
             NSCursor.setHiddenUntilMouseMoves(!visible)
         }
 
+        /// True when the user set the title manually (Change Terminal Title).
+        /// Display layers use this to let the manual title win over any stored
+        /// pane-name override.
+        var isUserTitled: Bool { titleFromTerminal != nil }
+
         /// Set the title by prompting the user.
         func promptTitle() {
             let apply: (SarvAlert.Result) -> Void = { [weak self] result in
