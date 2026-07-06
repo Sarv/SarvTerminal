@@ -169,10 +169,10 @@ struct SFTPView: View {
                         Spacer()
                         Text(t.bytesPerSecond > 0 ? "\(byteString(Int64(t.bytesPerSecond)))/s" : "—")
                     }
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondaryText)
                 } else {
                     ProgressView()
-                    Text("Transferring…").font(.caption).foregroundStyle(.secondary)
+                    Text("Transferring…").font(.caption).foregroundStyle(.secondaryText)
                 }
                 if !t.direct {
                     Label("Servers can't connect directly — relaying through this Mac (uses your bandwidth).",

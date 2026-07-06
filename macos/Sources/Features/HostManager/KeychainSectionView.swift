@@ -63,10 +63,10 @@ struct KeychainSectionView: View {
 
     private var searchBar: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
             TextField("Search keys", text: $search).textFieldStyle(.plain)
             Spacer()
-            Text("\(filtered.count) of \(manager.keys.count)").font(.caption).foregroundStyle(.secondary)
+            Text("\(filtered.count) of \(manager.keys.count)").font(.caption).foregroundStyle(.secondaryText)
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
     }
@@ -153,7 +153,7 @@ private struct KeyRow: View {
                 }
                 Text(key.comment.isEmpty ? key.fingerprint : "\(key.comment) · \(key.fingerprint)")
                     .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 8)
@@ -266,9 +266,9 @@ private struct KeyGeneratorView: View {
     private func field<Content: View>(_ label: String, help: String? = nil,
                                        @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(label).font(.caption).foregroundStyle(.secondaryText)
             content()
-            if let help { Text(help).font(.caption2).foregroundStyle(.tertiary) }
+            if let help { Text(help).font(.caption2).foregroundStyle(.tertiaryText) }
         }
     }
 

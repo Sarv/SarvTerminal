@@ -47,7 +47,7 @@ struct NotificationsInboxView: View {
                 Button("Clear") { center.clear() }
                     .buttonStyle(.plain)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
             }
         }
         .padding(.horizontal, 12)
@@ -59,9 +59,9 @@ struct NotificationsInboxView: View {
             Spacer()
             Image(systemName: "bell.slash")
                 .font(.system(size: 28, weight: .light))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             Text("No notifications")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -79,11 +79,11 @@ struct NotificationsInboxView: View {
                     .foregroundStyle(.primary)
                 Text(item.body)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .lineLimit(3)
                 Text(item.date, format: .relative(presentation: .named))
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
             }
             Spacer(minLength: 8)
             // Explicit affordance so it's obvious the row is actionable.

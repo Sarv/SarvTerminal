@@ -121,7 +121,7 @@ struct VaultsTabStrip: View {
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .help("Switch vault")
@@ -240,12 +240,12 @@ struct VaultsTabStrip: View {
                             Capsule(style: .continuous)
                                 .fill(Color.secondary.opacity(0.25))
                         )
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 }
                 if trailingChevron {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 }
             }
             .font(.system(size: 12, weight: .medium))
@@ -319,7 +319,7 @@ struct VaultsTabStrip: View {
         Button(action: newTabAction) {
             Image(systemName: "plus")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .padding(.horizontal, 8).padding(.vertical, 6)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -380,7 +380,7 @@ private struct TerminalTabItem: View {
                 Spacer(minLength: 4)
                 Text("⌘\(number)")
                     .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
             }
         }
         .font(.system(size: 12, weight: isActive ? .semibold : .medium))
@@ -573,11 +573,11 @@ struct TabColorPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Tab Color").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+            Text("Tab Color").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondaryText)
             LazyVGrid(columns: columns, spacing: 10) {
                 // "None" swatch.
                 swatch(color: nil, isSelected: selected == nil) {
-                    Image(systemName: "circle.slash").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Image(systemName: "circle.slash").font(.system(size: 12)).foregroundStyle(.secondaryText)
                 }
                 ForEach(VaultsTabsModel.tabColorOptions) { option in
                     swatch(color: option.color, isSelected: selected == option.color) {

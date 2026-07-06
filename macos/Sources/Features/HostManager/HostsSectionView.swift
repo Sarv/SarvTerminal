@@ -238,7 +238,7 @@ struct HostsSectionView: View {
             if !quickConnect.isEmpty {
                 Button { quickConnect = "" } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.tertiaryText)
                 }
                 .buttonStyle(.plain)
                 .help("Clear")
@@ -380,7 +380,7 @@ struct HostsSectionView: View {
                 Divider()
                 let tags = allKnownTags
                 if tags.isEmpty {
-                    Text("No tags yet").foregroundStyle(.secondary)
+                    Text("No tags yet").foregroundStyle(.secondaryText)
                 } else {
                     ForEach(tags, id: \.self) { t in
                         Button {
@@ -437,7 +437,7 @@ struct HostsSectionView: View {
                     .frame(width: 26, height: 26)
                 Image(systemName: "person.fill")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
             }
             .help("Profile (coming soon)")
 
@@ -445,7 +445,7 @@ struct HostsSectionView: View {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .medium))
                     .frame(width: 22, height: 22)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .background(
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
                             .stroke(Color.secondary.opacity(0.30), lineWidth: 1)
@@ -496,7 +496,7 @@ struct HostsSectionView: View {
                 if i > 0 {
                     Image(systemName: "chevron.right")
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.tertiaryText)
                 }
                 Button {
                     focusedGroupID = item.id
@@ -747,9 +747,9 @@ struct HostsSectionView: View {
 
     private var noMatchesState: some View {
         VStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.tertiary)
+            Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.tertiaryText)
             Text("No matches").font(.headline)
-            Text("Try a different search term.").font(.caption).foregroundStyle(.secondary)
+            Text("Try a different search term.").font(.caption).foregroundStyle(.secondaryText)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40)
@@ -801,7 +801,7 @@ struct HostsSectionView: View {
                 VStack(spacing: 4) {
                     Text("Create host").font(.title2.weight(.semibold))
                     Text("Save your connection details as hosts to connect in one click.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .multilineTextAlignment(.center)
                 }
                 VStack(spacing: 10) {
@@ -1082,14 +1082,14 @@ private struct GroupCard<MoveMenu: View>: View {
                         .lineLimit(1)
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .lineLimit(1)
                 }
                 Spacer()
                 if hovering {
                     Image(systemName: "chevron.right")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.tertiaryText)
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 10)
@@ -1150,7 +1150,7 @@ private struct GroupListRow<MoveMenu: View>: View {
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(group.displayName).fontWeight(.medium)
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondaryText)
                 }
                 Spacer()
                 if hovering {
@@ -1164,13 +1164,13 @@ private struct GroupListRow<MoveMenu: View>: View {
                         Divider()
                         Button("Delete", role: .destructive, action: onDelete)
                     } label: {
-                        Image(systemName: "ellipsis.circle").foregroundStyle(.secondary)
+                        Image(systemName: "ellipsis.circle").foregroundStyle(.secondaryText)
                     }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 }
                 Image(systemName: "chevron.right")
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
             }
             .padding(.horizontal, 12).padding(.vertical, 10)
             .background(
@@ -1257,14 +1257,14 @@ private struct HostCard<MoveMenu: View>: View {
                     .lineLimit(1)
                 Text(host.subtitle.isEmpty ? host.hostname : host.subtitle)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .lineLimit(1)
                 if !groupPath.isEmpty {
                     HStack(spacing: 3) {
                         Image(systemName: "folder").font(.caption2)
                         Text(groupPath).font(.caption2).lineLimit(1)
                     }
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
                 }
             }
             Spacer()
@@ -1338,13 +1338,13 @@ private struct HostListRow<MoveMenu: View>: View {
                 Text(host.displayLabel).fontWeight(.medium)
                 Text(host.subtitle.isEmpty ? host.hostname : host.subtitle)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 if !groupPath.isEmpty {
                     HStack(spacing: 3) {
                         Image(systemName: "folder").font(.caption2)
                         Text(groupPath).font(.caption2).lineLimit(1)
                     }
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
                 }
             }
             Spacer()
@@ -1356,7 +1356,7 @@ private struct HostListRow<MoveMenu: View>: View {
                         RoundedRectangle(cornerRadius: 4)
                             .fill(Color.accentColor.opacity(0.18))
                     )
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
             }
             // Space reserved for the edit pill, drawn in the overlay below so
             // its clicks bypass the row's double-click gesture arena.

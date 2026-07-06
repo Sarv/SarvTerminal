@@ -16,7 +16,7 @@ struct SessionLayoutPreview: View {
                 Spacer()
                 Text(session.summary)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
             }
             node(session.layout)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

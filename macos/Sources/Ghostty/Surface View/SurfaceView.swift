@@ -403,13 +403,13 @@ extension Ghostty {
                         if let selected = searchState.selected {
                             Text("\(selected + 1)/\(searchState.total, default: "?")")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(.secondaryText)
                                 .monospacedDigit()
                                 .padding(.trailing, 8)
                         } else if let total = searchState.total {
                             Text("-/\(total)")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(.secondaryText)
                                 .monospacedDigit()
                                 .padding(.trailing, 8)
                         }
@@ -553,10 +553,10 @@ extension Ghostty {
 
                 if searchState.filterEnabled {
                     HStack(spacing: 6) {
-                        Text("Before").font(.caption2).foregroundColor(.secondary)
+                        Text("Before").font(.caption2).foregroundColor(.secondaryText)
                         SearchContextField(value: $searchState.linesBefore)
                             .hoverTip("Lines of context to keep before each match (grep -B)")
-                        Text("After").font(.caption2).foregroundColor(.secondary)
+                        Text("After").font(.caption2).foregroundColor(.secondaryText)
                         SearchContextField(value: $searchState.linesAfter)
                             .hoverTip("Lines of context to keep after each match (grep -A)")
                     }
@@ -914,14 +914,14 @@ extension Ghostty {
                     HStack(spacing: 5) {
                         Image(systemName: "keyboard.badge.ellipsis")
                             .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
 
                         // Show table stack with arrows between them
                         ForEach(Array(keyTables.enumerated()), id: \.offset) { index, table in
                             if index > 0 {
                                 Image(systemName: "chevron.right")
                                     .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(.tertiaryText)
                             }
                             Text(verbatim: table)
                                 .font(.system(size: 13, weight: .medium, design: .rounded))
@@ -968,7 +968,7 @@ extension Ghostty {
                                 .font(.headline)
                             Text("A key table is a named set of keybindings, activated by some other key. Keys are interpreted using this table until it is deactivated.")
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.secondaryText)
                         }
                     }
 
@@ -982,7 +982,7 @@ extension Ghostty {
                                 .font(.headline)
                             Text("A key sequence is a series of key presses that trigger an action. A pending key sequence is currently active.")
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.secondaryText)
                         }
                     }
                 }
@@ -1192,7 +1192,7 @@ extension Ghostty {
 
                     Text("This terminal is in read-only mode. You can still view, select, and scroll through the content, but no input events will be sent to the running application.")
                         .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 

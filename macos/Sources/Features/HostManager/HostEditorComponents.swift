@@ -215,7 +215,7 @@ struct EditorTextRow: View {
             HStack(spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 18)
                 TextField(placeholder, text: $text)
                     .textFieldStyle(.plain)
@@ -260,7 +260,7 @@ struct EditorPortField: View {
         HStack(spacing: 10) {
             Image(systemName: "number.square")
                 .font(.system(size: 14))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .frame(width: 18)
             TextField("\(defaultPort)", text: $text)
                 .textFieldStyle(.plain)
@@ -317,7 +317,7 @@ struct EditorIntRow: View {
             HStack(spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 18)
                 TextField(placeholder, text: $text)
                     .textFieldStyle(.plain)
@@ -368,7 +368,7 @@ struct EditorSecureRow: View {
             HStack(spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 18)
                 Group {
                     if revealed {
@@ -399,7 +399,7 @@ struct EditorSecureRow: View {
                 }
                 Button { revealed.toggle() } label: {
                     Image(systemName: revealed ? "eye.slash" : "eye")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 }
                 .buttonStyle(.plain)
                 .help(revealed ? "Hide password" : "Show password")
@@ -542,7 +542,7 @@ struct EditorBoolRow: View {
             HStack(spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 18)
                 Text(title)
                 Spacer()
@@ -582,7 +582,7 @@ struct EditorPickerRow<T: Hashable>: View {
             HStack(spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 18)
                 Text(title)
                 Spacer()
@@ -594,7 +594,7 @@ struct EditorPickerRow<T: Hashable>: View {
                         .font(.callout)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 }
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .background(
@@ -674,20 +674,20 @@ struct EditorExpandRow<Expanded: View>: View {
                 HStack(spacing: 10) {
                     Image(systemName: icon)
                         .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .frame(width: 18)
                     Text(title)
                     Spacer()
                     if !summary.isEmpty {
                         Text(summary)
                             .font(.callout)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.tertiaryText)
                 }
             }
             .focusable()
@@ -825,7 +825,7 @@ struct EditorSubheading: View {
         Text(text.uppercased())
             .font(.caption2.weight(.semibold))
             .tracking(0.5)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.secondaryText)
             .padding(.leading, 4)
             .padding(.top, 6)
             .frame(maxWidth: .infinity, alignment: .leading)

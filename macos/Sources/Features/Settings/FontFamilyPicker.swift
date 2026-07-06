@@ -30,7 +30,7 @@ struct FontFamilyPicker: View {
     private var triggerLabel: some View {
         HStack(spacing: 8) {
             Image(systemName: "textformat")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             Text(family.isEmpty ? "System default" : family)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -38,7 +38,7 @@ struct FontFamilyPicker: View {
             Spacer()
             Image(systemName: "chevron.up.chevron.down")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -59,7 +59,7 @@ struct FontFamilyPicker: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 TextField("Search monospaced fonts…", text: $search)
                     .textFieldStyle(.plain)
                 if !search.isEmpty {
@@ -67,7 +67,7 @@ struct FontFamilyPicker: View {
                         search = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.tertiaryText)
                     }
                     .buttonStyle(.plain)
                 }
@@ -86,7 +86,7 @@ struct FontFamilyPicker: View {
                     }
                     if filteredFamilies.isEmpty && !families.isEmpty {
                         Text("No matches")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 12)
                     }
@@ -99,7 +99,7 @@ struct FontFamilyPicker: View {
             HStack {
                 Text("\(families.count) monospaced families")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 Spacer()
                 Button("Done") {
                     isPresented = false

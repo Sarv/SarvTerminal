@@ -87,7 +87,7 @@ struct CursorSectionView: View {
                         .labelsHidden()
                     Text(viewModel.cursor.useTextColor ? "Custom" : "Default")
                         .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .frame(width: 60, alignment: .leading)
                     if viewModel.cursor.useTextColor {
                         ColorSwatchPicker(color: $viewModel.cursor.textColor)
@@ -108,7 +108,7 @@ struct CursorSectionView: View {
                     Text(String(format: "%.0f%%", viewModel.cursor.opacity * 100))
                         .font(.callout)
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .frame(width: 44, alignment: .trailing)
                 }
             }
@@ -126,7 +126,7 @@ struct CursorSectionView: View {
                         .toggleStyle(.checkbox)
                     Text("Requires shell integration. Sends arrow keys to move from the current cursor position to where you clicked.")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -158,7 +158,7 @@ struct CursorStylePreview: View {
             // A faint "x" for the underlying glyph
             Text("x")
                 .font(.system(size: 16, weight: .regular, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             // The actual cursor shape
             shape
                 .foregroundStyle(.tint)

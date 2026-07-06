@@ -66,10 +66,10 @@ struct SnippetsSectionView: View {
 
     private var searchBar: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
             TextField("Search snippets", text: $search).textFieldStyle(.plain)
             Spacer()
-            Text("\(filtered.count) of \(store.snippets.count)").font(.caption).foregroundStyle(.secondary)
+            Text("\(filtered.count) of \(store.snippets.count)").font(.caption).foregroundStyle(.secondaryText)
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
     }
@@ -163,7 +163,7 @@ private struct SnippetRow: View {
                 Text(snippet.displayName).font(.callout).lineLimit(1)
                 Text(snippet.command.replacingOccurrences(of: "\n", with: " ↵ "))
                     .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .lineLimit(1).truncationMode(.tail)
             }
             Spacer(minLength: 8)
@@ -226,13 +226,13 @@ private struct SnippetEditorView: View {
             Text(isNew ? "New Snippet" : "Edit Snippet").font(.title3.weight(.semibold))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Name").font(.caption).foregroundStyle(.secondary)
+                Text("Name").font(.caption).foregroundStyle(.secondaryText)
                 TextField("Optional — defaults to the first line", text: $snippet.name)
                     .textFieldStyle(.roundedBorder)
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Command").font(.caption).foregroundStyle(.secondary)
+                Text("Command").font(.caption).foregroundStyle(.secondaryText)
                 TextEditor(text: $snippet.command)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 160)

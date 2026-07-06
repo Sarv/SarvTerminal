@@ -80,7 +80,7 @@ struct FontSectionView: View {
                     Text(String(format: "%.1f pt", viewModel.font.size))
                         .font(.callout)
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .frame(width: 56, alignment: .trailing)
                     Stepper("", value: $viewModel.font.size, in: 6...64, step: 0.5)
                         .labelsHidden()

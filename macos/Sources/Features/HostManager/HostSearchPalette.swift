@@ -200,11 +200,11 @@ struct HostSearchPalette: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.title3)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             if model.search.isEmpty {
                 Text("Search hosts or tabs")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
             } else {
                 HStack(spacing: 1) {
                     Text(model.search)
@@ -259,7 +259,7 @@ struct HostSearchPalette: View {
     private func sectionHeader(_ title: String) -> some View {
         Text(title.uppercased())
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.secondaryText)
             .padding(.horizontal, 16)
             .padding(.top, 10)
             .padding(.bottom, 4)
@@ -282,14 +282,14 @@ struct HostSearchPalette: View {
                     if let subtitle = item.subtitle {
                         Text(subtitle)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
                     }
                 }
                 Spacer()
                 if let trailing = item.trailingText {
                     Text(trailing)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.tertiaryText)
                 }
             }
             .padding(.horizontal, 16)
@@ -321,7 +321,7 @@ struct HostSearchPalette: View {
         HStack {
             Text("Quick connect, or pick a saved host")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             Spacer()
             keyHint("↑↓ navigate")
             keyHint("⏎ open")
@@ -339,6 +339,6 @@ struct HostSearchPalette: View {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(Color.secondary.opacity(0.12))
             )
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.secondaryText)
     }
 }

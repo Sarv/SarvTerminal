@@ -179,7 +179,7 @@ struct HostEditorView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.secondaryText)
             .help("Back to hosts")
 
             Spacer()
@@ -262,10 +262,10 @@ struct HostEditorView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "text.alignleft")
                         .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .frame(width: 18)
                     Text("Description")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                     Spacer()
                 }
                 TextEditor(text: $draft.note)
@@ -300,7 +300,7 @@ struct HostEditorView: View {
         EditorCard("Credentials") {
             HStack(spacing: 10) {
                 Text("SSH on")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 EditorPortField(value: $draft.port,
                                 onEditingEnded: { autosaveIf(draft.port != 22) },
                                 focus: $focusedField, field: .port)
@@ -308,7 +308,7 @@ struct HostEditorView: View {
                     .frame(width: 110)
                     .help("SSH port — 22 unless the server uses a custom one")
                 Text("port")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 Spacer()
             }
             .padding(.bottom, 2)
@@ -411,11 +411,11 @@ struct HostEditorView: View {
         HStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 14))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .frame(width: 18)
             Text(text)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
         }
@@ -453,7 +453,7 @@ struct HostEditorView: View {
                 HStack {
                     Text("Runs on the remote shell once connected. Multiple commands: one per line, or chain with && — e.g. cd /app && ls -al.")
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.tertiaryText)
                     Spacer()
                     if !snippetsStore.snippets.isEmpty {
                         Menu {
@@ -553,7 +553,7 @@ struct HostEditorView: View {
                             }
                         Text("One per line, e.g. 8080:localhost:80")
                             .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.tertiaryText)
                             .padding(.leading, 4)
                     }
                     .help("Expose a remote port on your Mac (-L)")
@@ -580,7 +580,7 @@ struct HostEditorView: View {
                             }
                         Text("One per line, e.g. 9000:localhost:9000")
                             .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.tertiaryText)
                             .padding(.leading, 4)
                     }
                     .help("Expose a local port on the remote host (-R)")
@@ -613,7 +613,7 @@ struct HostEditorView: View {
             HStack(spacing: 10) {
                 Image(systemName: "paintpalette")
                     .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 18)
                 Text("Theme")
                 Spacer()
@@ -630,7 +630,7 @@ struct HostEditorView: View {
             )
             Text("Saved per host — this host's tabs use this theme; other tabs keep the global theme.")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.tertiaryText)
                 .padding(.leading, 4)
         }
     }
@@ -666,7 +666,7 @@ struct HostEditorView: View {
                         .foregroundStyle(.green)
                     Text("Saved")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 }
                 .transition(.opacity)
             }

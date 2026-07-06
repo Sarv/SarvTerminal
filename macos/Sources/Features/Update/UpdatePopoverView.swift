@@ -64,7 +64,7 @@ private struct PermissionRequestView: View {
 
                 Text("Sarv Terminal can automatically check for updates in the background.")
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -136,7 +136,7 @@ private struct UpdateAvailableView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
                             Text("Version:")
-                                .foregroundColor(.secondary)
+                                .foregroundColor(.secondaryText)
                                 .frame(width: labelWidth, alignment: .trailing)
                             Text(update.appcastItem.displayVersionString)
                         }
@@ -145,7 +145,7 @@ private struct UpdateAvailableView: View {
                         if update.appcastItem.contentLength > 0 {
                             HStack(spacing: 6) {
                                 Text("Size:")
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(.secondaryText)
                                     .frame(width: labelWidth, alignment: .trailing)
                                 Text(ByteCountFormatter.string(fromByteCount: Int64(update.appcastItem.contentLength), countStyle: .file))
                             }
@@ -155,7 +155,7 @@ private struct UpdateAvailableView: View {
                         if let date = update.appcastItem.date {
                             HStack(spacing: 6) {
                                 Text("Released:")
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(.secondaryText)
                                     .frame(width: labelWidth, alignment: .trailing)
                                 Text(date.formatted(date: .abbreviated, time: .omitted))
                             }
@@ -233,7 +233,7 @@ private struct DownloadingView: View {
                         ProgressView(value: progress)
                         Text(String(format: "%.0f%%", progress * 100))
                             .font(.system(size: 11))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.secondaryText)
                     }
                 } else {
                     ProgressView()
@@ -267,7 +267,7 @@ private struct ExtractingView: View {
                 ProgressView(value: min(1, max(0, extracting.progress)), total: 1.0)
                 Text(String(format: "%.0f%%", min(1, max(0, extracting.progress)) * 100))
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.secondaryText)
             }
         }
         .padding(16)
@@ -286,7 +286,7 @@ private struct InstallingView: View {
 
                 Text("The update is ready. Please restart the application to complete the installation.")
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -325,7 +325,7 @@ private struct NotFoundView: View {
 
                 Text("You're already running the latest version.")
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -360,7 +360,7 @@ private struct UpdateErrorView: View {
 
                 Text(error.error.localizedDescription)
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 

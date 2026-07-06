@@ -113,7 +113,7 @@ private struct CommandRow: View {
                 if let secondary {
                     Text(secondary)
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -186,7 +186,7 @@ private struct SidebarSearchField: View {
     @Binding var text: String
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.secondaryText)
             TextField(placeholder, text: $text).textFieldStyle(.plain).font(.system(size: 12))
         }
         .padding(.horizontal, 10)
@@ -221,7 +221,7 @@ private struct SnippetEditorInline: View {
             if let fixedCommand {
                 Text(fixedCommand)
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
@@ -525,7 +525,7 @@ private struct ThemeTab: View {
                     Text("Font").font(.system(size: 12, weight: .semibold))
                     Spacer()
                     Image(systemName: fontExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(.system(size: 11)).foregroundStyle(.secondaryText)
                 }
                 .contentShape(Rectangle())
             }
@@ -572,7 +572,7 @@ private struct ThemeTab: View {
             HStack(spacing: 10) {
                 if isDefault {
                     Image(systemName: "circle.dashed")
-                        .frame(width: 34, height: 22).foregroundStyle(.secondary)
+                        .frame(width: 34, height: 22).foregroundStyle(.secondaryText)
                 } else {
                     ThemeSwatch(preview: preview)
                 }
@@ -641,7 +641,7 @@ private struct ThemeSwatch: View {
 private func emptyState(_ text: String) -> some View {
     VStack {
         Spacer()
-        Text(text).font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center).padding()
+        Text(text).font(.system(size: 12)).foregroundStyle(.secondaryText).multilineTextAlignment(.center).padding()
         Spacer()
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)

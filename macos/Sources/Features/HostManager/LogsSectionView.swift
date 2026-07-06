@@ -48,7 +48,7 @@ struct LogsSectionView: View {
             Spacer()
 
             Text("\(filtered.count) event\(filtered.count == 1 ? "" : "s")")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondaryText)
 
             Button {
                 showClearConfirm = true
@@ -108,11 +108,11 @@ struct LogsSectionView: View {
 
     private var searchField: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
             TextField("Search activity", text: $search).textFieldStyle(.plain)
             if !search.isEmpty {
                 Button { search = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiaryText)
                 }
                 .buttonStyle(.plain)
             }
@@ -139,13 +139,13 @@ struct LogsSectionView: View {
         VStack(spacing: 12) {
             Image(systemName: "clock")
                 .font(.system(size: 52))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.tertiaryText)
             Text(log.entries.isEmpty ? "No activity yet" : "No matching activity")
                 .font(.title3.weight(.semibold))
             Text(log.entries.isEmpty
                  ? "Connections, syncs, and transfers will appear here."
                  : "Try a different filter or search.")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -167,14 +167,14 @@ private struct LogRow: View {
                 if let detail = entry.detail, !detail.isEmpty {
                     Text(detail)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 8)
             Text(entry.date.formatted(date: .abbreviated, time: .shortened))
                 .font(.caption).monospacedDigit()
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.tertiaryText)
                 .fixedSize()
         }
         .padding(.horizontal, 16).padding(.vertical, 9)

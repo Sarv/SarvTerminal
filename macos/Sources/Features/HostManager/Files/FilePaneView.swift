@@ -29,7 +29,7 @@ struct FilePaneView: View {
             if let error = model.error {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(error).font(.caption).foregroundStyle(.secondaryText).lineLimit(2)
                     Spacer()
                 }
                 .padding(.horizontal, 12).padding(.vertical, 6)
@@ -55,7 +55,7 @@ struct FilePaneView: View {
                 HStack(spacing: 5) {
                     Image(systemName: model.location.isLocal ? "desktopcomputer" : "server.rack")
                     Text(model.location.title).fontWeight(.medium)
-                    Image(systemName: "chevron.down").font(.system(size: 9)).foregroundStyle(.secondary)
+                    Image(systemName: "chevron.down").font(.system(size: 9)).foregroundStyle(.secondaryText)
                 }
                 .padding(.horizontal, 8).padding(.vertical, 4)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.12)))
@@ -66,7 +66,7 @@ struct FilePaneView: View {
 
             // Filter the current directory.
             HStack(spacing: 4) {
-                Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundStyle(.secondaryText)
                 TextField("Search", text: $model.search).textFieldStyle(.plain).font(.system(size: 11))
                     .frame(width: 110)
             }
@@ -149,7 +149,7 @@ struct FilePaneView: View {
     }
 
     private var crumbSeparator: some View {
-        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiaryText)
     }
 
     /// Cumulative (name, absolutePath) pairs for the breadcrumb.
@@ -187,10 +187,10 @@ struct FilePaneView: View {
     private func sortHeader(_ title: String, _ col: SFTPBrowserModel.SortColumn) -> some View {
         Button { model.setSort(col) } label: {
             HStack(spacing: 3) {
-                Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondaryText)
                 if model.sortColumn == col {
                     Image(systemName: model.sortAscending ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
+                        .font(.system(size: 8, weight: .bold)).foregroundStyle(.secondaryText)
                 }
             }
             .contentShape(Rectangle())
@@ -256,18 +256,18 @@ struct FilePaneView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     nameText(item.name).lineLimit(1).truncationMode(.middle)
                     if let p = item.permissions {
-                        Text(p).font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                        Text(p).font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiaryText)
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(item.modified.map { Self.dateFormatter.string(from: $0) } ?? "—")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .font(.system(size: 11)).foregroundStyle(.secondaryText)
                 .frame(width: dateW, alignment: .leading)
-            Text(item.sizeText).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(item.sizeText).font(.system(size: 11)).foregroundStyle(.secondaryText)
                 .frame(width: sizeW, alignment: .trailing)
-            Text(model.kind(item)).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(model.kind(item)).font(.system(size: 11)).foregroundStyle(.secondaryText)
                 .lineLimit(1).frame(width: kindW, alignment: .leading)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
@@ -324,7 +324,7 @@ struct FileHostChooser: View {
             .padding(14)
             Divider()
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
                 TextField("Search hosts", text: $search).textFieldStyle(.plain)
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
@@ -332,15 +332,15 @@ struct FileHostChooser: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     if hosts.isEmpty {
-                        Text("No saved hosts").foregroundStyle(.secondary).padding(20)
+                        Text("No saved hosts").foregroundStyle(.secondaryText).padding(20)
                     }
                     ForEach(hosts) { host in
                         Button { onPick(.host(host)) } label: {
                             HStack(spacing: 10) {
-                                Image(systemName: "server.rack").foregroundStyle(.secondary).frame(width: 18)
+                                Image(systemName: "server.rack").foregroundStyle(.secondaryText).frame(width: 18)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(host.displayLabel).fontWeight(.medium)
-                                    Text(host.subtitle).font(.caption).foregroundStyle(.secondary)
+                                    Text(host.subtitle).font(.caption).foregroundStyle(.secondaryText)
                                 }
                                 Spacer()
                             }
@@ -368,7 +368,7 @@ struct ConflictDialog: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text("File already exists").font(.title3.weight(.semibold))
                 Text("An item named “\(name)” already exists in this location. Do you want to replace it with the one you are moving?")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 HStack(spacing: 10) {
                     Button("Stop", role: .destructive) { onResolve(.stop) }
                         .buttonStyle(.borderedProminent).tint(.red)

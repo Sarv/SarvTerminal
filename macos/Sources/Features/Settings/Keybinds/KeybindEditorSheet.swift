@@ -63,14 +63,14 @@ struct KeybindEditorSheet: View {
             HStack(spacing: 8) {
                 Text("Key")
                     .frame(width: 50, alignment: .leading)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 TextField("e.g. a, tab, f1, arrow_left, grave", text: $key)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
             }
             HStack {
                 Text("Preview: ")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 Text(previewString.isEmpty ? "(set modifiers + key)" : previewString)
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(previewString.isEmpty ? .tertiary : .primary)
@@ -107,7 +107,7 @@ struct KeybindEditorSheet: View {
             .toggleStyle(.checkbox)
             Text(flagsHelp)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -146,7 +146,7 @@ struct KeybindEditorSheet: View {
     private var actionListView: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
                 TextField("Search actions…", text: $actionPickerSearch)
                     .textFieldStyle(.plain)
             }
@@ -182,13 +182,13 @@ struct KeybindEditorSheet: View {
                     Text(act.label)
                     Text(act.name)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .font(.system(.caption, design: .monospaced))
                 }
                 Spacer()
                 Text(act.category)
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
                 if isSelected {
                     Image(systemName: "checkmark").foregroundStyle(.tint)
                 }
@@ -207,7 +207,7 @@ struct KeybindEditorSheet: View {
                 .font(.system(.body, design: .monospaced))
             Text("Action name with optional parameters. See `ghostty +list-actions` for the full list.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
         }
     }
 
@@ -257,7 +257,7 @@ struct KeybindEditorSheet: View {
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
             .font(.callout.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.secondaryText)
             .textCase(.uppercase)
     }
 

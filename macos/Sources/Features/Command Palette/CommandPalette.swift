@@ -294,7 +294,7 @@ private struct CommandTable: View {
     var body: some View {
         if options.isEmpty {
             Text("No matches")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .padding()
         } else {
             ScrollViewReader { proxy in
@@ -404,7 +404,7 @@ private struct CommandRow: View {
                     if let subtitle = option.subtitle {
                         highlightedSubtitle(subtitle)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
                     }
                 }
 
@@ -423,7 +423,7 @@ private struct CommandRow: View {
 
                 if let symbols = option.symbols {
                     ShortcutSymbolsView(symbols: symbols)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 }
             }
             .padding(8)

@@ -91,7 +91,7 @@ struct SSHConnectionView: View {
                     .foregroundStyle(.white))
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.title).font(.headline).lineLimit(1)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(subtitle).font(.caption).foregroundStyle(.secondaryText).lineLimit(1)
             }
             Spacer(minLength: 8)
             if !model.logEntries.isEmpty {
@@ -175,17 +175,17 @@ struct SSHConnectionView: View {
         case .needsHostKey(let info):
             hostKeySection(info)
         case .connecting:
-            Text("Connecting…").font(.callout).foregroundStyle(.secondary)
+            Text("Connecting…").font(.callout).foregroundStyle(.secondaryText)
         case .failed(let f):
             VStack(spacing: 6) {
                 Text(f.title).font(.subheadline.weight(.semibold)).foregroundStyle(.red)
-                Text(f.detail).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text(f.detail).font(.caption).foregroundStyle(.secondaryText).multilineTextAlignment(.center)
                 if model.autoReconnecting { reconnectStatusLine }
             }
         case .disconnected:
             VStack(spacing: 6) {
                 Text("Session ended").font(.subheadline.weight(.semibold)).foregroundStyle(.red)
-                Text("The SSH session has closed.").font(.caption).foregroundStyle(.secondary)
+                Text("The SSH session has closed.").font(.caption).foregroundStyle(.secondaryText)
                 if model.autoReconnecting { reconnectStatusLine }
             }
         case .connected:
@@ -198,7 +198,7 @@ struct SSHConnectionView: View {
         HStack(spacing: 6) {
             ProgressView().controlSize(.small)
             Text("Reconnecting in \(model.reconnectSecondsRemaining)s… (attempt \(model.reconnectAttempts))")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondaryText)
         }
         .padding(.top, 2)
     }
@@ -207,7 +207,7 @@ struct SSHConnectionView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Are you sure you want to connect?")
                 .font(.title3.weight(.bold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
 
             if info.changed {
                 Text("⚠︎ The host key for \(info.host) has changed. This could be a man-in-the-middle attack — or the server was reinstalled.")
@@ -219,7 +219,7 @@ struct SSHConnectionView: View {
             }
 
             Text("\(info.keyType.isEmpty ? "Key" : info.keyType.uppercased()) fingerprint is SHA256:")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             Text(info.fingerprint.replacingOccurrences(of: "SHA256:", with: ""))
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
@@ -227,7 +227,7 @@ struct SSHConnectionView: View {
 
             if !info.changed {
                 Text("Do you want to add it to the list of known hosts?")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
             }
 
             HStack {
@@ -259,7 +259,7 @@ struct SSHConnectionView: View {
                     .font(.caption).foregroundStyle(.red)
             }
             Text("This host is set to “Ask”, so you'll enter the password each time. To save it, edit the host and choose “Password”.")
-                .font(.caption2).foregroundStyle(.tertiary)
+                .font(.caption2).foregroundStyle(.tertiaryText)
                 .multilineTextAlignment(.center)
         }
     }
@@ -285,7 +285,7 @@ struct SSHConnectionView: View {
                 .foregroundStyle(.red)
             Text(detail)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
@@ -302,7 +302,7 @@ struct SSHConnectionView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     if model.logEntries.isEmpty {
-                        Text("Waiting for output…").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text("Waiting for output…").font(.system(size: 12)).foregroundStyle(.secondaryText)
                     } else {
                         ForEach(model.logEntries) { entry in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -328,12 +328,12 @@ struct SSHConnectionView: View {
 
             if isFailedState {
                 Text(.init("See the [Documentation](\(docsURL.absoluteString)) to learn more about common connection issues."))
-                    .font(.caption).foregroundStyle(.secondary).tint(.accentColor)
+                    .font(.caption).foregroundStyle(.secondaryText).tint(.accentColor)
                     .multilineTextAlignment(.center)
             }
 
             Button("Hide logs") { withAnimation(.easeInOut(duration: 0.15)) { model.showLogs = false } }
-                .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                .buttonStyle(.plain).font(.caption).foregroundStyle(.secondaryText)
         }
     }
 

@@ -46,7 +46,7 @@ struct FontFeaturePicker: View {
     private var triggerLabel: some View {
         HStack(spacing: 8) {
             Image(systemName: "character.cursor.ibeam")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             Text(displayLabel)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -54,7 +54,7 @@ struct FontFeaturePicker: View {
             Spacer()
             Image(systemName: "chevron.up.chevron.down")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -109,7 +109,7 @@ struct FontFeaturePicker: View {
                         } header: {
                             Text("CUSTOM")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.secondaryText)
                                 .padding(.horizontal, 14)
                                 .padding(.top, 10)
                                 .padding(.bottom, 4)
@@ -125,7 +125,7 @@ struct FontFeaturePicker: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Add custom tag")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 HStack(spacing: 6) {
                     TextField("e.g. ss01, cv11, zero", text: $customInput)
                         .textFieldStyle(.roundedBorder)
@@ -162,13 +162,13 @@ struct FontFeaturePicker: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(feature.tag)
                     .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 50, alignment: .leading)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(feature.label)
                     Text(feature.detail)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 }
                 Spacer()
             }
@@ -188,7 +188,7 @@ struct FontFeaturePicker: View {
                 setTag(tag, enabled: false)
             } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
             }
             .buttonStyle(.plain)
         }

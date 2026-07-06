@@ -64,7 +64,7 @@ struct AppearanceSectionView: View {
                     .labelsHidden()
                 Text(useOverride.wrappedValue ? "Custom" : "Default")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 60, alignment: .leading)
                 if useOverride.wrappedValue {
                     ColorSwatchPicker(color: color)
@@ -88,7 +88,7 @@ struct AppearanceSectionView: View {
                     Text(String(format: "%.0f%%", viewModel.appearance.backgroundOpacity * 100))
                         .font(.callout)
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .frame(width: 44, alignment: .trailing)
                 }
             }
@@ -137,7 +137,7 @@ struct AppearanceSectionView: View {
                         Text(String(format: "%.0f%%", viewModel.appearance.sharedImageVisibility * 100))
                             .font(.callout)
                             .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
                             .frame(width: 44, alignment: .trailing)
                     }
                 }
@@ -154,7 +154,7 @@ struct AppearanceSectionView: View {
                         Text(String(format: "%.0f%%", viewModel.appearance.backgroundImageOpacity * 100))
                             .font(.callout)
                             .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
                             .frame(width: 44, alignment: .trailing)
                     }
                 }

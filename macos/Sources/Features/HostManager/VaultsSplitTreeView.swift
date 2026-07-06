@@ -354,12 +354,12 @@ struct SplitChooserView: View {
                         VStack(spacing: 4) {
                             Image(systemName: "rectangle.split.2x1")
                                 .font(.system(size: 26, weight: .light))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.secondaryText)
                             Text("Open in this split")
                                 .font(.headline)
                             Text("Pick a host, quick-connect, or use a local terminal")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.secondaryText)
                         }
 
                         searchField
@@ -372,11 +372,11 @@ struct SplitChooserView: View {
 
                         Text("Tip: drag a tab here to open it in this split")
                             .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.tertiaryText)
 
                         Button("Dismiss") { onDismiss() }
                             .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
                             .padding(.top, 2)
                     }
                     .padding(24)
@@ -425,11 +425,11 @@ struct SplitChooserView: View {
 
     private var searchField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
             TextField(
                 "",
                 text: $model.search,
-                prompt: Text("Search hosts or ssh user@host").foregroundColor(.secondary)
+                prompt: Text("Search hosts or ssh user@host").foregroundColor(.secondaryText)
             )
             .textFieldStyle(.plain)
             .foregroundStyle(.primary)
@@ -453,16 +453,16 @@ struct SplitChooserView: View {
             HStack(spacing: 10) {
                 Image(systemName: item.systemImage)
                     .frame(width: 18)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.title).fontWeight(.medium)
                     if let subtitle = item.subtitle {
-                        Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                        Text(subtitle).font(.caption).foregroundStyle(.secondaryText)
                     }
                 }
                 Spacer()
                 if let trailing = item.trailingText {
-                    Text(trailing).font(.caption2).foregroundStyle(.tertiary)
+                    Text(trailing).font(.caption2).foregroundStyle(.tertiaryText)
                 }
             }
             .padding(.horizontal, 12)

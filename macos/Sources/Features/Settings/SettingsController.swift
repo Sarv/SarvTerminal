@@ -142,7 +142,7 @@ struct SettingsHeaderBar: View {
             Button(action: onToggleSidebar) {
                 Image(systemName: "sidebar.left")
                     .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 28, height: 28)
             }
             .buttonStyle(.plain)

@@ -109,7 +109,7 @@ struct KeybindsSectionView: View {
             Text("Configure keyboard shortcuts")
                 .font(.title3.weight(.semibold))
             Text("Click the + on any action to record a shortcut. Multiple shortcuts can map to the same action. Sarv Terminal's own shortcuts (command palette, local terminal) are rebindable too — e.g. you can swap ⌘T and ⌘L.")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
@@ -146,14 +146,14 @@ struct KeybindsSectionView: View {
     private var searchRow: some View {
         HStack(spacing: 10) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
                 TextField("Search by action or keys (e.g. \"cmd t\")", text: $search)
                     .textFieldStyle(.plain)
                 if !search.isEmpty {
                     Button {
                         search = ""
                     } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiaryText)
                     }
                     .buttonStyle(.plain)
                 }
@@ -173,7 +173,7 @@ struct KeybindsSectionView: View {
 
     private var emptyState: some View {
         Text("No matches")
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.secondaryText)
             .padding(.vertical, 32)
             .frame(maxWidth: .infinity)
     }
@@ -187,7 +187,7 @@ struct KeybindsSectionView: View {
                 Text(action.label)
                 Text(action.category)
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
             }
             .frame(maxWidth: 260, alignment: .leading)
 
@@ -243,7 +243,7 @@ struct KeybindsSectionView: View {
         return HStack(spacing: 2) {
             Image(systemName: "lock.fill")
                 .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.tertiaryText)
                 .padding(.trailing, 1)
             Text(mods.symbolicLabel)
                 .font(.system(size: 13, weight: .medium))
@@ -260,7 +260,7 @@ struct KeybindsSectionView: View {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
         )
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.secondaryText)
         .help("Fixed shortcut — can't be changed")
     }
 
@@ -277,7 +277,7 @@ struct KeybindsSectionView: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
             }
             .buttonStyle(.plain)
             .padding(.leading, 2)
@@ -302,7 +302,7 @@ struct KeybindsSectionView: View {
             Text(KeybindKeyGlyph.display(entry.trigger.key))
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
             if let chord = entry.trigger.chord {
-                Text("⇢").foregroundStyle(.secondary).padding(.horizontal, 1)
+                Text("⇢").foregroundStyle(.secondaryText).padding(.horizontal, 1)
                 Text(chord.modifiers.symbolicLabel)
                     .font(.system(size: 13, weight: .medium))
                 Text(KeybindKeyGlyph.display(chord.key))
@@ -313,7 +313,7 @@ struct KeybindsSectionView: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
             }
             .buttonStyle(.plain)
             .padding(.leading, 2)

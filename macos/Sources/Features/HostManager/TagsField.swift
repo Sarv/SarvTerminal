@@ -46,7 +46,7 @@ struct TagsField: View {
         HStack(spacing: 6) {
             Image(systemName: "tag")
                 .font(.system(size: 14))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .frame(width: 18)
 
             // Flow layout-ish: chips then input. SwiftUI HStack will scroll;
@@ -107,7 +107,7 @@ struct TagsField: View {
                      ? "Type to add a tag"
                      : "Pick an existing tag or type a new one")
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
                     .padding(.horizontal, 12).padding(.vertical, 6)
             }
         }
@@ -126,10 +126,10 @@ struct TagsField: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: prefix == nil ? "tag.fill" : "plus.circle")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .font(.caption)
                 if let prefix {
-                    Text(prefix).foregroundStyle(.secondary)
+                    Text(prefix).foregroundStyle(.secondaryText)
                     Text(label).fontWeight(.medium)
                 } else {
                     Text(label)

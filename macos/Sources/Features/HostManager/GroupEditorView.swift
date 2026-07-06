@@ -64,7 +64,7 @@ struct GroupEditorView: View {
                 }
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.secondaryText)
             Spacer()
             Text(isNew ? "New group" : "Edit group")
                 .font(.headline)

@@ -102,7 +102,7 @@ struct FileViewerView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "doc.text").foregroundStyle(.secondary)
+            Image(systemName: "doc.text").foregroundStyle(.secondaryText)
             Text(model.item.name).fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 12)
 
@@ -154,12 +154,12 @@ struct FileViewerView: View {
     @ViewBuilder
     private var content: some View {
         if model.isLoading {
-            VStack { ProgressView(); Text("Loading…").font(.caption).foregroundStyle(.secondary) }
+            VStack { ProgressView(); Text("Loading…").font(.caption).foregroundStyle(.secondaryText) }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = model.error {
             VStack(spacing: 8) {
-                Image(systemName: "doc.questionmark").font(.system(size: 36)).foregroundStyle(.tertiary)
-                Text(error).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Image(systemName: "doc.questionmark").font(.system(size: 36)).foregroundStyle(.tertiaryText)
+                Text(error).foregroundStyle(.secondaryText).multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity).padding()
         } else if model.isMarkdown && model.renderMarkdown {

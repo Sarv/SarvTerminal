@@ -76,7 +76,7 @@ struct SyncSectionView: View {
                     Toggle("Enable encrypted sync", isOn: $settings.enabled)
                         .toggleStyle(.switch)
                     Text("Back up your terminal customization, keybinds, and saved hosts — encrypted with a master password — to GitHub or a synced folder.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -92,7 +92,7 @@ struct SyncSectionView: View {
                     Toggle("Save a snapshot on every sync", isOn: $settings.historyEnabled)
                         .toggleStyle(.checkbox)
                     Text("Keeps recoverable versions in a `history/` folder so you can roll back. On by default — all versions are kept.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -110,7 +110,7 @@ struct SyncSectionView: View {
                         Text(settings.historyKeepCount == 0
                              ? "0 = keep every version (uses more space over time)."
                              : "Oldest snapshots are removed automatically.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondaryText)
                     }
                 }
             }
@@ -135,7 +135,7 @@ struct SyncSectionView: View {
                         TextField("https://github.com/owner/repo", text: $draftGithubURL)
                             .textFieldStyle(.roundedBorder).frame(maxWidth: 320)
                         Text("Must be a private repository — public repos are rejected.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondaryText)
                     }
                 }
                 divider
@@ -145,7 +145,7 @@ struct SyncSectionView: View {
                                     text: $patField)
                             .textFieldStyle(.roundedBorder).frame(maxWidth: 280)
                         Text("Needs `contents` write permission. Stored in your Keychain.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondaryText)
                     }
                 }
             case .folder:
@@ -160,7 +160,7 @@ struct SyncSectionView: View {
                                 .controlSize(.small)
                         }
                         Text("Pick a folder your system already syncs (iCloud Drive, Dropbox, Google Drive, …).")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondaryText)
                     }
                 }
             }
@@ -201,7 +201,7 @@ struct SyncSectionView: View {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text("This encryption is one-way. If you forget your master password there is **no way** to recover your synced data. It is stored only on this device (Touch ID / passcode) and is never uploaded.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
@@ -222,7 +222,7 @@ struct SyncSectionView: View {
                 divider
                 row("Update available") {
                     HStack(spacing: 8) {
-                        Text("A newer version is in the remote.").font(.callout).foregroundStyle(.secondary)
+                        Text("A newer version is in the remote.").font(.callout).foregroundStyle(.secondaryText)
                         Button("Pull now") { run("Pulled") { try await SyncEngine.pull(masterPassword: $0) } }
                             .controlSize(.small)
                     }
@@ -287,7 +287,7 @@ struct SyncSectionView: View {
 
             Label("Auto-syncs on every change, and pulls on launch + hourly. Use these buttons for the first sync or to force one.",
                   systemImage: "arrow.triangle.2.circlepath")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

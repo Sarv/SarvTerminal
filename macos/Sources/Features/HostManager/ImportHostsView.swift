@@ -57,7 +57,7 @@ struct ImportHostsView: View {
     private var formatsScreen: some View {
         VStack(spacing: 16) {
             Text("Transfer your saved connections, groups, and tags. Select a source to start.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(.secondaryText)
                 .multilineTextAlignment(.center).frame(maxWidth: 460)
             HStack(alignment: .top, spacing: 14) {
                 formatCard("~/.ssh/config", "terminal", enabled: true) { startSSH() }
@@ -83,7 +83,7 @@ struct ImportHostsView: View {
                     Text("Soon").font(.system(size: 9, weight: .semibold))
                         .padding(.horizontal, 5).padding(.vertical, 1)
                         .background(Capsule().fill(Color.secondary.opacity(0.22)))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 }
             }
             .frame(width: 100).contentShape(Rectangle()).opacity(enabled ? 1 : 0.5)
@@ -97,7 +97,7 @@ struct ImportHostsView: View {
     private var csvIntroScreen: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Your CSV must use this header row. Only `hostname` is required.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(.secondaryText)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(HostImporter.csvHeader)
@@ -112,7 +112,7 @@ struct ImportHostsView: View {
                 bullet("`tags` are separated by `;` (e.g. `prod;web`).")
                 bullet("`auth` is one of password / publicKey / agent / ask.")
             }
-            .font(.caption).foregroundStyle(.secondary)
+            .font(.caption).foregroundStyle(.secondaryText)
 
             HStack(spacing: 12) {
                 Button("Choose CSV file…") { chooseCSV() }.controlSize(.large)
@@ -149,10 +149,10 @@ struct ImportHostsView: View {
 
             // Group header with select-all.
             HStack(spacing: 10) {
-                Image(systemName: "server.rack").foregroundStyle(.secondary)
+                Image(systemName: "server.rack").foregroundStyle(.secondaryText)
                 Text("Hosts").font(.headline)
                 Spacer()
-                Text("\(selected.count) of \(candidates.count)").font(.caption).foregroundStyle(.secondary)
+                Text("\(selected.count) of \(candidates.count)").font(.caption).foregroundStyle(.secondaryText)
                 Button { toggleAll() } label: {
                     Image(systemName: allSelected ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(allSelected ? .blue : .secondary)
@@ -168,7 +168,7 @@ struct ImportHostsView: View {
                             HStack(spacing: 12) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(host.label).foregroundStyle(.primary)
-                                    Text(host.subtitle).font(.caption).foregroundStyle(.secondary)
+                                    Text(host.subtitle).font(.caption).foregroundStyle(.secondaryText)
                                 }
                                 Spacer(minLength: 8)
                                 Image(systemName: selected.contains(host.id) ? "checkmark.circle.fill" : "circle")

@@ -88,7 +88,7 @@ struct ShellHistoryPanel: View {
             Divider()
 
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
                 TextField("Filter history", text: $query).textFieldStyle(.plain)
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
@@ -96,10 +96,10 @@ struct ShellHistoryPanel: View {
 
             if items.isEmpty {
                 VStack(spacing: 6) {
-                    Image(systemName: "clock.badge.questionmark").font(.title2).foregroundStyle(.secondary)
-                    Text("No shell history found").font(.callout).foregroundStyle(.secondary)
+                    Image(systemName: "clock.badge.questionmark").font(.title2).foregroundStyle(.secondaryText)
+                    Text("No shell history found").font(.callout).foregroundStyle(.secondaryText)
                     Text("Reads ~/.zsh_history, ~/.bash_history, or $HISTFILE.")
-                        .font(.caption).foregroundStyle(.tertiary).multilineTextAlignment(.center)
+                        .font(.caption).foregroundStyle(.tertiaryText).multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity).padding()
             } else {

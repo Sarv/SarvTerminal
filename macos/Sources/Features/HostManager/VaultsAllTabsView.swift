@@ -52,7 +52,7 @@ struct VaultsAllTabsView: View {
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 if number <= 9 {
-                    Text("⌘\(number)").font(.system(size: 10)).foregroundStyle(.tertiary)
+                    Text("⌘\(number)").font(.system(size: 10)).foregroundStyle(.tertiaryText)
                 }
                 Button {
                     tabs.closeTerminal(tab.id)
@@ -62,7 +62,7 @@ struct VaultsAllTabsView: View {
                     Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(Color.secondary.opacity(0.12))
@@ -73,7 +73,7 @@ struct VaultsAllTabsView: View {
                 let count = tab.surfaceTree.root?.leaves().count ?? 1
                 Text(count > 1 ? "\(count) panes" : "Terminal")
                     .font(.callout)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
             }
         }
         .frame(height: 170)

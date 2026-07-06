@@ -55,10 +55,10 @@ struct PortForwardingSectionView: View {
 
     private var searchBar: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
             TextField("Search tunnels", text: $search).textFieldStyle(.plain)
             Spacer()
-            Text("\(filtered.count) of \(store.forwards.count)").font(.caption).foregroundStyle(.secondary)
+            Text("\(filtered.count) of \(store.forwards.count)").font(.caption).foregroundStyle(.secondaryText)
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
     }
@@ -178,7 +178,7 @@ private struct PortForwardRow: View {
             .font(.caption2.weight(.medium))
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(Capsule().fill(Color.secondary.opacity(0.18)))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.secondaryText)
     }
 }
 
@@ -251,7 +251,7 @@ private struct PortForwardEditorView: View {
                 }
             } else {
                 Text("A SOCKS proxy will listen on \(forward.bindAddress):\(forward.listenPort). Point your browser/app's SOCKS5 proxy there.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -279,9 +279,9 @@ private struct PortForwardEditorView: View {
     private func field<Content: View>(_ label: String, help: String? = nil, width: CGFloat? = nil,
                                        @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(label).font(.caption).foregroundStyle(.secondaryText)
             content()
-            if let help { Text(help).font(.caption2).foregroundStyle(.tertiary) }
+            if let help { Text(help).font(.caption2).foregroundStyle(.tertiaryText) }
         }
         .frame(width: width, alignment: .leading)
     }

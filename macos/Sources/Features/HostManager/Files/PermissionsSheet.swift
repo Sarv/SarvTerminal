@@ -47,10 +47,10 @@ struct PermissionsSheet: View {
         HStack(spacing: 10) {
             Image(systemName: isDirectory ? "folder" : "doc")
                 .font(.title2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Permissions").font(.headline)
-                Text(fileName).font(.subheadline).foregroundStyle(.secondary)
+                Text(fileName).font(.subheadline).foregroundStyle(.secondaryText)
                     .lineLimit(1).truncationMode(.middle)
             }
             Spacer()
@@ -62,7 +62,7 @@ struct PermissionsSheet: View {
             GridRow {
                 Text("").gridColumnAlignment(.leading)
                 ForEach(perms, id: \.self) { p in
-                    Text(p).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    Text(p).font(.caption.weight(.medium)).foregroundStyle(.secondaryText)
                         .gridColumnAlignment(.center)
                 }
             }
@@ -82,7 +82,7 @@ struct PermissionsSheet: View {
     private var octalRow: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Octal").font(.caption).foregroundStyle(.secondary)
+                Text("Octal").font(.caption).foregroundStyle(.secondaryText)
                 TextField("755", text: $octalText)
                     .frame(width: 70)
                     .onChange(of: octalText) { newValue in
@@ -94,7 +94,7 @@ struct PermissionsSheet: View {
                     }
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text("Symbolic").font(.caption).foregroundStyle(.secondary)
+                Text("Symbolic").font(.caption).foregroundStyle(.secondaryText)
                 Text(Self.symbolic(fromBits: bits))
                     .font(.system(.callout, design: .monospaced))
             }

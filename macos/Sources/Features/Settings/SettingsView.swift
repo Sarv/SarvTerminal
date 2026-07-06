@@ -1172,7 +1172,7 @@ struct SidebarView: View {
             } header: {
                 Text("Settings")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .textCase(.uppercase)
             }
         }
@@ -1187,7 +1187,7 @@ struct SidebarView: View {
             if results.isEmpty {
                 Text("No settings match “\(viewModel.searchText)”")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .padding(.vertical, 8)
             } else {
                 Section {
@@ -1197,20 +1197,20 @@ struct SidebarView: View {
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: entry.section.icon)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.secondaryText)
                                     .frame(width: 18)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(entry.title)
                                         .foregroundStyle(.primary)
                                     Text(entry.section.title)
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(.secondaryText)
                                 }
                                 Spacer(minLength: 0)
                                 if viewModel.selectedSection == entry.section {
                                     Image(systemName: "checkmark")
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(.secondaryText)
                                 }
                             }
                             .contentShape(Rectangle())
@@ -1220,7 +1220,7 @@ struct SidebarView: View {
                 } header: {
                     Text("\(results.count) result\(results.count == 1 ? "" : "s")")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .textCase(.uppercase)
                 }
             }
@@ -1231,7 +1231,7 @@ struct SidebarView: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             TextField("Search settings", text: $viewModel.searchText)
                 .textFieldStyle(.plain)
             if !viewModel.searchText.isEmpty {
@@ -1239,7 +1239,7 @@ struct SidebarView: View {
                     viewModel.searchText = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.tertiaryText)
                 }
                 .buttonStyle(.plain)
             }
@@ -1297,7 +1297,7 @@ struct DetailView: View {
             if let subtitle = section.subtitle {
                 Text(subtitle)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .lineLimit(1)
             }
         }
@@ -1337,9 +1337,9 @@ struct DetailView: View {
         VStack(spacing: 12) {
             Image(systemName: "sidebar.left")
                 .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.tertiaryText)
             Text("Select a settings section")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -1553,7 +1553,7 @@ private struct SectionPlaceholderView: View {
             )
 
             Text(stubBody)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

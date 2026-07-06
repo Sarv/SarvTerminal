@@ -21,7 +21,7 @@ struct KeybindCaptureSheet: View {
         VStack(spacing: 18) {
             VStack(spacing: 4) {
                 Text("Set keybinding for")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 Text(actionLabel)
                     .font(.title3.weight(.semibold))
             }
@@ -42,16 +42,16 @@ struct KeybindCaptureSheet: View {
                     if capturedConfig.isEmpty {
                         Image(systemName: "keyboard")
                             .font(.title)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
                         Text("Listening… press a key combination")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
                     } else {
                         Text(capturedSymbol)
                             .font(.title.monospaced())
                             .foregroundStyle(.primary)
                         Text(capturedConfig)
                             .font(.system(.callout, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondaryText)
                     }
                 }
                 .padding()
@@ -62,7 +62,7 @@ struct KeybindCaptureSheet: View {
                  ? "Press a different combo to change, or click Save."
                  : "Modifiers alone won't capture — press at least one non-modifier key.")
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.tertiaryText)
                 .multilineTextAlignment(.center)
 
             HStack(spacing: 8) {

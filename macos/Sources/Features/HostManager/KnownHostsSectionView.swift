@@ -59,10 +59,10 @@ struct KnownHostsSectionView: View {
 
     private var searchBar: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
             TextField("Search hosts, key type, or fingerprint", text: $search).textFieldStyle(.plain)
             Spacer()
-            Text("\(filtered.count) of \(store.entries.count)").font(.caption).foregroundStyle(.secondary)
+            Text("\(filtered.count) of \(store.entries.count)").font(.caption).foregroundStyle(.secondaryText)
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
     }
@@ -108,7 +108,7 @@ private struct KnownHostRow: View {
                     .foregroundStyle(entry.isHashed ? .secondary : .primary)
                 Text("\(entry.keyType)  ·  \(entry.fingerprint)")
                     .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 8)

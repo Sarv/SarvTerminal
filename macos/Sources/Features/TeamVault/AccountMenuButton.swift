@@ -17,7 +17,7 @@ struct AccountMenuButton: View {
                 .font(.system(size: 14, weight: .regular))
                 // Adapts to the chrome appearance — hardcoded .white vanishes
                 // on a light window.
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .frame(width: 28, height: 24)
         }
         .buttonStyle(.plain)
@@ -49,7 +49,7 @@ struct AccountMenuButton: View {
             .controlSize(.large)
             .buttonStyle(.borderedProminent)
             Text("Opens the Sarv login in your browser. After signing in, paste the auth token below (automatic sign-in coming soon).")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondaryText)
 
             Divider()
 
@@ -67,7 +67,7 @@ struct AccountMenuButton: View {
             if VaultConfig.devLoginEnabled {
                 Divider()
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Dev sign-in (local)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text("Dev sign-in (local)").font(.caption.weight(.semibold)).foregroundStyle(.secondaryText)
                     HStack {
                         TextField("email", text: $email)
                             .textFieldStyle(.roundedBorder)
@@ -95,7 +95,7 @@ struct AccountMenuButton: View {
                 Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Signed in").font(.headline)
-                    Text(store.activeEmail ?? "").font(.caption).foregroundStyle(.secondary)
+                    Text(store.activeEmail ?? "").font(.caption).foregroundStyle(.secondaryText)
                 }
             }
 
@@ -108,7 +108,7 @@ struct AccountMenuButton: View {
 
             if store.accounts.count > 1 {
                 Divider()
-                Text("Switch account").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Switch account").font(.caption.weight(.semibold)).foregroundStyle(.secondaryText)
                 ForEach(store.accounts) { acct in
                     Button {
                         if acct.id != store.activeAccountID { store.switchAccount(acct.id) }

@@ -36,8 +36,8 @@ struct VaultsFocusModeView: View {
             // Title + actions all on one line.
             HStack(spacing: 6) {
                 Text("Terminals").font(.system(size: 13, weight: .semibold))
-                Text("•").foregroundStyle(.tertiary)
-                Text("\(panes.count)").foregroundStyle(.secondary).font(.system(size: 13))
+                Text("•").foregroundStyle(.tertiaryText)
+                Text("\(panes.count)").foregroundStyle(.secondaryText).font(.system(size: 13))
                 Spacer()
                 // Return to the split grid.
                 headerAction(
@@ -305,7 +305,7 @@ private struct FocusSidebarRow: View {
                         .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .help("Close")
             }
             if broadcasting {

@@ -23,7 +23,7 @@ struct AdvancedSectionView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Path")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 HStack {
                     Text(configFilePath)
                         .font(.system(.callout, design: .monospaced))
@@ -95,11 +95,11 @@ struct AdvancedSectionView: View {
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).foregroundStyle(.primary).fontWeight(.medium)
-                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                    Text(detail).font(.caption).foregroundStyle(.secondaryText)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.tertiaryText)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -118,7 +118,7 @@ struct AdvancedSectionView: View {
                     Image(systemName: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                     Text("No configuration errors")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)

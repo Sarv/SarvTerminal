@@ -170,7 +170,7 @@ private struct TabColorSwatch: View {
             Group {
                 if color == .none {
                     Image(systemName: isSelected ? "circle.slash" : "circle")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 } else if let displayColor = color.displayColor {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle.fill")
                         .foregroundStyle(Color(nsColor: displayColor))

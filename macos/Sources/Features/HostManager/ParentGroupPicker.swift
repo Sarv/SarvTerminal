@@ -47,7 +47,7 @@ struct ParentGroupPicker: View {
         HStack(spacing: 10) {
             Image(systemName: "square.grid.2x2")
                 .font(.system(size: 14))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .frame(width: 18)
             if let groupID, !displayPath(for: groupID).isEmpty {
                 Text(displayPath(for: groupID))
@@ -55,12 +55,12 @@ struct ParentGroupPicker: View {
                     .lineLimit(1)
             } else {
                 Text(placeholder)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
             }
             Spacer()
             Image(systemName: "chevron.up.chevron.down")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.tertiaryText)
         }
         .padding(.horizontal, 12).padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -92,7 +92,7 @@ struct ParentGroupPicker: View {
         return VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "square.grid.2x2")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 Text("Parent Group").font(.headline)
                 Spacer()
             }
@@ -117,7 +117,7 @@ struct ParentGroupPicker: View {
                         if entries.isEmpty {
                             Text("No groups yet")
                                 .font(.callout)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.secondaryText)
                                 .frame(maxWidth: .infinity, alignment: .center)
                                 .padding(.vertical, 20)
                         } else {
@@ -195,7 +195,7 @@ struct ParentGroupPicker: View {
                     .frame(height: 18)
                 }
                 Image(systemName: icon)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 18)
                 Text(label)
                     .foregroundStyle(disabled ? Color.secondary.opacity(0.5) : .primary)

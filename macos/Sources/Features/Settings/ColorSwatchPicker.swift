@@ -43,7 +43,7 @@ struct ColorSwatchPicker: View {
             // Hex input row
             HStack(spacing: 8) {
                 Text("Hex")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 TextField("#000000", text: $hexInput)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 110)
@@ -67,7 +67,7 @@ struct ColorSwatchPicker: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Presets")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.fixed(24), spacing: 6), count: 8),
                     spacing: 6

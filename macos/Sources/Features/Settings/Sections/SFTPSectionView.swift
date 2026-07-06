@@ -19,7 +19,7 @@ struct SFTPSectionView: View {
                         Toggle("Save edits automatically", isOn: $settings.autoSave)
                             .toggleStyle(.checkbox)
                         Text("A moment after you stop typing. When off, save manually with the Save button or ⌘S.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -36,7 +36,7 @@ struct SFTPSectionView: View {
                         Toggle("Show hidden files", isOn: $settings.showHidden)
                             .toggleStyle(.checkbox)
                         Text("Show dot-files (e.g. .gitconfig) in the file list.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }

@@ -65,7 +65,7 @@ struct ThemePicker: View {
                 themePreviewSwatch(preview: preview, big: false)
             } else {
                 Image(systemName: "paintpalette")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .frame(width: 36, height: 22)
             }
             Text(themeName.isEmpty ? "Default (no theme)" : themeName)
@@ -75,7 +75,7 @@ struct ThemePicker: View {
             Spacer()
             Image(systemName: "chevron.up.chevron.down")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -98,7 +98,7 @@ struct ThemePicker: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 TextField("Search themes…", text: $search)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
@@ -111,7 +111,7 @@ struct ThemePicker: View {
                         search = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.tertiaryText)
                     }
                     .buttonStyle(.plain)
                 }
@@ -133,7 +133,7 @@ struct ThemePicker: View {
                         }
                         if filteredThemes.isEmpty && !themes.isEmpty {
                             Text("No matches")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.secondaryText)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 12)
                         }
@@ -163,14 +163,14 @@ struct ThemePicker: View {
             HStack {
                 Text("\(themes.count) themes")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 Spacer()
                 if previews.isEmpty && !themes.isEmpty {
                     ProgressView()
                         .controlSize(.small)
                     Text("Loading previews…")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                 }
             }
             .padding(.horizontal, 12)
@@ -202,7 +202,7 @@ struct ThemePicker: View {
             HStack {
                 Image(systemName: "circle.dashed")
                     .frame(width: 32, height: 22)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                 Text("Default (no theme)")
                     .foregroundStyle(.primary)
                 Spacer()

@@ -275,7 +275,7 @@ private struct SarvAlertView: View {
                 if !message.isEmpty {
                     Text(message)
                         .font(.system(size: 12))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.secondaryText)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }

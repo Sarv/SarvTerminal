@@ -131,7 +131,7 @@ struct GeneralSectionView: View {
                         .frame(maxWidth: 280)
                     Text(String(format: "%.1f×", viewModel.general.mouseScrollMultiplier))
                         .font(.callout).monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .frame(width: 44, alignment: .trailing)
                 }
             }
@@ -190,7 +190,7 @@ struct GeneralSectionView: View {
                     Text(String(format: "%.0f MB", viewModel.general.scrollbackLimitMB))
                         .font(.callout)
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondaryText)
                         .frame(width: 70, alignment: .trailing)
                 }
             }

@@ -66,10 +66,10 @@ struct SavedSessionsSectionView: View {
 
     private var searchBar: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
             TextField("Search sessions", text: $search).textFieldStyle(.plain)
             Spacer()
-            Text("\(filtered.count) of \(store.sessions.count)").font(.caption).foregroundStyle(.secondary)
+            Text("\(filtered.count) of \(store.sessions.count)").font(.caption).foregroundStyle(.secondaryText)
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
     }
@@ -139,7 +139,7 @@ private struct SavedSessionRow: View {
                 Text(session.name).font(.callout).lineLimit(1)
                 Text("\(session.summary) · \(savedText)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
                     .lineLimit(1).truncationMode(.tail)
             }
             Spacer(minLength: 8)

@@ -18,7 +18,7 @@ struct VaultsBellView: View {
                 .font(.system(size: 14, weight: .regular))
                 // Adapts to the chrome appearance — hardcoded .white vanishes
                 // on a light window.
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .frame(width: 28, height: 24)
                 .overlay(alignment: .topTrailing) {
                     if center.unreadCount > 0 {

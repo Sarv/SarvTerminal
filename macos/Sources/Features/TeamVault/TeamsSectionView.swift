@@ -52,7 +52,7 @@ struct TeamsSectionView: View {
             Text(store.activeEmail ?? "Signed in").font(.callout.weight(.medium))
             if store.isBusy { ProgressView().controlSize(.small) }
             Spacer()
-            if let status = store.statusMessage { Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+            if let status = store.statusMessage { Text(status).font(.caption).foregroundStyle(.secondaryText).lineLimit(1) }
             Button { store.refreshTeams() } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless).help("Refresh")
         }
@@ -116,9 +116,9 @@ struct TeamsSectionView: View {
     private var searchAndFilter: some View {
         VStack(spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText).font(.caption)
                 TextField("Search hosts", text: $query).textFieldStyle(.plain)
-                if searching { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary) }
+                if searching { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondaryText) }
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 7).fill(Color.secondary.opacity(0.12)))
@@ -207,7 +207,7 @@ struct TeamsSectionView: View {
             }
             ForEach(hosts.filter { $0.groupID == nil }) { host in hostRow(host) }
             if hosts.isEmpty && store.teamPayloads[team.id] != nil {
-                Text(searching ? "No matches." : "Empty vault.").font(.caption).foregroundStyle(.secondary)
+                Text(searching ? "No matches." : "Empty vault.").font(.caption).foregroundStyle(.secondaryText)
                     .padding(.leading, 64).padding(.vertical, 4)
             }
         }
@@ -242,10 +242,10 @@ struct TeamsSectionView: View {
             DisclosureRow(level: 0, icon: "person.2.fill", title: "\(team.org.name) › \(team.name)", trailing: "\(files.count)", expanded: true) {}
             ForEach(files) { file in
                 HStack(spacing: 12) {
-                    Image(systemName: fileIcon(file)).foregroundStyle(.secondary).frame(width: 18)
+                    Image(systemName: fileIcon(file)).foregroundStyle(.secondaryText).frame(width: 18)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(file.name).fontWeight(.medium)
-                        Text("\(byteString(file.sizeBytes)) · \(file.contentType)").font(.caption).foregroundStyle(.secondary)
+                        Text("\(byteString(file.sizeBytes)) · \(file.contentType)").font(.caption).foregroundStyle(.secondaryText)
                     }
                     Spacer()
                     Button { store.downloadFile(file, from: team) } label: { Image(systemName: "arrow.down.circle") }
@@ -316,12 +316,12 @@ private struct DisclosureRow: View {
         Button(action: toggle) {
             HStack(spacing: 6) {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary).frame(width: 10)
-                Image(systemName: icon).font(.caption).foregroundStyle(.secondary).frame(width: 16)
+                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondaryText).frame(width: 10)
+                Image(systemName: icon).font(.caption).foregroundStyle(.secondaryText).frame(width: 16)
                 Text(title).font(level <= 1 ? .subheadline.weight(.semibold) : .callout.weight(.medium))
                 if loading { ProgressView().controlSize(.small) }
                 Spacer()
-                if let trailing { Text(trailing).font(.caption2).foregroundStyle(.tertiary)
+                if let trailing { Text(trailing).font(.caption2).foregroundStyle(.tertiaryText)
                     .padding(.horizontal, 6).padding(.vertical, 1)
                     .background(Capsule().fill(Color.secondary.opacity(0.15))) }
             }
@@ -342,10 +342,10 @@ private struct HostRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "server.rack").foregroundStyle(.secondary).frame(width: 18)
+            Image(systemName: "server.rack").foregroundStyle(.secondaryText).frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(host.label).fontWeight(.medium)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                Text(subtitle).font(.caption).foregroundStyle(.secondaryText)
             }
             Spacer()
             if hovering { Button("Connect", action: connect).controlSize(.small) }

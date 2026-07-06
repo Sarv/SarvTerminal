@@ -100,7 +100,7 @@ struct ThemePreviewSheet: View {
         VStack(spacing: 12) {
             ProgressView()
             Text("Loading preview…")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
         }
         .padding(40)
         .frame(maxWidth: .infinity)
@@ -122,14 +122,14 @@ struct ThemePreviewSheet: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "eye")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             Text("Theme preview")
                 .font(.callout.weight(.semibold))
             Text("·")
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.tertiaryText)
             Text(themeName.isEmpty ? "Default" : themeName)
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
             Spacer()
             Button("Close") { dismiss() }
                 .controlSize(.small)
@@ -149,7 +149,7 @@ struct ThemePreviewSheet: View {
                 .font(.headline)
             Text("Couldn't parse this theme's colors. The theme file may use a non-hex color format we don't yet support.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             Button {

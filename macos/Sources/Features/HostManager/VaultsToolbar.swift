@@ -76,7 +76,7 @@ struct VaultsToolbar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.secondaryText)
         .opacity(item.disabled ? 0.5 : 1)
         .disabled(item.disabled)
         .help(item.help ?? "")
@@ -88,7 +88,7 @@ struct VaultsToolbar: View {
                 .padding(6).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.secondaryText)
         .opacity(item.disabled ? 0.5 : 1)
         .disabled(item.disabled)
         .help(item.help ?? "")
@@ -106,12 +106,12 @@ struct VaultsEmptyState: View {
         VStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 30))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .frame(width: 84, height: 84)
                 .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.secondary.opacity(0.12)))
             Text(title).font(.title3.weight(.semibold))
             Text(subtitle)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
             if let badge {
@@ -119,7 +119,7 @@ struct VaultsEmptyState: View {
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(Capsule().fill(Color.secondary.opacity(0.2)))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondaryText)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

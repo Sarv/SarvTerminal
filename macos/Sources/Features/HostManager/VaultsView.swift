@@ -95,7 +95,7 @@ struct VaultsView: View {
             HStack(spacing: 10) {
                 Image(systemName: sec.icon)
                     .frame(width: 18)
-                    .foregroundStyle(isSelected ? Color.white : .secondary)
+                    .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.78))
                 Text(sec.label)
                     // Always render the full label — never truncate, never wrap
                     // (the sidebar width is tuned around the longest label).
@@ -104,7 +104,7 @@ struct VaultsView: View {
                 Spacer()
             }
             .font(.callout.weight(isSelected ? .semibold : .regular))
-            .foregroundStyle(isSelected ? Color.white : .secondary)
+            .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.78))
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(

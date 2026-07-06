@@ -42,13 +42,13 @@ struct SerialConnectSheet: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("Device").font(.caption).foregroundStyle(.secondary)
+                    Text("Device").font(.caption).foregroundStyle(.secondaryText)
                     Spacer()
                     refreshButton
                 }
                 if devices.isEmpty {
                     Text("No serial devices found. Plug in a USB-serial adapter, then Refresh.")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(.callout).foregroundStyle(.secondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                         .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -67,7 +67,7 @@ struct SerialConnectSheet: View {
                 }
                 .labelsHidden().frame(width: 160)
                 Text("Framing 8-N-1, no flow control. Opens with the built-in `screen`.")
-                    .font(.caption2).foregroundStyle(.tertiary)
+                    .font(.caption2).foregroundStyle(.tertiaryText)
             }
 
             Divider()
@@ -90,11 +90,11 @@ struct SerialConnectSheet: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Image(systemName: "cable.connector").font(.title2).foregroundStyle(.secondary)
+            Image(systemName: "cable.connector").font(.title2).foregroundStyle(.secondaryText)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Serial Console").font(.headline)
                 Text("Connect to a device over a USB-serial adapter.")
-                    .font(.subheadline).foregroundStyle(.secondary)
+                    .font(.subheadline).foregroundStyle(.secondaryText)
             }
             Spacer()
         }
@@ -107,9 +107,9 @@ struct SerialConnectSheet: View {
 
     private var reportLine: some View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
-            Image(systemName: "exclamationmark.bubble").foregroundStyle(.secondary)
+            Image(systemName: "exclamationmark.bubble").foregroundStyle(.secondaryText)
             Text("Serial support is new — if a device won't connect,")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondaryText)
             Button("report an issue") { showReport = true }
                 .buttonStyle(.link).font(.caption)
                 .popover(isPresented: $showReport, arrowEdge: .bottom) { reportPopover }
@@ -120,7 +120,7 @@ struct SerialConnectSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Report a serial issue").font(.headline)
             Text("Please include the following so we can reproduce it:")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(.secondaryText)
             VStack(alignment: .leading, spacing: 5) {
                 Label("What happened — not listed / blank / garbled / error text", systemImage: "1.circle")
                 Label("Adapter make & chipset — FTDI, CP210x, Prolific, vendor cable", systemImage: "2.circle")
@@ -130,7 +130,7 @@ struct SerialConnectSheet: View {
             }
             .font(.caption)
             Text("The button opens a GitHub issue pre-filled with these fields (device, baud and macOS are added automatically).")
-                .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                .font(.caption2).foregroundStyle(.tertiaryText).fixedSize(horizontal: false, vertical: true)
             Button {
                 if let url = issueURL() { NSWorkspace.shared.open(url) }
             } label: {
@@ -145,7 +145,7 @@ struct SerialConnectSheet: View {
     private func field<Content: View>(_ label: String,
                                        @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(label).font(.caption).foregroundStyle(.secondaryText)
             content()
         }
     }

@@ -286,10 +286,10 @@ extension Ghostty {
             HStack(spacing: 6) {
                 Image(systemName: "line.3.horizontal.decrease")
                 Text("Filtered").font(.caption.weight(.semibold))
-                Text("“\(searchState.needle)”").font(.caption).foregroundColor(.secondary)
+                Text("“\(searchState.needle)”").font(.caption).foregroundColor(.secondaryText)
                 Spacer()
                 Text("\(matchCount) match\(matchCount == 1 ? "" : "es") · −\(searchState.linesBefore)B / +\(searchState.linesAfter)A")
-                    .font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                    .font(.caption.monospacedDigit()).foregroundColor(.secondaryText)
             }
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(.ultraThinMaterial)
@@ -299,8 +299,8 @@ extension Ghostty {
         private var content: some View {
             if displayLines.isEmpty {
                 VStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").font(.title2).foregroundColor(.secondary)
-                    Text("No matching lines").foregroundColor(.secondary)
+                    Image(systemName: "magnifyingglass").font(.title2).foregroundColor(.secondaryText)
+                    Text("No matching lines").foregroundColor(.secondaryText)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

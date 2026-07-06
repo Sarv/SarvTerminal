@@ -59,7 +59,7 @@ struct GroupColorPicker: View {
             Text("COLOR")
                 .font(.caption2.weight(.semibold))
                 .tracking(0.5)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .padding(.leading, 4)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
@@ -106,7 +106,7 @@ struct GroupIconPicker: View {
             Text("ICON")
                 .font(.caption2.weight(.semibold))
                 .tracking(0.5)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.secondaryText)
                 .padding(.leading, 4)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
