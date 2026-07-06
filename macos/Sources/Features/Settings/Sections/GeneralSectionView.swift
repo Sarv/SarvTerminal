@@ -174,7 +174,7 @@ struct GeneralSectionView: View {
             }
             divider
             row("Paste protection") {
-                Toggle("Warn before pasting text that looks unsafe",
+                Toggle("Warn before pasting multi-line text that could run commands",
                        isOn: $viewModel.general.clipboardPasteProtection)
                     .toggleStyle(.checkbox)
             }

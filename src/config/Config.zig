@@ -2370,6 +2370,12 @@ keybind: Keybinds = .{},
 /// Require confirmation before pasting text that appears unsafe. This helps
 /// prevent a "copy/paste attack" where a user may accidentally execute unsafe
 /// commands by pasting text with newlines.
+///
+/// SarvTerminal relaxes the upstream check: a single line with a trailing
+/// newline (what browsers put on the clipboard when a whole command line is
+/// copied) is treated as safe and pastes without confirmation even outside
+/// bracketed-paste mode. Only multi-line pastes into a program that hasn't
+/// enabled bracketed paste ask for confirmation.
 @"clipboard-paste-protection": bool = true,
 
 /// If true, bracketed pastes will be considered safe. By default, bracketed

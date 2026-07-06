@@ -5901,7 +5901,11 @@ fn completeClipboardPaste(
                 if (self.config.clipboard_paste_bracketed_safe) break :unsafe false;
             }
 
-            break :unsafe !input.paste.isSafe(data);
+            // A single line with a trailing newline (a browser copy of one
+            // command) pastes without confirmation even when the running
+            // program hasn't enabled bracketed paste; only multi-line pastes
+            // warn there.
+            break :unsafe !input.paste.isSafeAllowingTrailingNewline(data);
         };
 
         if (unsafe) {

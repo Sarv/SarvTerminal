@@ -150,7 +150,8 @@ extension Ghostty.Config {
         return v
     }
 
-    /// `clipboard-paste-protection` — bool (default true).
+    /// `clipboard-paste-protection` — bool (default true; warns only on
+    /// multi-line non-bracketed pastes, see Config.zig).
     var clipboardPasteProtection: Bool { readBool(key: "clipboard-paste-protection", default: true) }
 
     /// `link-url` — bool, auto-detect URLs (default true).

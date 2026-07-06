@@ -141,6 +141,29 @@ test isSafe {
     try testing.expect(!isSafe("he\x1b[201~llo"));
 }
 
+/// Like `isSafe`, but tolerates a single trailing newline (with optional
+/// carriage return). SarvTerminal uses this for paste protection: a whole
+/// line copied from a browser almost always carries a trailing newline, and
+/// confirming every such paste reads as breakage next to other terminals.
+/// A newline anywhere else still marks the paste unsafe.
+pub fn isSafeAllowingTrailingNewline(data: []const u8) bool {
+    var trimmed = data;
+    if (std.mem.endsWith(u8, trimmed, "\n")) trimmed = trimmed[0 .. trimmed.len - 1];
+    if (std.mem.endsWith(u8, trimmed, "\r")) trimmed = trimmed[0 .. trimmed.len - 1];
+    return isSafe(trimmed);
+}
+
+test isSafeAllowingTrailingNewline {
+    const testing = std.testing;
+    try testing.expect(isSafeAllowingTrailingNewline("hello"));
+    try testing.expect(isSafeAllowingTrailingNewline("hello\n"));
+    try testing.expect(isSafeAllowingTrailingNewline("hello\r\n"));
+    try testing.expect(!isSafeAllowingTrailingNewline("hello\n\n"));
+    try testing.expect(!isSafeAllowingTrailingNewline("hello\nworld"));
+    try testing.expect(!isSafeAllowingTrailingNewline("hello\nworld\n"));
+    try testing.expect(!isSafeAllowingTrailingNewline("he\x1b[201~llo\n"));
+}
+
 test "encode bracketed" {
     const testing = std.testing;
     const result = try encode(
