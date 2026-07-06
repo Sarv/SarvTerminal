@@ -5,19 +5,12 @@ struct ShellIntegrationSectionView: View {
 
     /// Tags currently enabled, parsed from the comma-separated string.
     private var enabledTags: Set<String> {
-        Set(viewModel.shellIntegration.features
-            .split(whereSeparator: { $0 == "," || $0 == " " })
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            .filter { !$0.isEmpty && !$0.hasPrefix("no-") })
+        ShellIntegrationFeature.parseOverrides(viewModel.shellIntegration.features).on
     }
 
     /// `no-foo` markers in the features string mean explicitly off.
     private var disabledTags: Set<String> {
-        Set(viewModel.shellIntegration.features
-            .split(whereSeparator: { $0 == "," || $0 == " " })
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            .filter { $0.hasPrefix("no-") }
-            .map { String($0.dropFirst(3)) })
+        ShellIntegrationFeature.parseOverrides(viewModel.shellIntegration.features).off
     }
 
     var body: some View {

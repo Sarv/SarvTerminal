@@ -972,6 +972,31 @@ struct ShellIntegrationFeature {
     let defaultOn: Bool
 }
 
+extension ShellIntegrationFeature {
+    /// Split a raw `shell-integration-features` override list (e.g.
+    /// "ssh-env, no-cursor") into explicitly-enabled and explicitly-disabled
+    /// tags. Unlisted features keep their `defaultOn`.
+    static func parseOverrides(_ raw: String?) -> (on: Set<String>, off: Set<String>) {
+        let parts = (raw ?? "")
+            .split(whereSeparator: { $0 == "," || $0 == " " })
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty }
+        let on = Set(parts.filter { !$0.hasPrefix("no-") })
+        let off = Set(parts.filter { $0.hasPrefix("no-") }.map { String($0.dropFirst(3)) })
+        return (on, off)
+    }
+
+    /// Effective on/off state for `tag` given the raw override list: an
+    /// explicit override (or the `true`/`false` all-features form) wins,
+    /// otherwise the feature's default applies.
+    static func isEnabled(_ tag: String, overrides raw: String?) -> Bool {
+        let (on, off) = parseOverrides(raw)
+        if off.contains(tag) || on.contains("false") { return false }
+        if on.contains(tag) || on.contains("true") { return true }
+        return kShellIntegrationFeatures.first { $0.tag == tag }?.defaultOn ?? false
+    }
+}
+
 let kShellIntegrationFeatures: [ShellIntegrationFeature] = [
     .init(tag: "cursor", label: "Cursor",
           detail: "Restore cursor to a bar at the prompt.", defaultOn: true),

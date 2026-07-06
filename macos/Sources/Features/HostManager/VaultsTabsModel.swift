@@ -679,9 +679,28 @@ final class VaultsTabsModel: ObservableObject {
     /// surface env plumbing). ssh's verbose stderr is redirected to `logFile` so
     /// the terminal shows only the clean remote session. Returns the surface and
     /// the temp password-file path (if any) so the caller can clean it up.
+    /// Route a directly-spawned `ssh …` command through the app's `+ssh` CLI
+    /// action so Host manager connections get the remote terminfo install /
+    /// TERM fallback, same as the shell-integration ssh wrapper (which an
+    /// app-spawned ssh bypasses — no interactive shell means no wrapper).
+    /// Honors `shell-integration-features` overrides from the config file.
+    private func wrapWithPlusSSH(_ command: String) -> String {
+        guard command.hasPrefix("ssh "),
+              let exe = Bundle.main.executablePath else { return command }
+        let overrides = Ghostty.Config.rawConfigFileValue("shell-integration-features")
+        let forwardEnv = ShellIntegrationFeature.isEnabled("ssh-env", overrides: overrides)
+        let terminfo = ShellIntegrationFeature.isEnabled("ssh-terminfo", overrides: overrides)
+        guard forwardEnv || terminfo else { return command }
+        var flags: [String] = []
+        if !forwardEnv { flags.append("--forward-env=false") }
+        if !terminfo { flags.append("--terminfo=false") }
+        let flagsPart = flags.isEmpty ? "" : "\(flags.joined(separator: " ")) "
+        return "\(shellQuote(exe)) +ssh \(flagsPart)-- \(command.dropFirst(4))"
+    }
+
     private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?)
         -> (surface: Ghostty.SurfaceView, passwordFile: String?) {
-        var full = command
+        var full = wrapWithPlusSSH(command)
         var passwordFile: String?
         if let pw = password, !pw.isEmpty {
             let env = SSHAskpass.env(forPassword: pw)

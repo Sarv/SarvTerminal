@@ -311,7 +311,7 @@ extension SavedHost {
 // MARK: - Helpers
 
 /// Wrap in single quotes for safe shell embedding, escaping internal `'`.
-private func shellQuote(_ s: String) -> String {
+func shellQuote(_ s: String) -> String {
     if s.range(of: "[^A-Za-z0-9_@%+=:,./-]", options: .regularExpression) == nil {
         return s
     }
