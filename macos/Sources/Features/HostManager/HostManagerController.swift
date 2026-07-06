@@ -74,7 +74,12 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
         // the tab bar stops rendering. With an opaque window the panes blend
         // against the SwiftUI content (the shared image) instead.
         window.isOpaque = true
-        window.backgroundColor = .black
+        // A dark gray rather than pure black: the titlebar is transparent, so
+        // this color shows behind the traffic-light buttons. macOS dims those
+        // buttons to a translucent gray when the window is inactive, which is
+        // invisible on pure black — a dark gray keeps them visible. Value ~#1F1F1F
+        // matches the Claude app's dark titlebar.
+        window.backgroundColor = NSColor(white: 0.122, alpha: 1)
         window.title = "Vaults"
         // Hide the native title text so our custom tab strip occupies the
         // full titlebar row by itself, Termius-style.
