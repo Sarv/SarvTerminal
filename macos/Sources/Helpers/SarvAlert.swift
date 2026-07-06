@@ -68,6 +68,11 @@ enum SarvAlert {
         panel.center()
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        // Focus the input BEFORE runModal starts its own loop: GCD main-queue
+        // blocks (which the SwiftUI @FocusState relies on) are not reliably
+        // serviced in NSModalPanelRunLoopMode, so we assign first responder
+        // synchronously here instead.
+        focusInitialField(in: panel)
         NSApp.runModal(for: panel)
         panel.orderOut(nil)
         return chosen
@@ -121,6 +126,10 @@ enum SarvAlert {
 
         install(root, in: panel)
         parent.beginSheet(panel) { _ in }
+        // A sheet runs in the normal run loop (not a nested runModal), so an
+        // async assignment fires fine here — but do it after the sheet is on
+        // screen so the field editor exists.
+        DispatchQueue.main.async { focusInitialField(in: panel) }
     }
 
     /// Async variant of `beginSheet` for callers using structured concurrency.
@@ -153,6 +162,29 @@ enum SarvAlert {
         if let editor = panel.fieldEditor(true, for: nil) as? NSTextView {
             editor.insertionPointColor = .labelColor
         }
+    }
+
+    /// Move keyboard focus to the alert's text field (if it has one) and select
+    /// its contents, so the user can type or overwrite immediately without
+    /// clicking into the box. Centralized here so every SarvAlert input across
+    /// the app gets it. Forces a layout pass first because `NSHostingView`
+    /// builds its backing `NSTextField` lazily during layout.
+    private static func focusInitialField(in panel: NSPanel) {
+        panel.layoutIfNeeded()
+        guard let content = panel.contentView,
+              let field = firstEditableTextField(in: content) else { return }
+        panel.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
+    }
+
+    /// Depth-first search for the first editable `NSTextField` (SwiftUI's
+    /// `TextField` is bridged to one on macOS).
+    private static func firstEditableTextField(in view: NSView) -> NSTextField? {
+        if let field = view as? NSTextField, field.isEditable { return field }
+        for subview in view.subviews {
+            if let found = firstEditableTextField(in: subview) { return found }
+        }
+        return nil
     }
 
     private static func makePanel() -> NSPanel {
@@ -201,9 +233,29 @@ private struct SarvAlertView: View {
     let inputInitial: String?
     let onChoose: (Int, Bool, String) -> Void
 
-    @State private var remember = false
-    @State private var inputText = ""
+    @State private var remember: Bool
+    @State private var inputText: String
     @FocusState private var inputFocused: Bool
+
+    init(title: String,
+         message: String,
+         buttons: [SarvAlert.Button],
+         rememberTitle: String?,
+         rememberInitial: Bool = false,
+         inputInitial: String?,
+         onChoose: @escaping (Int, Bool, String) -> Void) {
+        self.title = title
+        self.message = message
+        self.buttons = buttons
+        self.rememberTitle = rememberTitle
+        self.rememberInitial = rememberInitial
+        self.inputInitial = inputInitial
+        self.onChoose = onChoose
+        // Seed field/checkbox state up front so the text field already holds its
+        // value when the presenter assigns first responder and selects all.
+        _remember = State(initialValue: rememberInitial)
+        _inputText = State(initialValue: inputInitial ?? "")
+    }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -236,17 +288,12 @@ private struct SarvAlertView: View {
                     .focused($inputFocused)
                     // Return in the field = the default button.
                     .onSubmit { chooseDefault() }
-                    .onAppear {
-                        inputText = inputInitial ?? ""
-                        DispatchQueue.main.async { inputFocused = true }
-                    }
             }
 
             if let rememberTitle {
                 Toggle(rememberTitle, isOn: $remember)
                     .toggleStyle(.checkbox)
                     .font(.system(size: 11))
-                    .onAppear { remember = rememberInitial }
             }
 
             // One or two buttons sit side-by-side (macOS convention: cancel on
