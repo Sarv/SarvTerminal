@@ -699,23 +699,26 @@ final class VaultsTabsModel: ObservableObject {
     /// TERM fallback, same as the shell-integration ssh wrapper (which an
     /// app-spawned ssh bypasses — no interactive shell means no wrapper).
     /// Honors `shell-integration-features` overrides from the config file.
-    private func wrapWithPlusSSH(_ command: String) -> String {
-        guard command.hasPrefix("ssh "),
+    /// Only hosts that opt into Ghostty's own terminfo (`termOverride == "xterm-ghostty"`)
+    /// route through `ghostty +ssh`, which installs that terminfo on the remote
+    /// (with graceful fallback to xterm-256color). Every other host already carries an
+    /// explicit `SetEnv=TERM` from `SavedHost.sshCommand`, so it runs as plain `ssh` —
+    /// no fragile remote terminfo install (that install was what silently broke
+    /// reverse-search / readline on servers lacking the ghostty terminfo).
+    private func wrapSSHCommand(_ command: String, termOverride: String) -> String {
+        guard termOverride.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "xterm-ghostty",
+              command.hasPrefix("ssh "),
               let exe = Bundle.main.executablePath else { return command }
         let overrides = Ghostty.Config.rawConfigFileValue("shell-integration-features")
         let forwardEnv = ShellIntegrationFeature.isEnabled("ssh-env", overrides: overrides)
-        let terminfo = ShellIntegrationFeature.isEnabled("ssh-terminfo", overrides: overrides)
-        guard forwardEnv || terminfo else { return command }
-        var flags: [String] = []
+        var flags = ["--terminfo=true"]
         if !forwardEnv { flags.append("--forward-env=false") }
-        if !terminfo { flags.append("--terminfo=false") }
-        let flagsPart = flags.isEmpty ? "" : "\(flags.joined(separator: " ")) "
-        return "\(shellQuote(exe)) +ssh \(flagsPart)-- \(command.dropFirst(4))"
+        return "\(shellQuote(exe)) +ssh \(flags.joined(separator: " ")) -- \(command.dropFirst(4))"
     }
 
-    private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?)
+    private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?, termOverride: String = "")
         -> (surface: Ghostty.SurfaceView, passwordFile: String?) {
-        var full = wrapWithPlusSSH(command)
+        var full = wrapSSHCommand(command, termOverride: termOverride)
         var passwordFile: String?
         if let pw = password, !pw.isEmpty {
             let env = SSHAskpass.env(forPassword: pw)
@@ -804,10 +807,10 @@ final class VaultsTabsModel: ObservableObject {
         deleteTempFile(model.passwordFilePath)   // discard the previous attempt's password file
         // Rebuild the command from the LATEST saved host (the user may have just
         // edited it), so changed port/options take effect on reconnect.
-        let command = model.host
-            .flatMap { SavedHostsStore.shared.host(withID: $0.id) }
-            .map { $0.sshCommand(staged: true) } ?? conn.command
-        let made = makeSSHSurface(app: app, command: command, password: password)
+        let latestHost = model.host.flatMap { SavedHostsStore.shared.host(withID: $0.id) } ?? model.host
+        let command = latestHost.map { $0.sshCommand(staged: true) } ?? conn.command
+        let made = makeSSHSurface(app: app, command: command, password: password,
+                                  termOverride: latestHost?.termOverride ?? "")
         applyHostTheme(model.host, to: made.surface)
         // Replace only this pane's node — works whether it's the whole tab or one
         // pane of a split.
@@ -997,7 +1000,7 @@ final class VaultsTabsModel: ObservableObject {
             boundSurface = surface
         } else {
             // Swap the placeholder pane for a live ssh surface.
-            let made = makeSSHSurface(app: app, command: command, password: knownPassword)
+            let made = makeSSHSurface(app: app, command: command, password: knownPassword, termOverride: host.termOverride)
             boundSurface = made.surface
             passwordFile = made.passwordFile
             applyHostTheme(host, to: made.surface)

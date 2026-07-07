@@ -61,7 +61,7 @@ struct HostEditorView: View {
         order += [.osPicker, .themePicker, .advancedExpander]
         if showAdvanced {
             order += [.strictHostKey, .connectTimeout, .keepAlive, .proxyJump,
-                      .compression, .forceTTY, .localForwardsExpander]
+                      .compression, .forceTTY, .term, .localForwardsExpander]
             if showLocalForwards { order.append(.localForwards) }
             order.append(.remoteForwardsExpander)
             if showRemoteForwards { order.append(.remoteForwards) }
@@ -528,6 +528,13 @@ struct HostEditorView: View {
                                   focus: $focusedField, field: .forceTTY)
                         .id(HostEditorFocusField.forceTTY)
                         .help("Force a terminal allocation, e.g. for interactive commands run at startup")
+                    EditorTextRow(icon: "character.cursor.ibeam",
+                                  placeholder: "TERM (default xterm-256color)",
+                                  text: $draft.termOverride,
+                                  onEditingEnded: { autosaveIf(!draft.termOverride.isEmpty) },
+                                  focus: $focusedField, field: .term)
+                        .id(HostEditorFocusField.term)
+                        .help("TERM to advertise to the remote. Empty = xterm-256color (works everywhere). Set \"xterm-ghostty\" to auto-install Ghostty's terminfo on the server for full features.")
 
                     EditorSubheading(text: "Port forwarding")
                     EditorExpandRow(icon: "arrow.right.square",
@@ -706,6 +713,7 @@ struct HostEditorView: View {
             || !draft.proxyJump.isEmpty
             || draft.useCompression
             || draft.requestTTY
+            || !draft.termOverride.isEmpty
             || !draft.localForwards.isEmpty
             || !draft.remoteForwards.isEmpty
             || draft.dynamicForwardPort != 0 {

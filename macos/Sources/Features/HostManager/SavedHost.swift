@@ -32,6 +32,12 @@ struct SavedHost: Codable, Identifiable, Hashable {
     var useCompression: Bool
     var requestTTY: Bool
     var proxyJump: String                   // "" = none
+    /// TERM advertised to the remote. "" = safe default (`xterm-256color`), which
+    /// renders correctly on servers that lack the `xterm-ghostty` terminfo (fixes
+    /// broken reverse-search etc.). "xterm-ghostty" opts this host into Ghostty's
+    /// own terminfo, auto-installed on the remote via `+ssh`. Any other value is
+    /// sent verbatim.
+    var termOverride: String = ""
 
     // MARK: Port forwarding (raw ssh -L/-R/-D operands)
     var localForwards: [String]   // each like "8080:localhost:80"
@@ -194,6 +200,19 @@ struct SavedHost: Codable, Identifiable, Hashable {
         for f in remoteForwards  where !f.isEmpty { args.append("-R \(shellQuote(f))") }
         if dynamicForwardPort > 0 { args.append("-D \(dynamicForwardPort)") }
 
+        // Advertise a widely-supported TERM to the remote (client-side SetEnv, so it
+        // can't be dropped by the server's AcceptEnv). Without this, SarvTerminal's
+        // default TERM=xterm-ghostty reaches servers that lack that terminfo and
+        // breaks readline redraw (e.g. Ctrl+R reverse-search). "" → xterm-256color.
+        // "xterm-ghostty" is a per-host opt-in handled by the `+ssh` wrapper (which
+        // installs the terminfo), so we skip SetEnv in that case.
+        let term = termOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if term.lowercased() != "xterm-ghostty" {
+            let effective = term.isEmpty ? "xterm-256color" : term
+            args.append("-o SetEnv=TERM=\(effective)")
+            args.append("-o SetEnv=COLORTERM=truecolor")
+        }
+
         let target = username.isEmpty ? hostname : "\(username)@\(hostname)"
         args.append(target)
 
@@ -227,6 +246,7 @@ struct SavedHost: Codable, Identifiable, Hashable {
         useCompression              = try c.decodeIfPresent(Bool.self,           forKey: .useCompression)              ?? false
         requestTTY                  = try c.decodeIfPresent(Bool.self,           forKey: .requestTTY)                  ?? false
         proxyJump                   = try c.decodeIfPresent(String.self,         forKey: .proxyJump)                   ?? ""
+        termOverride                = try c.decodeIfPresent(String.self,         forKey: .termOverride)                ?? ""
         localForwards               = try c.decodeIfPresent([String].self,       forKey: .localForwards)               ?? []
         remoteForwards              = try c.decodeIfPresent([String].self,       forKey: .remoteForwards)              ?? []
         dynamicForwardPort          = try c.decodeIfPresent(Int.self,            forKey: .dynamicForwardPort)          ?? 0
