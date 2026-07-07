@@ -152,6 +152,28 @@ final class SavedSessionsStore: ObservableObject {
         persist()
     }
 
+    // MARK: - Sync helpers
+
+    /// Merge synced sessions by id, newest `updatedAt` wins; never delete local-only.
+    func ingest(_ incoming: [SavedSession]) {
+        var changed = false
+        for s in incoming {
+            if let idx = sessions.firstIndex(where: { $0.id == s.id }) {
+                if s.updatedAt >= sessions[idx].updatedAt { sessions[idx] = s; changed = true }
+            } else {
+                sessions.append(s); changed = true
+            }
+        }
+        if changed { sortInPlace(); persist() }
+    }
+
+    /// Mirror the synced set (deletes propagate).
+    func replaceAll(_ incoming: [SavedSession]) {
+        sessions = incoming
+        sortInPlace()
+        persist()
+    }
+
     // MARK: - IO
 
     private func load() {

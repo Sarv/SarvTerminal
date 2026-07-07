@@ -246,14 +246,17 @@ enum SyncEngine {
                 // we MIRROR (replace), so deletes made elsewhere propagate.
                 let firstPull = settings.lastSyncedVersion == 0
                 let snippets = h.snippets ?? []
+                let savedSessions = h.savedSessions ?? []
                 if firstPull && !SavedHostsStore.shared.hosts.isEmpty {
                     HostGroupsStore.shared.ingest(h.groups)
                     SavedHostsStore.shared.ingest(h.hosts)
                     SnippetsStore.shared.ingest(snippets)
+                    SavedSessionsStore.shared.ingest(savedSessions)
                 } else {
                     HostGroupsStore.shared.replaceAll(h.groups)
                     SavedHostsStore.shared.replaceAll(h.hosts)
                     SnippetsStore.shared.replaceAll(snippets)
+                    SavedSessionsStore.shared.replaceAll(savedSessions)
                 }
             }
             (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
@@ -356,7 +359,8 @@ enum SyncEngine {
         // is simply absent here, so the deletion propagates on pull.
         SyncHostsPayload(hosts: SavedHostsStore.shared.hosts,
                          groups: HostGroupsStore.shared.groups,
-                         snippets: SnippetsStore.shared.snippets)
+                         snippets: SnippetsStore.shared.snippets,
+                         savedSessions: SavedSessionsStore.shared.sessions)
     }
 
     // MARK: - Apply (pull)

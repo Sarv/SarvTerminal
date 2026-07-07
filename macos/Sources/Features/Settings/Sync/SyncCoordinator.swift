@@ -50,6 +50,7 @@ final class SyncCoordinator {
         SavedHostsStore.shared.objectWillChange.sink { _ in onChange() }.store(in: &cancellables)
         HostGroupsStore.shared.objectWillChange.sink { _ in onChange() }.store(in: &cancellables)
         SnippetsStore.shared.objectWillChange.sink { _ in onChange() }.store(in: &cancellables)
+        SavedSessionsStore.shared.objectWillChange.sink { _ in onChange() }.store(in: &cancellables)
         // Everything edited in the Settings window (config, appearance, keybinds,
         // SFTP prefs) is flushed as ONE version when that window closes — not per
         // change — to avoid version churn from slider/colour fiddling.

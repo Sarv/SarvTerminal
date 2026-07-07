@@ -66,8 +66,11 @@ struct SyncHostsPayload: Codable {
     var hosts: [SavedHost]
     var groups: [HostGroup]
     var snippets: [Snippet]?   // optional for back-compat with older payloads
+    var savedSessions: [SavedSession]?   // optional for back-compat with older payloads
 
-    var isEmpty: Bool { hosts.isEmpty && groups.isEmpty && (snippets?.isEmpty ?? true) }
+    var isEmpty: Bool {
+        hosts.isEmpty && groups.isEmpty && (snippets?.isEmpty ?? true) && (savedSessions?.isEmpty ?? true)
+    }
 }
 
 extension JSONEncoder {
