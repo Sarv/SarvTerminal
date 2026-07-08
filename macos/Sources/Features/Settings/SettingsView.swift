@@ -1007,7 +1007,7 @@ let kShellIntegrationFeatures: [ShellIntegrationFeature] = [
     .init(tag: "ssh-env", label: "SSH env",
           detail: "Forward TERM and color env vars over SSH.", defaultOn: true),
     .init(tag: "ssh-terminfo", label: "SSH terminfo",
-          detail: "Install Ghostty's terminfo on remote hosts.", defaultOn: true),
+          detail: "Install Ghostty's terminfo on remote hosts (off by default — TERM falls back to xterm-256color).", defaultOn: false),
     .init(tag: "path", label: "PATH",
           detail: "Add Ghostty's binary directory to PATH.", defaultOn: true),
 ]

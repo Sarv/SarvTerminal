@@ -2850,7 +2850,10 @@ keybind: Keybinds = .{},
 ///     remote host, it will be automatically "cached" to avoid repeat installations.
 ///     If desired, the `+ssh-cache` CLI action can be used to manage the installation
 ///     cache manually using various arguments.
-///     Enabled by default. (Available since: 1.2.0)
+///     Disabled by default: the install can fail silently on some hosts and leave
+///     the remote on `xterm-ghostty` without a matching terminfo, breaking readline
+///     redraw (e.g. Ctrl+R). With `ssh-env` on, TERM falls back to `xterm-256color`.
+///     (Available since: 1.2.0)
 ///
 ///   * `path` - Add Ghostty's binary directory to PATH. This ensures the `ghostty`
 ///     command is available in the shell even if shell init scripts reset PATH.
@@ -8685,7 +8688,13 @@ pub const ShellIntegrationFeatures = packed struct {
     sudo: bool = false,
     title: bool = true,
     @"ssh-env": bool = true,
-    @"ssh-terminfo": bool = true,
+    // Disabled by default: the remote terminfo auto-install is fragile (old
+    // `tic`, non-standard dirs, cache false-positives) and, when it silently
+    // fails, leaves the remote on `TERM=xterm-ghostty` with no matching terminfo
+    // — which breaks readline redraw (e.g. Ctrl+R reverse-search). With this off
+    // and `ssh-env` on, typed `ssh` forwards the universally-present
+    // `xterm-256color` instead. Opt back in with `shell-integration-features = ssh-terminfo`.
+    @"ssh-terminfo": bool = false,
     path: bool = true,
 };
 
