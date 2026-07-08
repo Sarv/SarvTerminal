@@ -231,7 +231,12 @@ $BODY
 
   mkdir -p "$NOTES_DIR"
   NOTES_FILE="$NOTES_DIR/$VERSION.html"
-  if [[ ! -f "$NOTES_FILE" ]]; then
+  # Regenerate when the file is MISSING or exists but has an EMPTY change list (no
+  # <li>). An empty file happens when a prior run generated notes while the commit
+  # range was still empty; the old `! -f` guard then froze that blank file forever.
+  # A file that already has <li> items is left untouched so hand-tidied wording
+  # survives a re-run.
+  if [[ ! -f "$NOTES_FILE" ]] || ! grep -q '<li>' "$NOTES_FILE"; then
     # Build the notes FRESHLY from the git commits since the last release tag —
     # never copied from a previous version (that shipped stale, wrong notes).
     # We keep user-facing conventional commits (feat/fix/perf) and group them by
@@ -281,6 +286,18 @@ $BODY
         docs_only "$hash" && continue
         printf 'general\t%s\n' "$subj"
       done > "$PARSED"
+    fi
+
+    # Never ship a blank changelog. If BOTH passes produced nothing, the commit
+    # range itself is empty — almost always because a v$VERSION tag already exists
+    # (so `$BASE_TAG..HEAD` resolves to that tag..itself). Fail loudly here, BEFORE
+    # any tag/push, instead of writing empty notes that then get frozen.
+    if [[ ! -s "$PARSED" ]]; then
+      rm -f "$PARSED"
+      echo "ERROR: no release-worthy commits in range '$RANGE' — refusing to write empty" >&2
+      echo "       release notes for $VERSION. Check that all commits are in place and that a" >&2
+      echo "       v$VERSION tag doesn't already exist (which would make the range empty)." >&2
+      exit 1
     fi
 
     # HTML body (Sparkle web page) + a Markdown copy (GitHub release body, which
