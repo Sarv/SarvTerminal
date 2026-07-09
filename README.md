@@ -142,9 +142,20 @@ Move your entire setup between machines under encryption only *you* can open:
 
 ## Install
 
-Pre-built releases are not published yet. For now, [build from source](#build-from-source). Once the
-project stabilizes, signed builds will be attached to GitHub Releases — contributions to set up that
-pipeline are welcome.
+**Homebrew (recommended):**
+
+```sh
+brew install --cask sarv/tap/sarv-terminal
+```
+
+This taps [`Sarv/homebrew-tap`](https://github.com/Sarv/homebrew-tap) and installs the latest signed,
+notarized build. Upgrade later with `brew upgrade --cask sarv-terminal` (the app also self-updates).
+
+**Direct download:** grab the latest `SarvTerminal-<version>.dmg` from the
+[Releases page](https://github.com/Sarv/SarvTerminal/releases/latest), open it, and drag the app to
+Applications.
+
+Prefer to build it yourself? See [build from source](#build-from-source).
 
 ## Build from source
 
@@ -172,7 +183,8 @@ For deeper build details and the core engine internals, see [HACKING.md](HACKING
   **SwiftUI for macOS only**. **A Linux UI is not yet built, and this is where we'd love help most.**
   If you know GTK/Qt (or have ideas for a shared cross-platform UI), please jump in — see
   [Contributing](#contributing).
-- 🔜 Move saved-host passwords into the Keychain; published signed releases; more sync providers.
+- ✅ Signed & notarized releases on GitHub + Homebrew (`brew install --cask sarv/tap/sarv-terminal`).
+- 🔜 Move saved-host passwords into the Keychain; more sync providers.
 
 ## Contributing
 
