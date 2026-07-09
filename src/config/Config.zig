@@ -3736,12 +3736,24 @@ else
 @"faint-opacity": f64 = 0.5,
 
 /// This will be used to set the `TERM` environment variable.
-/// HACK: We set this with an `xterm` prefix because vim uses that to enable key
-/// protocols (specifically this will enable `modifyOtherKeys`), among other
-/// features. An option exists in vim to modify this: `:set
-/// keyprotocol=ghostty:kitty`, however a bug in the implementation prevents it
-/// from working properly. https://github.com/vim/vim/pull/13211 fixes this.
-term: []const u8 = "xterm-ghostty",
+///
+/// SarvTerminal defaults this to `xterm-256color` (upstream Ghostty uses
+/// `xterm-ghostty`). Because SarvTerminal is SSH-first, `TERM` is forwarded to
+/// every remote host, and `xterm-ghostty` terminfo is absent on virtually all
+/// servers — leaving readline on a `TERM` with no matching terminfo, which
+/// breaks Ctrl+R / line editing. The `ssh-env` shell-integration fallback only
+/// helps inside supported, integrated shells; a non-zsh (or non-integrated)
+/// shell forwards `xterm-ghostty` raw and breaks. `xterm-256color` exists on
+/// every Unix host and works for all shells with zero remote/per-user setup.
+/// (Truecolor is still advertised via `COLORTERM`; only a few Ghostty-specific
+/// terminfo extras are given up locally.)
+///
+/// HACK: We keep an `xterm` prefix because vim uses that to enable key protocols
+/// (specifically this will enable `modifyOtherKeys`), among other features. An
+/// option exists in vim to modify this: `:set keyprotocol=ghostty:kitty`,
+/// however a bug in the implementation prevents it from working properly.
+/// https://github.com/vim/vim/pull/13211 fixes this.
+term: []const u8 = "xterm-256color",
 
 /// String to send when we receive `ENQ` (`0x05`) from the command that we are
 /// running. Defaults to an empty string if not set.
