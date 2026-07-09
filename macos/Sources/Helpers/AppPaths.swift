@@ -54,6 +54,45 @@ enum AppPaths {
         return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config", isDirectory: true)
     }
 
+    /// `$XDG_STATE_HOME` if set, otherwise `~/.local/state` — matches where the
+    /// Ghostty core writes its state (see `src/cli/ssh-cache/DiskCache.zig`).
+    private static var xdgStateBaseDir: URL {
+        let env = ProcessInfo.processInfo.environment
+        if let xdg = env["XDG_STATE_HOME"], !xdg.isEmpty {
+            return URL(fileURLWithPath: xdg)
+        }
+        return URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".local", isDirectory: true)
+            .appendingPathComponent("state", isDirectory: true)
+    }
+
+    /// Ghostty's SSH terminfo cache: `<state>/ghostty/ssh_cache`. Records remote
+    /// hosts where `xterm-ghostty` terminfo was installed. Written by the core
+    /// CLI (keyed by program name `ghostty`), so it is shared across debug and
+    /// release builds — deliberately NOT namespaced per build.
+    static var sshTerminfoCacheFile: URL {
+        xdgStateBaseDir
+            .appendingPathComponent("ghostty", isDirectory: true)
+            .appendingPathComponent("ssh_cache")
+    }
+
+    /// Drop Ghostty's SSH terminfo cache once whenever the app version changes
+    /// (including first launch). Pre-1.8 builds could cache a host as
+    /// "`xterm-ghostty` installed"; after an upgrade that stale entry forces
+    /// `xterm-ghostty` on remotes whose terminfo is missing (or a different
+    /// remote user), leaving `TERM` unresolved and breaking Ctrl+R / readline.
+    /// The cache only speeds up `ssh-terminfo` installs, so dropping it is
+    /// safe — it repopulates on demand. Runs only on a version change, never on
+    /// every relaunch. Safe to call on every launch — it no-ops within a version.
+    static func purgeStaleSSHTerminfoCacheOnUpgrade() {
+        let defaults = UserDefaults.standard
+        let key = "SarvSSHCachePurgedForVersion"
+        let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+        guard defaults.string(forKey: key) != current else { return }
+        try? FileManager.default.removeItem(at: sshTerminfoCacheFile)
+        defaults.set(current, forKey: key)
+    }
+
     #if DEBUG
     /// Seed the dev terminal config once from the release config so the dev build
     /// starts identical, then diverges. No-op once the dev file exists.
