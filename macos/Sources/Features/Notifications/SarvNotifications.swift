@@ -301,8 +301,11 @@ final class SarvNotifications {
             )
         case let .sshDisconnected(host):
             return Copy(
-                title: "SSH disconnected",
-                body: "Connection to \(host) ended.",
+                // Only fired after auto-reconnect has failed several times (a
+                // normal close is silent), so the wording reflects a persistent
+                // loss that's still being retried — not a routine session end.
+                title: "Connection lost",
+                body: "Lost connection to \(host) — still trying to reconnect.",
                 route: .hosts,
                 dedupe: host
             )

@@ -24,6 +24,10 @@ final class SSHConnectionController {
     /// Back-off schedule (seconds) for automatic reconnect attempts; the last
     /// value repeats for every attempt beyond the list.
     private let reconnectBackoff = [3, 5, 10, 15, 30]
+    /// Only surface a "connection lost" notification once auto-reconnect has
+    /// failed this many times. A normal close (or a transient drop that recovers
+    /// within the first retries) needs no user action, so it stays silent.
+    private let reconnectAlertAfter = 3
 
     init(model: SSHConnectionModel,
          surfaceView: Ghostty.SurfaceView,
@@ -167,6 +171,13 @@ final class SSHConnectionController {
     /// network failure. Counts down `reconnectSecondsRemaining` then relaunches.
     private func scheduleReconnect() {
         model.reconnectAttempts += 1
+        // Only now — after reconnection has failed repeatedly — is the connection
+        // genuinely down and worth telling the user. Fires exactly once per outage
+        // (a successful reconnect resets `reconnectAttempts` to 0 in markConnected).
+        if model.reconnectAttempts == reconnectAlertAfter {
+            let name = activityName
+            Task { @MainActor in SarvNotifications.shared.notify(.sshDisconnected(host: name)) }
+        }
         model.autoReconnecting = true
         let delay = reconnectBackoff[min(model.reconnectAttempts - 1, reconnectBackoff.count - 1)]
         model.reconnectSecondsRemaining = delay
@@ -241,12 +252,12 @@ final class SSHConnectionController {
             if sv.childExitedMessage != nil {
                 model.addLog("xmark.octagon.fill", .red, "Session closed")
                 ActivityLog.shared.log(.connection, "Disconnected from \(activityName)", detail: activityDetail, success: true)
-                let name = activityName
-                Task { @MainActor in SarvNotifications.shared.notify(.sshDisconnected(host: name)) }
                 model.stage = .disconnected
                 stop()
                 // A dropped session (server restart, network loss) recovers on
-                // its own — start the auto-reconnect loop.
+                // its own — start the auto-reconnect loop. No notification for the
+                // drop itself: a normal close needs no action, and scheduleReconnect()
+                // only alerts if reconnection keeps failing.
                 scheduleReconnect()
             }
 
@@ -336,10 +347,10 @@ final class SSHConnectionController {
         case .connected:
             model.addLog("xmark.octagon.fill", .red, "Session closed")
             ActivityLog.shared.log(.connection, "Disconnected from \(activityName)", detail: activityDetail, success: true)
-            let name = activityName
-            Task { @MainActor in SarvNotifications.shared.notify(.sshDisconnected(host: name)) }
             model.stage = .disconnected
             stop()
+            // No notification on a normal close — scheduleReconnect() only alerts
+            // if reconnection keeps failing (see reconnectAlertAfter).
             scheduleReconnect()
         default:
             break
