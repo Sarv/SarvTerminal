@@ -269,7 +269,10 @@ $BODY
     # scopes and docs-only commits.
     PARSED=$(mktemp)
     re='^(feat|fix|perf)(\(([^)]+)\))?!?:[[:space:]]+(.+)$'
-    git log $RANGE --no-merges --pretty=format:'%H%x09%s' | while IFS=$'\t' read -r hash subj; do
+    # `tformat:` (not `format:`) so a trailing newline terminates the LAST/oldest
+    # commit too — `format:` omits it and `while read` then silently drops that
+    # final line (this is what dropped the oldest fix from 1.7.2/1.7.3 notes).
+    git log $RANGE --no-merges --pretty=tformat:'%H%x09%s' | while IFS=$'\t' read -r hash subj; do
       if [[ "$subj" =~ $re ]]; then
         case "${BASH_REMATCH[3]}" in docs|readme|changelog) continue ;; esac
         docs_only "$hash" && continue
@@ -281,7 +284,7 @@ $BODY
     # back to every commit subject so the notes still describe real, current work
     # — still excluding docs commits.
     if [[ ! -s "$PARSED" ]]; then
-      git log $RANGE --no-merges --pretty=format:'%H%x09%s' | while IFS=$'\t' read -r hash subj; do
+      git log $RANGE --no-merges --pretty=tformat:'%H%x09%s' | while IFS=$'\t' read -r hash subj; do
         [[ "$subj" =~ ^docs ]] && continue
         docs_only "$hash" && continue
         printf 'general\t%s\n' "$subj"
