@@ -48,6 +48,12 @@ extension Ghostty {
         // Maintain whether our window has focus (is key) or not
         @State private var windowFocus: Bool = true
 
+        // True while the viewport is scrolled up in the scrollback (not pinned to
+        // the bottom) — drives the floating "scroll to bottom" affordance. Flipped
+        // only when the pinned/scrolled state CHANGES (not on every scrollbar
+        // update), so streaming output doesn't churn the SwiftUI body.
+        @State private var showScrollToBottom: Bool = false
+
         #if canImport(AppKit)
         // Observe SecureInput to detect when its enabled
         @ObservedObject private var secureInput = SecureInput.shared
@@ -177,6 +183,21 @@ extension Ghostty {
                     )
                 }
 
+                // Floating "scroll to bottom" button — shown only while scrolled
+                // up in history; jumps back to the prompt when clicked. Plain
+                // show/hide (no transition) to stay cheap during heavy output.
+                if showScrollToBottom {
+                    ScrollToBottomButton(
+                        terminalBackground: surfaceView.backgroundColor ?? ghostty.config.backgroundColor
+                    ) {
+                        _ = surfaceView.surfaceModel?.perform(action: "scroll_to_bottom")
+                    }
+                    .padding(.trailing, 14)
+                    .padding(.bottom, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .zIndex(2)
+                }
+
                 // Show bell border if enabled
                 if ghostty.config.bellFeatures.contains(.border) {
                     BellBorderOverlay(bell: surfaceView.bell)
@@ -215,6 +236,50 @@ extension Ghostty {
                 SurfaceGrabHandle(surfaceView: surfaceView)
                 #endif
             }
+            // Track viewport scroll position (the core pushes this on every change)
+            // to toggle the scroll-to-bottom button. Only flips the flag when the
+            // pinned/scrolled state actually changes, so streaming output is cheap.
+            .onReceive(center.publisher(for: .ghosttyDidUpdateScrollbar)) { notif in
+                guard notif.object as? Ghostty.SurfaceView === surfaceView else { return }
+                let bar = notif.userInfo?[SwiftUI.Notification.Name.ScrollbarKey] as? Ghostty.Action.Scrollbar
+                let scrolledUp = bar.map { $0.offset + $0.len < $0.total } ?? false
+                if scrolledUp != showScrollToBottom {
+                    showScrollToBottom = scrolledUp   // plain show/hide — no animation
+                }
+            }
+        }
+    }
+
+    /// Floating scroll-to-bottom affordance: just the chevron at rest (no chrome),
+    /// filling on hover. Its color is derived from the terminal's own background so
+    /// it stays legible on any theme (light or dark) instead of a fixed app accent
+    /// that can clash — the general rule for overlays drawn over the terminal.
+    /// Tooltip is scoped to the icon itself.
+    struct ScrollToBottomButton: View {
+        let terminalBackground: Color
+        let action: () -> Void
+        @State private var hovering = false
+
+        /// A neutral that always contrasts with the terminal background.
+        private var contrast: Color {
+            OSColor(terminalBackground).isLightColor ? .black : .white
+        }
+
+        var body: some View {
+            Button(action: action) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 13, weight: .semibold))
+                    // Rest: contrast chevron, no fill. Hover: fill with the contrast
+                    // color and invert the chevron to the terminal background.
+                    .foregroundStyle(hovering ? terminalBackground : contrast)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(hovering ? contrast : Color.clear))
+                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+            .help("Scroll to bottom")
         }
     }
 
