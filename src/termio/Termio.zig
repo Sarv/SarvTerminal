@@ -11,6 +11,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const EnvMap = std.process.EnvMap;
 const posix = std.posix;
 const termio = @import("../termio.zig");
+const colorize = @import("colorize.zig");
 const StreamHandler = @import("stream_handler.zig").StreamHandler;
 const terminalpkg = @import("../terminal/main.zig");
 const xev = @import("../global.zig").xev;
@@ -167,6 +168,7 @@ pub const DerivedConfig = struct {
     clipboard_write: configpkg.ClipboardAccess,
     enquiry_response: []const u8,
     conditional_state: configpkg.ConditionalState,
+    output_colorize: bool,
 
     pub fn init(
         alloc_gpa: Allocator,
@@ -203,6 +205,7 @@ pub const DerivedConfig = struct {
             .clipboard_write = config.@"clipboard-write",
             .enquiry_response = try alloc.dupe(u8, config.@"enquiry-response"),
             .conditional_state = config._conditional_state,
+            .output_colorize = config.@"output-colorize",
 
             // This has to be last so that we copy AFTER the arena allocations
             // above happen (Zig assigns in order).
@@ -691,6 +694,10 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
     } else {
         self.terminal_stream.nextSlice(buf);
     }
+
+    // Natively colorize plain command output (log levels, …) on the primary
+    // screen. Skips TUIs, program-colored cells, and the in-progress row.
+    if (self.config.output_colorize) colorize.colorize(&self.terminal);
 
     // If our stream handling caused messages to be sent to the mailbox
     // thread, then we need to wake it up so that it processes them.

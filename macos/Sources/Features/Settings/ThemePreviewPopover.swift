@@ -177,9 +177,16 @@ struct ThemePreviewSheet: View {
     private func mockTerminal(_ p: ThemePreview) -> some View {
         let bg     = p.background ?? Color.black
         let fg     = p.foreground ?? Color.white
-        let dim    = fg.opacity(0.55)
+        // Timestamps are dimmed by fading the foreground, NOT by a palette slot
+        // (no ANSI slot is reliably "dim" — some themes repurpose slot 8 as a
+        // bright accent). The terminal colorizer dims via the `faint` flag,
+        // which multiplies fg alpha by `faint-opacity` (default 0.5); match it.
+        let dim    = fg.opacity(0.5)
         // ANSI palette (0=black, 1=red, 2=green, 3=yellow, 4=blue,
-        // 5=magenta, 6=cyan, 7=white; 8-15 = bright variants)
+        // 5=magenta, 6=cyan, 7=white; 8-15 = bright variants).
+        // The semantic mapping used below (log level / boolean → color) MUST match
+        // the terminal colorizer's canonical `Slot` map in src/termio/colorize.zig
+        // so this preview shows exactly what the terminal renders.
         let red    = p.palette[1] ?? p.palette[9]  ?? Color.red
         let green  = p.palette[2] ?? p.palette[10] ?? Color.green
         let yellow = p.palette[3] ?? p.palette[11] ?? Color.yellow
@@ -230,6 +237,15 @@ struct ThemePreviewSheet: View {
                 message: "Connection refused to db:5432", fg: fg, dim: dim)
             log(time: "2026-06-13 14:00:23", level: "FATAL", levelColor: magent,
                 message: "Recovery failed after 3 attempts", fg: fg, dim: dim)
+            // Booleans are colored wherever they appear (true/yes/enabled = green,
+            // false/no/disabled = red) — mirrors boolColor in src/termio/colorize.zig.
+            (log(time: "2026-06-13 14:00:24", level: "INFO ", levelColor: blue,
+                 message: "Flags: cache=", fg: fg, dim: dim)
+             + Text("true").foregroundColor(green)
+             + Text(" retries=").foregroundColor(fg)
+             + Text("false").foregroundColor(red)
+             + Text(" verbose=").foregroundColor(fg)
+             + Text("no").foregroundColor(red))
 
             spacer
 

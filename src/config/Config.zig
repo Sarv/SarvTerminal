@@ -1425,6 +1425,17 @@ link: RepeatableLink = .{},
 /// `link`). If you want to customize URL matching, use `link` and disable this.
 @"link-url": bool = true,
 
+/// Natively colorize PLAIN command output. When a program prints without its
+/// own ANSI colors (e.g. many log streams over SSH), SarvTerminal highlights
+/// recognized tokens — log levels (ERROR/WARN/INFO/DEBUG) today — using the
+/// active theme's palette, so output reads more clearly without any setup.
+///
+/// It only touches cells the program left at the default foreground (so program
+/// colors are never overridden), runs only on the primary screen (never full
+/// screen apps like vim/less), and never recolors the in-progress line. Set to
+/// false to disable.
+@"output-colorize": bool = true,
+
 /// Show link previews for a matched URL.
 ///
 /// When true, link previews are shown for all matched URLs. When false, link
