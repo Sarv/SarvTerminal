@@ -14,8 +14,10 @@
 #   GENERATES release notes freshly from the git commits since the last tag —
 #   grouped by scope, so a release never ships blank or stale notes.
 #   It then creates ONE release commit + a `vX.Y.Z` tag, PUSHES both, and uploads
-#   the DMG to the GitHub release (needs the `gh` CLI). Set NO_PUSH=1 to stop
-#   after the local commit/tag and push by hand.
+#   the DMG to the GitHub release (needs the `gh` CLI). Finally it bumps the
+#   Homebrew cask (version + sha256) in the tap clone at ../homebrew-tap
+#   (override with HOMEBREW_TAP_DIR) and pushes it. Set NO_PUSH=1 to stop
+#   after the local commit/tag and push everything (repo, tag, release, tap) by hand.
 #   With no arg it just builds the current ./VERSION (no commit/tag/push).
 #
 # Credentials are kept in your macOS Keychain — never written to disk, never
@@ -346,6 +348,7 @@ fi
 # a bare rebuild of the current VERSION must not create a commit/tag.
 NOTES_FILE="$NOTES_DIR/$VERSION.html"
 REPO="Sarv/SarvTerminal"
+PUBLISHED=0   # set to 1 once a new vX.Y.Z tag is actually created this run
 if [[ -n "${1:-}" && "$VERSION" != "$CUR" ]] || [[ "${FORCE_RELEASE_COMMIT:-}" == "1" ]]; then
   if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
     echo "⚠︎ Tag v$VERSION already exists — skipping commit/tag/push."
@@ -361,6 +364,7 @@ if [[ -n "${1:-}" && "$VERSION" != "$CUR" ]] || [[ "${FORCE_RELEASE_COMMIT:-}" =
     git add "$VERSION_FILE" "$APPCAST" "$NOTES_FILE"
     git commit -q -m "release: SarvTerminal $VERSION"
     git tag -a "v$VERSION" -m "SarvTerminal $VERSION"
+    PUBLISHED=1
     echo "✓ Created release commit + tag v$VERSION"
 
     if [[ "${NO_PUSH:-}" == "1" ]]; then
@@ -391,6 +395,36 @@ if [[ -n "${1:-}" && "$VERSION" != "$CUR" ]] || [[ "${FORCE_RELEASE_COMMIT:-}" =
       fi
     fi
   fi
+fi
+
+# ── Update the Homebrew cask (own tap) ──────────────────────────────────
+# Mirrors the appcast step: point the cask at the just-published DMG and its
+# sha256 so `brew install --cask sarv/tap/sarv-terminal` tracks releases. The
+# tap is a SEPARATE repo (Homebrew requires the name `homebrew-tap`); set
+# HOMEBREW_TAP_DIR to your local clone. Only version + sha256 are rewritten so
+# any hand-edits elsewhere in the cask survive. Skipped cleanly if absent.
+TAP_DIR="${HOMEBREW_TAP_DIR:-../homebrew-tap}"
+CASK_FILE="$TAP_DIR/Casks/sarv-terminal.rb"
+if [[ "$PUBLISHED" == "1" && -f "$CASK_FILE" ]]; then
+  echo "=== Updating Homebrew cask $CASK_FILE ==="
+  SHA=$(shasum -a 256 "$DMG_OUT" | awk '{print $1}')   # same file uploaded to the release
+  sed -i '' -E \
+    -e "s/^  version \".*\"/  version \"$VERSION\"/" \
+    -e "s/^  sha256 \".*\"/  sha256 \"$SHA\"/" \
+    "$CASK_FILE"
+  echo "✓ Cask → $VERSION ($SHA)"
+  if [[ "${NO_PUSH:-}" == "1" ]]; then
+    echo "  (NO_PUSH=1 — cask updated locally; push the tap by hand: git -C $TAP_DIR push)"
+  elif ( cd "$TAP_DIR" && git add Casks/sarv-terminal.rb \
+           && git commit -q -m "sarv-terminal $VERSION" && git push ); then
+    echo "✓ Pushed cask update to the tap"
+  else
+    # Non-fatal: the main release already succeeded — don't fail the whole run.
+    echo "⚠︎ Couldn't auto-push the tap (no remote/upstream?) — finish by hand from $TAP_DIR"
+  fi
+elif [[ "$PUBLISHED" == "1" ]]; then
+  echo "⚠︎ Homebrew tap cask not found at $CASK_FILE (set HOMEBREW_TAP_DIR to your clone)."
+  echo "   Skipped cask update — the GitHub release still published fine."
 fi
 
 echo ""
