@@ -1606,31 +1606,65 @@ final class VaultsTabsModel: ObservableObject {
         selection == .terminal(id) && NSApp.isActive
     }
 
-    /// A surface rang the bell — Claude Code (and most TUIs) ring it when they
-    /// finish a turn or need a yes/no answer. If the ringing tab isn't the one
-    /// on screen, flag it and post a notification so the user can find which of
-    /// many tabs is waiting.
+    /// A surface rang the bell. Claude Code (and most TUIs) ring it BOTH when
+    /// they finish a turn AND when they need a yes/no answer, so a bare bell is
+    /// ambiguous — we can't tell "done" from "needs you". So we only flag the tab
+    /// (the attention dot) and deliberately do NOT post a banner: a genuine
+    /// "needs your input" ALSO arrives as an OSC notification carrying a message
+    /// (see `handleSurfaceNotification`), and that is what banners. This keeps
+    /// completion bells quiet (dot only) while real prompts still notify.
     private func handleBell(_ note: Notification) {
         guard let surface = note.object as? Ghostty.SurfaceView,
               let tab = tab(containing: surface) else { return }
-        let name = tab.displayName
         let id = tab.id
         Task { @MainActor in
             // Re-check on the main actor: the user may have switched to this tab
-            // between the bell firing and this running. Claude Code fires a bell
-            // AND an OSC notification, so a late task could otherwise re-flag a tab
-            // the user just opened (selection's didSet already cleared it) — which
-            // is what put a stray attention dot on the current tab. Never flag or
-            // banner the tab that's actually on screen.
+            // between the bell firing and this running. Never flag the tab that's
+            // actually on screen (selection's didSet already cleared it).
             guard !self.isTabOnScreen(id) else { return }
             self.attentionTabs.insert(id)
-            SarvNotifications.shared.notify(.tabAttention(tab: name, tabID: id))
         }
     }
 
+    /// Whether an OSC notification message warrants a BANNER (vs. just flagging
+    /// the tab). AI agents emit a message BOTH when they need the user to act
+    /// ("… needs your permission") AND when they merely end their turn and go idle
+    /// ("… is waiting for your input") — the latter needs nothing from the user.
+    /// We can't know every agent's wording, so: default to notifying, and only
+    /// suppress messages that clearly read as an idle / turn-ended state — UNLESS
+    /// the text also looks actionable, which always wins (so we never drop a real
+    /// prompt). Agent-agnostic (keys off universal vocabulary, not agent names);
+    /// tune the lists below if some agent's phrasing slips through.
+    private func messageNeedsAttention(_ body: String) -> Bool {
+        let text = body.lowercased()
+        // Actionable — the user must DO something. Checked first, so it ALWAYS
+        // banners even when the text also contains an idle word (e.g. "waiting for
+        // your approval"). A trailing "?" is treated as a prompt too.
+        let actionable = ["permission", "approv", "confirm", "authoriz", "y/n",
+                          "yes/no", "needs your", "need your", "requires your",
+                          "require your", "requires", "action required",
+                          "action needed", "attention required", "needs attention",
+                          "input required", "response required", "decision",
+                          "decide", "choose", "select", "proceed", "allow",
+                          "deny", "grant", "review", "?"]
+        if actionable.contains(where: text.contains) { return true }
+        // Idle / turn-ended — nothing needed from the user; dot only, no banner.
+        // Anything that matches NEITHER list still notifies (default-notify), so a
+        // new/unknown "needs you" message is never silently dropped.
+        let idle = ["waiting for your", "waiting for input", "awaiting", "is ready",
+                    "ready for input", "standing by", "on standby", "task complete",
+                    "task finished", "is complete", "completed", "all done",
+                    "finished", "success", "succeeded", "idle", "no action needed",
+                    "nothing to do", "session ended", "session complete",
+                    "up to date", "turn complete", "response complete",
+                    "generation complete"]
+        return !idle.contains(where: text.contains)
+    }
+
     /// A surface emitted an OSC desktop notification with a message (e.g.
-    /// Claude Code's "needs your permission to…"). Surface the message, naming
-    /// the tab, and flag it — unless that tab is on screen with the app focused.
+    /// Claude Code's "needs your permission to…"). Flag the tab, and banner the
+    /// message ONLY when it needs the user (an idle "waiting for input" gets the
+    /// attention dot but no banner) — unless the tab is on screen with the app focused.
     private func handleSurfaceNotification(_ note: Notification) {
         guard let surface = note.object as? Ghostty.SurfaceView,
               let tab = tab(containing: surface) else { return }
@@ -1639,11 +1673,12 @@ final class VaultsTabsModel: ObservableObject {
         let name = tab.displayName
         let id = tab.id
         Task { @MainActor in
-            // Same rule as the bell: never flag or banner the tab that's on screen,
-            // re-checked here because the selection may have changed since the OSC
-            // notification arrived.
+            // Never flag or banner the tab that's on screen; re-checked here since
+            // selection may have changed since the OSC notification arrived.
             guard !self.isTabOnScreen(id) else { return }
+            // Attention dot regardless; banner only when the message needs the user.
             self.attentionTabs.insert(id)
+            guard self.messageNeedsAttention(body) else { return }
             SarvNotifications.shared.notify(.tabMessage(tab: name, message: body, tabID: id))
         }
     }
