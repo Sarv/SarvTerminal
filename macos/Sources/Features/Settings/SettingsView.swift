@@ -165,7 +165,7 @@ final class SettingsViewModel: ObservableObject {
     /// Keybinds and Advanced manage their own editing surfaces.
     func supportsFooterActions(_ section: SettingsSection) -> Bool {
         switch section {
-        case .keybinds, .advanced, .sync, .notifications: return false
+        case .keybinds, .advanced, .sync, .notifications, .importSettings: return false
         default: return true
         }
     }
@@ -181,7 +181,7 @@ final class SettingsViewModel: ObservableObject {
         case .tabs: return tabs != savedTabs
         case .shellIntegration: return shellIntegration != savedShellIntegration
         case .sftp: return SFTPSettings.shared.isDirty
-        case .keybinds, .advanced, .sync, .notifications: return false
+        case .keybinds, .advanced, .sync, .notifications, .importSettings: return false
         }
     }
 
@@ -237,7 +237,7 @@ final class SettingsViewModel: ObservableObject {
         case .tabs: tabs = savedTabs
         case .shellIntegration: shellIntegration = savedShellIntegration
         case .sftp: SFTPSettings.shared.revertToBaseline()
-        case .keybinds, .advanced, .sync, .notifications: break
+        case .keybinds, .advanced, .sync, .notifications, .importSettings: break
         }
         lastSaveError = nil
     }
@@ -254,7 +254,7 @@ final class SettingsViewModel: ObservableObject {
         case .tabs: tabs = TabsForm(loadedFrom: nil)
         case .shellIntegration: shellIntegration = ShellIntegrationForm(loadedFrom: nil)
         case .sftp: SFTPSettings.shared.resetToDefaults()
-        case .keybinds, .advanced, .sync, .notifications: break
+        case .keybinds, .advanced, .sync, .notifications, .importSettings: break
         }
         lastSaveError = nil
     }
@@ -668,7 +668,9 @@ struct AppearanceForm: Equatable {
         }
 
         self.windowTheme = WindowThemeOption(rawValue: config?.windowTheme ?? "system") ?? .system
-        self.themeName = config?.themeName ?? ""
+        // Single source of truth for the active theme (see ThemePicker.currentThemeName).
+        // `config == nil` means "factory defaults" (Reset), which is no theme.
+        self.themeName = (config == nil) ? "" : ThemePicker.currentThemeName()
     }
 
     var hasBackgroundImage: Bool {
@@ -1308,6 +1310,8 @@ struct DetailView: View {
         switch section {
         case .general:
             GeneralSectionView(viewModel: viewModel)
+        case .importSettings:
+            ImportSectionView()
         case .appearance:
             AppearanceSectionView(viewModel: viewModel)
         case .font:
@@ -1426,6 +1430,7 @@ struct FooterBarView: View {
 
 enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case general
+    case importSettings
     case appearance
     case font
     case window
@@ -1450,6 +1455,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     var title: String {
         switch self {
         case .general: return "General"
+        case .importSettings: return "Import"
         case .appearance: return "Appearance"
         case .font: return "Font"
         case .window: return "Window"
@@ -1467,6 +1473,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     var subtitle: String? {
         switch self {
         case .general: return "Startup behaviour, default command, shell."
+        case .importSettings: return "Bring settings from another terminal."
         case .appearance: return "Theme, colors, transparency, background."
         case .font: return "Family, size, weight, ligatures, variations."
         case .window: return "Decorations, size, padding, fullscreen."
@@ -1484,6 +1491,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     var icon: String {
         switch self {
         case .general: return "gearshape"
+        case .importSettings: return "square.and.arrow.down"
         case .appearance: return "paintpalette"
         case .font: return "textformat"
         case .window: return "macwindow"
@@ -1510,6 +1518,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     private var keywords: [String] {
         switch self {
         case .general: return ["startup", "shell", "command", "init", "quit"]
+        case .importSettings: return ["import", "migrate", "migration", "switch", "wezterm",
+                                      "iterm", "iterm2", "kitty", "alacritty", "ghostty"]
         case .appearance: return ["theme", "color", "palette", "background", "foreground",
                                   "transparency", "opacity", "blur", "image"]
         case .font: return ["family", "size", "ligature", "feature", "bold", "italic",

@@ -81,10 +81,32 @@ final class ConfigFileEditor {
         appendInGUISection("keybind = \(value)")
     }
 
+    /// Append `key = value` in the GUI section unconditionally — for repeatable
+    /// keys like `palette` where `set` (which replaces only the first match) is
+    /// wrong. Call `remove(key)` first if you're replacing the whole set.
+    func append(_ key: String, _ value: String) {
+        appendInGUISection("\(key) = \(value)")
+    }
+
     /// Remove the keybind line that exactly matches the given raw source
     /// line. Used by the keybind editor for delete/edit.
     func removeRawLine(_ rawLine: String) {
         lines.removeAll { $0 == rawLine }
+    }
+
+    /// Remove every uncommented `keybind = <trigger>=…` line whose trigger
+    /// exactly equals `trigger`. Import uses this to REPLACE a trigger's
+    /// binding rather than stack a duplicate line on each run.
+    func removeKeybinds(trigger: String) {
+        lines.removeAll { line in
+            guard !isCommentedOrBlank(line) else { return false }
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("keybind"), matches(line: line, key: "keybind") else { return false }
+            guard let eq = t.firstIndex(of: "=") else { return false }
+            let value = t[t.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            guard let sep = value.firstIndex(of: "=") else { return false }
+            return String(value[..<sep]) == trigger
+        }
     }
 
     /// Remove ALL uncommented lines that assign to this key. Useful for
