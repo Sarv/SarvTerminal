@@ -408,7 +408,7 @@ private final class SidebarAppearance: ObservableObject {
     private var config: Ghostty.Config? { (NSApp.delegate as? AppDelegate)?.ghostty.config }
 
     func reload() {
-        themeName = config?.themeName ?? ""
+        themeName = ThemePicker.currentThemeName()
         fontFamily = config?.fontFamily ?? ""
         fontSize = config?.fontSize ?? 13
     }

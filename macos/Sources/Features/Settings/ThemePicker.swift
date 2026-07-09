@@ -366,6 +366,15 @@ struct ThemePicker: View {
         }
     }
 
+    /// The theme currently set in the config file — the SINGLE source of truth
+    /// for "which theme is active". Use this everywhere the current theme is
+    /// shown (Settings ▸ Appearance, the sidebar Themes tab, the importer) so no
+    /// view can drift out of sync. Reads the file fresh each call. "" = default
+    /// (no theme).
+    static func currentThemeName() -> String {
+        Ghostty.Config.rawConfigFileValue("theme") ?? ""
+    }
+
     /// Parse a Ghostty theme file for the few colors we need to preview.
     /// We only handle hex literals; named colors (rare in shipped themes)
     /// are skipped — that row gets no swatch.
