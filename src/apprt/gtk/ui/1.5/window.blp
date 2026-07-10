@@ -50,17 +50,6 @@ template $GhosttyWindow: Adw.ApplicationWindow {
           subtitle: bind $computed_subtitle(template.config, tab_view.selected-page.child as <$GhosttyTab>.active-surface as <$GhosttySurface>.pwd) as <string>;
         };
 
-        [start]
-        Adw.SplitButton {
-          clicked => $new_tab();
-          icon-name: "tab-new-symbolic";
-          tooltip-text: _("New Tab");
-          dropdown-tooltip: _("New Split");
-          menu-model: split_menu;
-          can-focus: false;
-          focus-on-click: false;
-        }
-
         [end]
         Gtk.Box {
           Gtk.ToggleButton {
@@ -91,24 +80,47 @@ template $GhosttyWindow: Adw.ApplicationWindow {
         [start]
         Gtk.Box {
           orientation: horizontal;
-          visible: bind $titlebar_style_is_tabs(template.titlebar-style) as <bool>;
 
           Gtk.WindowControls {
             side: start;
+            visible: bind $titlebar_style_is_tabs(template.titlebar-style) as <bool>;
           }
 
-          Adw.SplitButton {
+          // Fixed Vaults + SFTP controls, like the macOS top-left segmented
+          // control. Terminal tabs open to the right of these.
+          Gtk.Box {
             styles [
-              "flat",
+              "linked",
             ]
 
-            clicked => $new_tab();
-            icon-name: "tab-new-symbolic";
-            tooltip-text: _("New Tab");
-            dropdown-tooltip: _("New Split");
-            menu-model: split_menu;
-            can-focus: false;
-            focus-on-click: false;
+            margin-start: 2;
+            margin-end: 8;
+            margin-top: 4;
+            margin-bottom: 4;
+
+            Gtk.ToggleButton vaults_toggle {
+              toggled => $vaults_toggled();
+              tooltip-text: _("Vaults");
+              can-focus: false;
+              focus-on-click: false;
+
+              Adw.ButtonContent {
+                icon-name: "network-server-symbolic";
+                label: _("Vaults");
+              }
+            }
+
+            Gtk.Button {
+              action-name: "win.show-sarv-files";
+              tooltip-text: _("SFTP file browser");
+              can-focus: false;
+              focus-on-click: false;
+
+              Adw.ButtonContent {
+                icon-name: "folder-remote-symbolic";
+                label: _("SFTP");
+              }
+            }
           }
         }
 
@@ -155,16 +167,31 @@ template $GhosttyWindow: Adw.ApplicationWindow {
         }
 
         Adw.ToastOverlay toast_overlay {
-          Adw.TabView tab_view {
-            notify::n-pages => $notify_n_pages();
-            notify::selected-page => $notify_selected_page();
-            close-page => $close_page();
-            page-attached => $page_attached();
-            page-detached => $page_detached();
-            create-window => $tab_create_window();
-            setup-menu => $setup_tab_menu();
-            menu-model: tab_context_menu;
-            shortcuts: none;
+          Gtk.Stack content_stack {
+            transition-type: crossfade;
+            transition-duration: 150;
+
+            Gtk.StackPage {
+              name: "terminal";
+
+              child: Adw.TabView tab_view {
+                notify::n-pages => $notify_n_pages();
+                notify::selected-page => $notify_selected_page();
+                close-page => $close_page();
+                page-attached => $page_attached();
+                page-detached => $page_detached();
+                create-window => $tab_create_window();
+                setup-menu => $setup_tab_menu();
+                menu-model: tab_context_menu;
+                shortcuts: none;
+              };
+            }
+
+            Gtk.StackPage {
+              name: "vaults";
+
+              child: $GhosttySarvVaultsView vaults_view {};
+            }
           }
         }
       }
@@ -208,6 +235,11 @@ menu main_menu {
   }
 
   section {
+    item {
+      label: _("Vaults…");
+      action: "win.show-sarv-vaults";
+    }
+
     item {
       label: _("Hosts…");
       action: "win.show-sarv-hosts";

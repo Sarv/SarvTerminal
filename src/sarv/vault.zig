@@ -151,6 +151,27 @@ fn findGroup(groups: []const model.HostGroup, id: []const u8) ?*const model.Host
     return null;
 }
 
+/// Whether `group_id` is `root` itself or nested anywhere under it, walking
+/// parentID links. Used so selecting a group also covers the hosts of its
+/// subgroups (e.g. "Production" includes "Production > Web").
+pub fn groupInSubtree(
+    groups: []const model.HostGroup,
+    group_id: ?[]const u8,
+    root: []const u8,
+) bool {
+    var current: ?[]const u8 = group_id;
+    var guard: usize = 0;
+    while (current) |cid| {
+        // Cycle/corruption guard: group trees are shallow in practice.
+        guard += 1;
+        if (guard > 64) return false;
+        if (std.mem.eql(u8, cid, root)) return true;
+        const g = findGroup(groups, cid) orelse return false;
+        current = g.parentID;
+    }
+    return false;
+}
+
 // Sandbox the config dir to a tmp path for the duration of a test.
 const TmpConfig = struct {
     dir: std.testing.TmpDir,
@@ -233,6 +254,21 @@ test "sarv: groupPath builds a breadcrumb from parent links" {
     const p = try groupPath(alloc, &groups, "child");
     defer alloc.free(p);
     try std.testing.expectEqualStrings("Production > Web", p);
+}
+
+test "sarv: groupInSubtree matches the group itself and nested children" {
+    const groups = [_]model.HostGroup{
+        .{ .id = "prod", .name = "Production" },
+        .{ .id = "web", .name = "Web", .parentID = "prod" },
+        .{ .id = "db", .name = "Databases", .parentID = "prod" },
+        .{ .id = "staging", .name = "Staging" },
+    };
+    try std.testing.expect(groupInSubtree(&groups, "prod", "prod"));
+    try std.testing.expect(groupInSubtree(&groups, "web", "prod"));
+    try std.testing.expect(groupInSubtree(&groups, "db", "prod"));
+    try std.testing.expect(!groupInSubtree(&groups, "staging", "prod"));
+    try std.testing.expect(!groupInSubtree(&groups, null, "prod"));
+    try std.testing.expect(!groupInSubtree(&groups, "missing", "prod"));
 }
 
 test "sarv: groupPath is empty for nil or unknown id" {

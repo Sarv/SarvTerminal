@@ -28,6 +28,7 @@ const Surface = @import("surface.zig").Surface;
 const Tab = @import("tab.zig").Tab;
 const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
+const SarvVaultsView = @import("sarv_vaults_view.zig").SarvVaultsView;
 const SarvHostsDialog = @import("sarv_hosts_dialog.zig").SarvHostsDialog;
 const SarvKnownHostsDialog = @import("sarv_known_hosts_dialog.zig").SarvKnownHostsDialog;
 const SarvKeysDialog = @import("sarv_keys_dialog.zig").SarvKeysDialog;
@@ -272,6 +273,9 @@ pub const Window = extern struct {
         tab_view: *adw.TabView,
         toolbar: *adw.ToolbarView,
         toast_overlay: *adw.ToastOverlay,
+        content_stack: *gtk.Stack,
+        vaults_view: *SarvVaultsView,
+        vaults_toggle: *gtk.ToggleButton,
 
         pub var offset: c_int = 0;
     };
@@ -383,6 +387,7 @@ pub const Window = extern struct {
             .init("clear", actionClear, null),
             // TODO: accept the surface that toggled the command palette
             .init("toggle-command-palette", actionToggleCommandPalette, null),
+            .init("show-sarv-vaults", actionShowSarvVaults, null),
             .init("show-sarv-hosts", actionShowSarvHosts, null),
             .init("show-sarv-known-hosts", actionShowSarvKnownHosts, null),
             .init("show-sarv-keys", actionShowSarvKeys, null),
@@ -1363,10 +1368,6 @@ pub const Window = extern struct {
         self.syncAppearance();
     }
 
-    fn btnNewTab(_: *adw.SplitButton, self: *Self) callconv(.c) void {
-        self.performBindingAction(.new_tab);
-    }
-
     fn tabOverviewCreateTab(
         _: *adw.TabOverview,
         self: *Self,
@@ -1543,6 +1544,10 @@ pub const Window = extern struct {
         // If the tab was previously marked as needing attention
         // (e.g. due to a bell character), we now unmark that
         page.setNeedsAttention(@intFromBool(false));
+
+        // Selecting a tab in the tab bar leaves Vaults mode, like clicking
+        // a terminal tab in the macOS app.
+        self.showTerminalMode();
     }
 
     fn tabViewPageAttached(
@@ -2091,6 +2096,37 @@ pub const Window = extern struct {
         self.toggleCommandPalette();
     }
 
+    /// Toggle the Sarv Vaults mode (sidebar + hosts grid filling the window,
+    /// like the macOS main window). The header toggle button is the single
+    /// source of truth; flipping it drives vaultsToggled.
+    fn actionShowSarvVaults(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        const toggle = self.private().vaults_toggle;
+        toggle.setActive(@intFromBool(toggle.getActive() == 0));
+    }
+
+    /// The header "Vaults" toggle flipped: switch the content stack between
+    /// the terminal and the Vaults view.
+    fn vaultsToggled(toggle: *gtk.ToggleButton, self: *Window) callconv(.c) void {
+        const priv = self.private();
+        if (toggle.getActive() != 0) {
+            priv.vaults_view.setWindow(self);
+            priv.vaults_view.refresh();
+            priv.content_stack.setVisibleChildName("vaults");
+        } else {
+            priv.content_stack.setVisibleChildName("terminal");
+        }
+    }
+
+    /// Switch the window back to the terminal view (used by the Vaults view
+    /// after opening an SSH tab).
+    pub fn showTerminalMode(self: *Self) void {
+        self.private().vaults_toggle.setActive(0);
+    }
+
     /// Present the Sarv hosts dialog. The dialog owns its lifecycle: it
     /// self-refs while shown and unrefs when closed.
     fn actionShowSarvHosts(
@@ -2199,6 +2235,7 @@ pub const Window = extern struct {
 
         fn init(class: *Class) callconv(.c) void {
             gobject.ext.ensureType(DebugWarning);
+            gobject.ext.ensureType(SarvVaultsView);
             gobject.ext.ensureType(SplitTree);
             gobject.ext.ensureType(Surface);
             gobject.ext.ensureType(Tab);
@@ -2231,10 +2268,13 @@ pub const Window = extern struct {
             class.bindTemplateChildPrivate("tab_view", .{});
             class.bindTemplateChildPrivate("toolbar", .{});
             class.bindTemplateChildPrivate("toast_overlay", .{});
+            class.bindTemplateChildPrivate("content_stack", .{});
+            class.bindTemplateChildPrivate("vaults_view", .{});
+            class.bindTemplateChildPrivate("vaults_toggle", .{});
 
             // Template Callbacks
             class.bindTemplateCallback("realize", &windowRealize);
-            class.bindTemplateCallback("new_tab", &btnNewTab);
+            class.bindTemplateCallback("vaults_toggled", &vaultsToggled);
             class.bindTemplateCallback("overview_create_tab", &tabOverviewCreateTab);
             class.bindTemplateCallback("overview_notify_open", &tabOverviewOpen);
             class.bindTemplateCallback("close_request", &windowCloseRequest);

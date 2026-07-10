@@ -1,0 +1,239 @@
+using Gtk 4.0;
+using Adw 1;
+
+Gtk.Box root {
+  orientation: horizontal;
+
+  Gtk.ListBox sidebar {
+    selection-mode: browse;
+    vexpand: true;
+    width-request: 210;
+    row-selected => $sidebar_selected();
+
+    styles [
+      "navigation-sidebar",
+      "sarv-vaults-sidebar",
+    ]
+
+    Gtk.ListBoxRow {
+      child: Gtk.Box {
+        orientation: horizontal;
+        spacing: 10;
+
+        Gtk.Image {
+          icon-name: "computer-symbolic";
+        }
+
+        Gtk.Label {
+          label: _("Hosts");
+          halign: start;
+        }
+      };
+    }
+
+    Gtk.ListBoxRow {
+      child: Gtk.Box {
+        orientation: horizontal;
+        spacing: 10;
+
+        Gtk.Image {
+          icon-name: "dialog-password-symbolic";
+        }
+
+        Gtk.Label {
+          label: _("Keychain");
+          halign: start;
+        }
+      };
+    }
+
+    Gtk.ListBoxRow {
+      child: Gtk.Box {
+        orientation: horizontal;
+        spacing: 10;
+
+        Gtk.Image {
+          icon-name: "network-transmit-receive-symbolic";
+        }
+
+        Gtk.Label {
+          label: _("Port Forwarding");
+          halign: start;
+        }
+      };
+    }
+
+    Gtk.ListBoxRow {
+      child: Gtk.Box {
+        orientation: horizontal;
+        spacing: 10;
+
+        Gtk.Image {
+          icon-name: "format-text-code-symbolic";
+        }
+
+        Gtk.Label {
+          label: _("Snippets");
+          halign: start;
+        }
+      };
+    }
+
+    Gtk.ListBoxRow {
+      child: Gtk.Box {
+        orientation: horizontal;
+        spacing: 10;
+
+        Gtk.Image {
+          icon-name: "security-high-symbolic";
+        }
+
+        Gtk.Label {
+          label: _("Known Hosts");
+          halign: start;
+        }
+      };
+    }
+  }
+
+  Gtk.Separator {
+    orientation: vertical;
+  }
+
+  Gtk.Box {
+    orientation: vertical;
+    hexpand: true;
+    spacing: 12;
+    margin-top: 12;
+    margin-bottom: 12;
+    margin-start: 16;
+    margin-end: 16;
+
+    Gtk.Box {
+      orientation: horizontal;
+      spacing: 8;
+
+      Gtk.SearchEntry search {
+        hexpand: true;
+        placeholder-text: _("Find a host or ssh user@hostname…");
+        search-changed => $search_changed();
+        activate => $quick_connect();
+      }
+
+      Gtk.Button connect_btn {
+        label: _("Connect");
+        clicked => $quick_connect();
+
+        styles [
+          "suggested-action",
+        ]
+      }
+    }
+
+    Gtk.Box {
+      orientation: horizontal;
+      spacing: 8;
+
+      Gtk.Button {
+        clicked => $add_clicked();
+
+        Adw.ButtonContent {
+          icon-name: "list-add-symbolic";
+          label: _("New host");
+        }
+      }
+
+      Gtk.Button {
+        clicked => $terminal_clicked();
+
+        Adw.ButtonContent {
+          icon-name: "utilities-terminal-symbolic";
+          label: _("Terminal");
+        }
+      }
+
+      Gtk.Box {
+        hexpand: true;
+      }
+
+      Gtk.Button {
+        clicked => $files_clicked();
+
+        Adw.ButtonContent {
+          icon-name: "folder-remote-symbolic";
+          label: _("SFTP");
+        }
+      }
+
+      Gtk.Button {
+        clicked => $sync_clicked();
+
+        Adw.ButtonContent {
+          icon-name: "emblem-synchronizing-symbolic";
+          label: _("Sync");
+        }
+      }
+    }
+
+    Gtk.ScrolledWindow {
+      vexpand: true;
+      hscrollbar-policy: never;
+
+      Gtk.Box {
+        orientation: vertical;
+        spacing: 8;
+
+        Gtk.Label groups_header {
+          label: _("Groups");
+          halign: start;
+
+          styles [
+            "heading",
+          ]
+        }
+
+        Gtk.FlowBox groups_flow {
+          selection-mode: single;
+          homogeneous: true;
+          max-children-per-line: 4;
+          min-children-per-line: 2;
+          column-spacing: 12;
+          row-spacing: 12;
+          valign: start;
+          child-activated => $group_activated();
+        }
+
+        Gtk.Label hosts_header {
+          label: _("Hosts");
+          halign: start;
+          margin-top: 8;
+
+          styles [
+            "heading",
+          ]
+        }
+
+        Gtk.FlowBox hosts_flow {
+          selection-mode: single;
+          homogeneous: true;
+          max-children-per-line: 4;
+          min-children-per-line: 2;
+          column-spacing: 12;
+          row-spacing: 12;
+          valign: start;
+          child-activated => $host_activated();
+        }
+
+        Gtk.Label empty_label {
+          label: _("No saved hosts yet — click “New host” to add one.");
+          visible: false;
+          margin-top: 24;
+
+          styles [
+            "dim-label",
+          ]
+        }
+      }
+    }
+  }
+}
