@@ -8,7 +8,7 @@
 Fast GPU-accelerated terminal, a built-in host vault, SFTP/SCP file manager, SSH key & tunnel
 manager, and end-to-end-encrypted settings sync — in one native app.
 
-[Website](https://sarv.com) · [Features](#features) · [Security & Privacy](#security--privacy) · [Install](#install) · [Build](#build-from-source) · [FAQ](FAQ.md) · [Contributing](#contributing) · [Credits](#credits--license)
+[Website](https://sarv.com) · [Features](#features) · [How it compares](#how-it-compares) · [Security & Privacy](#security--privacy) · [Install](#install) · [Build](#build-from-source) · [FAQ](FAQ.md) · [Contributing](#contributing) · [Credits](#credits--license)
 
 ![Platform: macOS](https://img.shields.io/badge/platform-macOS-black)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
@@ -107,6 +107,26 @@ the Sarv Terminal layer.** Each section below shows the feature in action.
 - **Fully rebindable app keybinds** that never clobber Ghostty's defaults.
 
 ![Appearance — themes, opacity, blur and background image](assets/screenshots/appearance.png)
+
+## How it compares
+
+Most terminals are *either* a fast terminal *or* a connection manager. Sarv Terminal is both —
+built on the Ghostty engine, with a local-first SSH client layered on top. Other terminals can run
+`ssh`, but the connection-manager layer that makes servers easy to live with isn't built in:
+
+| | **Sarv Terminal** | Ghostty | iTerm2 | Warp | Terminal.app | WezTerm |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Saved-host vault (groups, per-host SSH profile) | ✅ | ⬜ | 🟡 | ⬜ | 🟡 | 🟡 |
+| SSH key manager | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| SFTP/SCP dual-pane file manager | ✅ | ⬜ | 🟡 | ⬜ | ⬜ | ⬜ |
+| Port-forward / tunnel manager (GUI) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Import hosts & settings from other apps | ✅ | ⬜ | 🟡 | ⬜ | ⬜ | 🟡 |
+| End-to-end-encrypted settings sync | ✅ | ⬜ | 🟡 | 🟡 | ⬜ | ⬜ |
+| GPU-accelerated rendering | ✅ | ✅ | ✅ | ✅ | ⬜ | ✅ |
+| Local-first · no account · no telemetry | ✅ | ✅ | ✅ | 🟡 | ✅ | ✅ |
+
+✅ built-in · 🟡 partial (runs `ssh`, but no GUI to manage it) · ⬜ not offered.
+**[See the full comparison →](COMPARISON.md)**
 
 ## Security & Privacy
 
