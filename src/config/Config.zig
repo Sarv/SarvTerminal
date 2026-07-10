@@ -3648,14 +3648,17 @@ else
 /// by the titles any longer (as they are tab titles now). Other areas of the
 /// `tabs` title bar can be used to drag the window around.
 ///
-/// The default style is `native`.
-@"gtk-titlebar-style": GtkTitlebarStyle = .native,
+/// The default style is `tabs`, matching the macOS Sarv Terminal layout
+/// where the tab bar is the titlebar: fixed Vaults/SFTP controls on the
+/// left and terminal tabs opening to their right in the same row.
+@"gtk-titlebar-style": GtkTitlebarStyle = .tabs,
 
-/// If `true` (default), then the Ghostty GTK tabs will be "wide." Wide tabs
+/// If `true`, then the Ghostty GTK tabs will be "wide." Wide tabs
 /// are the new typical Gnome style where tabs fill their available space.
-/// If you set this to `false` then tabs will only take up space they need,
-/// which is the old style.
-@"gtk-wide-tabs": bool = true,
+/// If you set this to `false` (default) then tabs will only take up space
+/// they need, which is the old style and matches the macOS Sarv Terminal
+/// where compact tabs sit beside the fixed Vaults/SFTP controls.
+@"gtk-wide-tabs": bool = false,
 
 /// Custom CSS files to be loaded.
 ///

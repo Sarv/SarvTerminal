@@ -45,6 +45,87 @@ const OpenURI = @import("../portal.zig").OpenURI;
 
 const log = std.log.scoped(.gtk_ghostty_application);
 
+/// Sarv theme stylesheet — matches the macOS app's palette (sampled from
+/// assets/screenshots/hosts.png): violet accent #9A55A3 with rounded card
+/// rows and violet icon tiles like the macOS hosts grid. Surfaces that must
+/// adapt between light and dark GTK themes use alpha() over theme colors
+/// instead of fixed values; only the brand accent is fixed. CSS parse errors
+/// are non-fatal (logged via the provider's parsing-error signal).
+const sarv_theme_css =
+    \\@define-color accent_bg_color #9A55A3;
+    \\@define-color accent_color #C77BD1;
+    \\@define-color accent_fg_color #ffffff;
+    \\
+    \\/* List rows as rounded cards, like the macOS hosts grid. */
+    \\.rich-list > row {
+    \\  margin: 3px 8px;
+    \\  padding: 8px 10px;
+    \\  border-radius: 10px;
+    \\  border: 1px solid alpha(@window_fg_color, 0.10);
+    \\  background-color: alpha(@window_fg_color, 0.045);
+    \\}
+    \\.rich-list > row:hover {
+    \\  background-color: alpha(@window_fg_color, 0.09);
+    \\}
+    \\.rich-list > row:selected {
+    \\  background-color: alpha(#9A55A3, 0.28);
+    \\  border-color: alpha(#C77BD1, 0.45);
+    \\}
+    \\
+    \\/* Vaults view: card grid + solid violet sidebar pill, like macOS. */
+    \\.sarv-card {
+    \\  padding: 12px;
+    \\  border-radius: 10px;
+    \\  border: 1px solid alpha(@window_fg_color, 0.10);
+    \\  background-color: alpha(@window_fg_color, 0.045);
+    \\}
+    \\.sarv-card:hover {
+    \\  background-color: alpha(@window_fg_color, 0.09);
+    \\}
+    \\.sarv-card:selected {
+    \\  background-color: alpha(#9A55A3, 0.28);
+    \\  border-color: alpha(#C77BD1, 0.45);
+    \\}
+    \\.sarv-vaults-sidebar {
+    \\  padding: 6px;
+    \\}
+    \\.sarv-vaults-sidebar row {
+    \\  padding: 8px 10px;
+    \\  border-radius: 8px;
+    \\}
+    \\.sarv-vaults-sidebar row:selected {
+    \\  background-color: #9A55A3;
+    \\  color: #ffffff;
+    \\}
+    \\
+    \\/* Rounded-square icon tiles, like the macOS host cards. */
+    \\.sarv-host-icon {
+    \\  background-color: #9A55A3;
+    \\  color: #ffffff;
+    \\  border-radius: 8px;
+    \\  padding: 7px;
+    \\}
+    \\
+    \\/* File-browser glyphs are violet-tinted with no tile, and the file
+    \\ * panes stay flat tables (macOS SFTP look), opting out of card rows. */
+    \\.sarv-file-icon {
+    \\  color: #B87DC0;
+    \\}
+    \\.rich-list.sarv-flat-list > row {
+    \\  margin: 0;
+    \\  padding: 6px 10px;
+    \\  border: none;
+    \\  border-radius: 0;
+    \\  background-color: transparent;
+    \\}
+    \\.rich-list.sarv-flat-list > row:hover {
+    \\  background-color: alpha(@window_fg_color, 0.06);
+    \\}
+    \\.rich-list.sarv-flat-list > row:selected {
+    \\  background-color: alpha(#9A55A3, 0.28);
+    \\}
+;
+
 /// Function used to funnel GLib/GObject/GTK log messages into Zig's logging
 /// system rather than just getting dumped directly to stderr.
 fn glibLogWriterFunction(
@@ -376,6 +457,22 @@ pub const Application = extern struct {
             gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 3,
         );
         errdefer css_provider.unref();
+
+        // Sarv theme: match the GTK dialogs to the macOS app's look (violet
+        // accent + card rows). Loaded at a priority below the runtime config
+        // provider so user CSS still wins. Lives for the whole process (the
+        // Application is a singleton), so it isn't unref'd.
+        {
+            const sarv_bytes = glib.Bytes.new(sarv_theme_css.ptr, sarv_theme_css.len);
+            defer sarv_bytes.unref();
+            const sarv_provider = gtk.CssProvider.new();
+            sarv_provider.loadFromBytes(sarv_bytes);
+            gtk.StyleContext.addProviderForDisplay(
+                display,
+                sarv_provider.as(gtk.StyleProvider),
+                gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2,
+            );
+        }
 
         // Initialize the app.
         const self = gobject.ext.newInstance(Self, .{
