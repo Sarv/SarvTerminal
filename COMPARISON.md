@@ -54,7 +54,8 @@ manager, or tunnel UI.
 | GPU-accelerated rendering | ✅ | ✅ | ✅ | ✅ | ⬜ | ✅ |
 | GUI settings (no config file required) | ✅ | 🟡 | ✅ | ✅ | ✅ | ⬜ |
 | Local-first · no account · no telemetry | ✅ | ✅ | ✅ | 🟡 | ✅ | ✅ |
-| Open source & free | ✅ MIT | ✅ MIT | ✅ GPL-2.0 | 🟡 | ⬜ | ✅ MIT |
+| Open source & free | ✅ | ✅ | ✅ | 🟡 | ⬜ | ✅ |
+| License | MIT | MIT | GPL-2.0 | AGPLv3 (client) | Proprietary | MIT |
 
 > If you manage more than one server, Sarv Terminal is the only app here that puts your terminal,
 > saved hosts, SSH keys, tunnels and file transfers in **one place** — fast, local-first, and
