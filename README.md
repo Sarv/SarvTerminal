@@ -8,7 +8,7 @@
 Fast GPU-accelerated terminal, a built-in host vault, SFTP/SCP file manager, SSH key & tunnel
 manager, and end-to-end-encrypted settings sync — in one native app.
 
-[Features](#features) · [Security & Privacy](#security--privacy) · [Install](#install) · [Build](#build-from-source) · [Contributing](#contributing) · [Credits](#credits--license)
+[Features](#features) · [Security & Privacy](#security--privacy) · [Install](#install) · [Build](#build-from-source) · [FAQ](FAQ.md) · [Contributing](#contributing) · [Credits](#credits--license)
 
 ![Platform: macOS](https://img.shields.io/badge/platform-macOS-black)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
