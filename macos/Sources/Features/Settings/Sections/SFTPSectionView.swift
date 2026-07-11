@@ -23,6 +23,19 @@ struct SFTPSectionView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                divider
+                row("Indentation") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Picker("", selection: $settings.indentWidth) {
+                            Text("2 spaces").tag(2)
+                            Text("4 spaces").tag(4)
+                        }
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 200)
+                        Text("Spaces inserted by Tab. New files open with this; the viewer's dropdown can override it per file.")
+                            .font(.caption).foregroundStyle(.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
 
             SettingsCard(title: "Browser") {
@@ -47,6 +60,7 @@ struct SFTPSectionView: View {
         .onChange(of: settings.autoSave) { _ in viewModel.flashSaved() }
         .onChange(of: settings.confirmDelete) { _ in viewModel.flashSaved() }
         .onChange(of: settings.showHidden) { _ in viewModel.flashSaved() }
+        .onChange(of: settings.indentWidth) { _ in viewModel.flashSaved() }
     }
 
     private func row<C: View>(_ label: String, @ViewBuilder control: () -> C) -> some View {
