@@ -280,7 +280,7 @@ struct FilePaneView: View {
         })
         .contextMenu {
             if !item.isDirectory {
-                Button("Open") { onAction(.open(item)) }
+                Button("View") { onAction(.open(item)) }
                 Divider()
             }
             Button("Copy to target directory") { onAction(.copyToTarget(item)) }
