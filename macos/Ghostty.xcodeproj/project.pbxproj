@@ -449,12 +449,10 @@
 				A5B3052D299BEAAA0047F10C /* Sources */,
 				A5B3052E299BEAAA0047F10C /* Frameworks */,
 				A5B3052F299BEAAA0047F10C /* Resources */,
-				819324572F24E74E00A9ED8F /* Copy DockTilePlugin */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				819324682F2502FB00A9ED8F /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				81F82BC72E82815D001EDFA7 /* Sources */,

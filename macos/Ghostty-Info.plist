@@ -4,8 +4,6 @@
 <dict>
 	<key>NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac</key>
 	<true/>
-	<key>NSDockTilePlugIn</key>
-	<string>DockTilePlugin.plugin</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
