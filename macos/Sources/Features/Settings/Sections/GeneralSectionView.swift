@@ -194,6 +194,17 @@ struct GeneralSectionView: View {
                         .frame(width: 70, alignment: .trailing)
                 }
             }
+            divider
+            row("Compression") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Compress idle scrollback to save memory",
+                           isOn: $viewModel.general.scrollbackCompression)
+                        .toggleStyle(.checkbox)
+                    Text("Compresses off-screen history while the terminal is idle, cutting memory use. It's restored automatically when you scroll back.")
+                        .font(.caption).foregroundStyle(.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 

@@ -184,7 +184,7 @@ fn boolColor(word: []const u8) ?u8 {
 /// it at the default fg. Mirrors the add/refcount sequence in
 /// `Screen.manualStyleUpdate`, adapted to an arbitrary cell.
 fn recolorCell(pin: Pin, col: size.CellCountInt, rc: Recolor) void {
-    var page = &pin.node.data;
+    const page = pin.node.page();
     const cell = &pin.cells(.all)[col];
 
     const old_id = cell.style_id;

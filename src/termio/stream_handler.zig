@@ -205,6 +205,10 @@ pub const StreamHandler = struct {
                 @branchHint(.likely);
                 try self.terminal.print(value.cp);
             },
+            .print_slice => {
+                @branchHint(.likely);
+                try self.terminal.printSlice(value.cps);
+            },
             .print_repeat => try self.terminal.printRepeat(value),
             .bell => self.bell(),
             .backspace => self.terminal.backspace(),
@@ -357,6 +361,7 @@ pub const StreamHandler = struct {
             .apc_start => self.apc.start(),
             .apc_end => try self.apcEnd(),
             .apc_put => self.apc.feed(self.alloc, value),
+            .apc_put_slice => self.apc.feedSlice(self.alloc, value.bytes),
 
             // Unimplemented
             .title_push,

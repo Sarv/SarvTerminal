@@ -205,6 +205,15 @@ extension Ghostty.Config {
         return Int(v)
     }
 
+    /// `scrollback-compression` — bool. Compress idle offscreen scrollback.
+    var scrollbackCompression: Bool {
+        guard let config = self.config else { return true }
+        var v: Bool = true
+        let key = "scrollback-compression"
+        _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+        return v
+    }
+
     // MARK: - Window
 
     /// `window-decoration` — enum: auto / none / server / client.
