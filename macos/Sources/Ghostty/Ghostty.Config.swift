@@ -56,17 +56,16 @@ extension Ghostty {
         /// Load the user's BASE configuration into `cfg`. This is the SINGLE
         /// source of truth for "where the config comes from", so the main config
         /// load and every per-surface overlay (`applyTheme`, `applyFontThicken`,
-        /// `themeColors`) agree on exactly one file. Debug builds read the
-        /// ISOLATED `ghostty-dev/config` (seeded once from the release config) so
-        /// dev experiments never touch the release app; release reads the standard
-        /// default files. Disagreeing here is what caused the background image to
-        /// flash-then-revert on a theme switch.
+        /// `themeColors`) agree on exactly one file. Disagreeing here is what
+        /// caused the background image to flash-then-revert on a theme switch.
+        ///
+        /// We deliberately load ONLY our isolated `AppPaths.ghosttyConfigFile`
+        /// (`sarvterminal[-dev]/config`) and NOT `ghostty_config_load_default_files`,
+        /// whose search would read the shared `~/.config/ghostty/config` and
+        /// collide with a real Ghostty install running side by side. `AppPaths`
+        /// handles per-build isolation and first-launch seeding.
         static func loadUserBaseConfig(into cfg: ghostty_config_t) {
-#if DEBUG
             ghostty_config_load_file(cfg, AppPaths.ghosttyConfigFile.path)
-#else
-            ghostty_config_load_default_files(cfg)
-#endif
         }
 
         /// Initializes a new configuration and loads all the values.

@@ -25,24 +25,38 @@ enum AppPaths {
     /// The Ghostty **terminal** config file (`theme`, `font-*`, `background-*`,
     /// keybinds, …) — distinct from the app's own data in ``configDir``.
     ///
-    /// Honors `XDG_CONFIG_HOME`, falling back to `~/.config`. **Debug builds use
-    /// a separate `ghostty-dev/config`** so experiments in the dev build never
-    /// touch the release app's `~/.config/ghostty/config`. This is the single
-    /// source of truth — EVERY reader/writer of the terminal config must use it
-    /// (never re-derive `~/.config/ghostty/config` by hand).
+    /// SarvTerminal keeps this in its OWN directory — `sarvterminal/config`
+    /// (release) or `sarvterminal-dev/config` (debug) — NOT the shared
+    /// `ghostty/config`, so it never collides with a real Ghostty install running
+    /// side by side. We only ever WRITE here, and the Ghostty core's default-file
+    /// search is deliberately NOT used (see `Ghostty.Config.loadUserBaseConfig`),
+    /// so a co-installed Ghostty's `~/.config/ghostty/config` is never touched.
+    ///
+    /// Honors `XDG_CONFIG_HOME`, falling back to `~/.config`. On first launch the
+    /// file is seeded once from the user's existing config (the legacy shared
+    /// `ghostty/config`) so upgrading users — and Ghostty users trying us — keep
+    /// their settings. This is the single source of truth — EVERY reader/writer of
+    /// the terminal config must use it (never re-derive the path by hand).
     static var ghosttyConfigFile: URL {
         #if DEBUG
-        let dirName = "ghostty-dev"
+        let dirName = "sarvterminal-dev"
         #else
-        let dirName = "ghostty"
+        let dirName = "sarvterminal"
         #endif
         let file = xdgConfigBaseDir
             .appendingPathComponent(dirName, isDirectory: true)
             .appendingPathComponent("config")
-        #if DEBUG
-        seedDebugGhosttyConfigIfNeeded(devFile: file)
-        #endif
+        seedTerminalConfigIfNeeded(file)
         return file
+    }
+
+    /// The legacy shared Ghostty config path (`$XDG_CONFIG_HOME/ghostty/config`)
+    /// we used before isolating. Kept ONLY as a first-launch seed source — we
+    /// never write here, so a real Ghostty install is left untouched.
+    private static var legacyGhosttyConfigFile: URL {
+        xdgConfigBaseDir
+            .appendingPathComponent("ghostty", isDirectory: true)
+            .appendingPathComponent("config")
     }
 
     /// `$XDG_CONFIG_HOME` if set, otherwise `~/.config`.
@@ -93,23 +107,31 @@ enum AppPaths {
         defaults.set(current, forKey: key)
     }
 
-    #if DEBUG
-    /// Seed the dev terminal config once from the release config so the dev build
-    /// starts identical, then diverges. No-op once the dev file exists.
-    private static func seedDebugGhosttyConfigIfNeeded(devFile: URL) {
+    /// One-time seed of our isolated terminal config from the user's existing
+    /// config, so upgrading users (and Ghostty users trying us) don't start
+    /// blank. Copies the FIRST existing source and NEVER deletes it — a real
+    /// Ghostty install keeps its own file. No-op once our file exists.
+    private static func seedTerminalConfigIfNeeded(_ dest: URL) {
         let fm = FileManager.default
-        guard !fm.fileExists(atPath: devFile.path) else { return }
-        try? fm.createDirectory(at: devFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let releaseFile = xdgConfigBaseDir
-            .appendingPathComponent("ghostty", isDirectory: true)
-            .appendingPathComponent("config")
-        if fm.fileExists(atPath: releaseFile.path) {
-            try? fm.copyItem(at: releaseFile, to: devFile)
-        } else {
-            fm.createFile(atPath: devFile.path, contents: nil)
+        guard !fm.fileExists(atPath: dest.path) else { return }
+        try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        var sources: [URL] = []
+        #if DEBUG
+        // Keep an existing dev config; otherwise fall back to the release app's.
+        sources.append(xdgConfigBaseDir.appendingPathComponent("ghostty-dev", isDirectory: true)
+            .appendingPathComponent("config"))
+        sources.append(xdgConfigBaseDir.appendingPathComponent("sarvterminal", isDirectory: true)
+            .appendingPathComponent("config"))
+        #endif
+        sources.append(legacyGhosttyConfigFile) // the old shared ~/.config/ghostty/config
+
+        for src in sources where fm.fileExists(atPath: src.path) {
+            try? fm.copyItem(at: src, to: dest)
+            return
         }
+        fm.createFile(atPath: dest.path, contents: nil)
     }
-    #endif
 
     /// One-time migration of preferences from the old `com.mitchellh.ghostty*`
     /// UserDefaults domains into this build's domain. macOS keys UserDefaults by
