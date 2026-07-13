@@ -192,6 +192,38 @@ build; new upstream option `scrollback-compression` added to Settings → Genera
 (`gtk-horizontal-tab-scroll` skipped — GTK/Linux only). **Next base for the following
 sync is `55a3e33a`.**
 
+---
+
+## 8. Intentional divergences (must survive every upstream merge)
+
+Some edits to Ghostty-origin files exist for a deliberate product reason. A 3-way
+merge usually keeps them, but **after every sync, VERIFY each one survived** and
+re-apply if an upstream refactor drops it.
+
+### 8.1 Isolated terminal-config path (no collision with a co-installed Ghostty)
+- **Why:** SarvTerminal is a Ghostty fork. If a user runs both, they must NOT share
+  `~/.config/ghostty/config` — that's two writers on one file, and our sync feature
+  would otherwise mutate the user's real Ghostty config.
+- **What we do:** read/write our terminal config ONLY at `~/.config/sarvterminal/config`
+  (release) / `~/.config/sarvterminal-dev/config` (debug), seeded once from the legacy
+  `~/.config/ghostty/config`. We deliberately do NOT call `ghostty_config_load_default_files`.
+- **Anchors to preserve:**
+  - `macos/Sources/Helpers/AppPaths.swift` — OURS (not an upstream file → no merge
+    risk). Owns `ghosttyConfigFile` (sarv dir) + `seedTerminalConfigIfNeeded`.
+  - `macos/Sources/Ghostty/Ghostty.Config.swift` — **guarded upstream file.**
+    `loadUserBaseConfig(into:)` must call `ghostty_config_load_file(cfg,
+    AppPaths.ghosttyConfigFile.path)` and must NOT be reverted to
+    `ghostty_config_load_default_files(cfg)`. ← re-check this after every sync.
+- **Known residuals — read-only, no write collision, left shared on purpose:**
+  - Custom user themes still resolve (via the core) from `~/.config/ghostty/themes`.
+  - The custom app-icon default still points at `~/.config/ghostty/Ghostty.icns`
+    (`Ghostty.Config.swift` ~L430).
+  - SSH terminfo cache `~/.local/state/ghostty/ssh_cache` + the `xterm-ghostty`
+    terminfo entry stay shared (compatibility-desirable).
+  - Fully isolating those too would mean changing the core's `"ghostty"` XDG subdir
+    in `src/os/xdg.zig` + `src/config/Config.zig` — **deferred** (bigger core
+    divergence; not needed to stop the config-file write collision).
+
 ### Upstream activity on our guarded **core** files (base → tip, at last check)
 
 | File | Upstream commits since base |
