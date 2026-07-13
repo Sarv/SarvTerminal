@@ -58,6 +58,19 @@ final class SyncCoordinator {
         NotificationCenter.default.publisher(for: .sarvSettingsClosed)
             .sink { _ in onChange() }.store(in: &cancellables)
 
+        // Config commits that happen OUTSIDE the Settings window — the command
+        // palette's quick theme/font/opacity picker and "import from another
+        // terminal" — post .sarvConfigDidCommit but never .sarvSettingsClosed,
+        // so without this they'd only sync on some later, unrelated push. The
+        // Settings window itself flushes as ONE version on close (above) and
+        // tags its per-change live-preview commits with `object:` its view-model,
+        // so we skip those here to avoid re-introducing per-tweak version churn.
+        NotificationCenter.default.publisher(for: .sarvConfigDidCommit)
+            .sink { note in
+                guard !(note.object is SettingsViewModel) else { return }
+                onChange()
+            }.store(in: &cancellables)
+
         Task { await pullIfRemoteNewer() }
 
         // Pull hourly to pick up changes pushed from other machines.
