@@ -15,7 +15,7 @@ extension Notification.Name {
 enum SyncEngine {
     private static let settings = SyncSettings.shared
 
-    enum EngineError: LocalizedError {
+    enum EngineError: LocalizedError, Equatable {
         case notConfigured
         case nothingRemote
         case wrongPassword
@@ -23,6 +23,9 @@ enum SyncEngine {
         case localDataUnreadable
         case suspiciousEmptyPush
         case remoteIncomplete
+        case integrityCheckFailed
+        case remoteHasUnpulledData
+        case remoteUnreadable
 
         var errorDescription: String? {
             switch self {
@@ -37,6 +40,12 @@ enum SyncEngine {
                 return "Sync paused: everything is empty locally but your backup has data. If you really cleared everything, press “Sync ↑” to confirm."
             case .remoteIncomplete:
                 return "The remote sync data is incomplete or corrupt — nothing was changed locally."
+            case .integrityCheckFailed:
+                return "Sync was aborted: the data failed a pre-upload integrity check, so nothing was uploaded and your backup is untouched."
+            case .remoteHasUnpulledData:
+                return "The remote has data this device hasn't pulled yet, so nothing was uploaded (to avoid overwriting it). Press “Pull” to bring it in first, then sync."
+            case .remoteUnreadable:
+                return "The remote backup exists but couldn't be read (its manifest is missing or corrupt), so nothing was uploaded — your backup is untouched. Check the sync destination."
             }
         }
     }
@@ -85,13 +94,29 @@ enum SyncEngine {
 
     /// Encrypt and upload everything. Returns the manifest written.
     ///
-    /// `force` bypasses the data-loss guards (used only by an explicit manual
-    /// "Sync ↑"). Auto-pushes always pass `force: false`.
+    /// Upload-safety algorithm — a push may write ONLY when it cannot destroy
+    /// data this device hasn't incorporated:
+    ///   1. Local-state guards (skippable by `force`): refuse if local data is
+    ///      unreadable, or if everything's empty locally but our own last sync
+    ///      had data (a suspicious wipe — `Sync ↑` overrides to confirm).
+    ///   2. Read the remote manifest with certainty: the provider returns nil
+    ///      ONLY for a genuine "empty remote" and throws on any I/O error; an
+    ///      existing-but-undecodable manifest is a hard error (`remoteUnreadable`).
+    ///   3. Remote-overwrite guard (NOT skippable by `force`): if the remote's
+    ///      version is newer than what we last pulled, refuse — pull first. This
+    ///      is the fresh-machine case where a blank push would wipe the backup.
+    ///   4. Only a genuinely-empty remote (first-ever seed) or a remote at
+    ///      exactly our last-synced version may be written.
+    ///
+    /// So `force` (manual "Sync ↑") only overrides the LOCAL guards in step 1;
+    /// it can never overwrite a remote this device is behind on. Auto-pushes
+    /// always pass `force: false`.
     @discardableResult
     static func push(masterPassword: String, force: Bool = false) async throws -> SyncManifest {
-        // Data-loss guards — never let a bad local state wipe the remote backup.
+        // Step 1 — local-state guards. Never let a bad local state wipe the backup.
         if !force {
-            if SavedHostsStore.shared.loadFailed || HostGroupsStore.shared.loadFailed {
+            if SavedHostsStore.shared.loadFailed || HostGroupsStore.shared.loadFailed
+                || PortForwardStore.shared.loadFailed {
                 throw EngineError.localDataUnreadable
             }
             let hostCount = SavedHostsStore.shared.hosts.count
@@ -111,6 +136,16 @@ enum SyncEngine {
         // Reuse the existing salt/version if the remote already has data; verify
         // our password matches it so we never orphan previously-synced files.
         let remoteManifest = try await readManifest(provider)
+
+        // Whole-data-loss guard: never overwrite a remote version this device has
+        // never pulled. On a brand-new machine `lastSyncedVersion` is 0, so a
+        // stray auto-push (e.g. closing Settings right after configuring sync) —
+        // or even a forced "Sync ↑" — would otherwise upload blank local state
+        // over the real backup. This is exactly the case `force` must NOT bypass:
+        // pull first to bring the data in, then sync.
+        if let rm = remoteManifest, rm.version > settings.lastSyncedVersion {
+            throw EngineError.remoteHasUnpulledData
+        }
 
         let salt: Data
         let iterations: Int
@@ -153,6 +188,13 @@ enum SyncEngine {
         files[SyncManifest.settingsFile] = try SyncCrypto.encrypt(settingsData, key: key)
         files[SyncManifest.hostsFile] = try SyncCrypto.encrypt(hostsData, key: key)
 
+        // Integrity gate: never upload anything we can't read back. Decrypt each
+        // freshly-encrypted payload and confirm it round-trips to byte-identical,
+        // decodable plaintext. Any mismatch aborts the push *before* the atomic
+        // commit is created, leaving the last good backup untouched.
+        try verifyRoundTrip(files[SyncManifest.settingsFile], source: settingsData, key: key, as: SyncSettingsPayload.self)
+        try verifyRoundTrip(files[SyncManifest.hostsFile], source: hostsData, key: key, as: SyncHostsPayload.self)
+
         let verifier = try SyncCrypto.encrypt(Data(SyncManifest.verifierToken.utf8), key: key)
         let nextVersion = max(remoteManifest?.version ?? 0, settings.lastSyncedVersion) + 1
         let now = Date()
@@ -189,6 +231,21 @@ enum SyncEngine {
         hasher.update(data: settingsData)
         hasher.update(data: hostsData)
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Verify a freshly-encrypted payload decrypts and decodes back to the exact
+    /// source bytes — the guarantee that a push never uploads data it can't read
+    /// back. Throws `integrityCheckFailed` on any mismatch so the push aborts.
+    private static func verifyRoundTrip<T: Decodable>(
+        _ encrypted: Data?, source: Data, key: SymmetricKey, as type: T.Type
+    ) throws {
+        guard let encrypted,
+              let decrypted = try? SyncCrypto.decrypt(encrypted, key: key),
+              decrypted == source,
+              (try? JSONDecoder.sync.decode(T.self, from: decrypted)) != nil
+        else {
+            throw EngineError.integrityCheckFailed
+        }
     }
 
     /// Fingerprint of the CURRENT local state — recorded after a pull so a
@@ -247,16 +304,19 @@ enum SyncEngine {
                 let firstPull = settings.lastSyncedVersion == 0
                 let snippets = h.snippets ?? []
                 let savedSessions = h.savedSessions ?? []
+                let portForwards = h.portForwards ?? []
                 if firstPull && !SavedHostsStore.shared.hosts.isEmpty {
                     HostGroupsStore.shared.ingest(h.groups)
                     SavedHostsStore.shared.ingest(h.hosts)
                     SnippetsStore.shared.ingest(snippets)
                     SavedSessionsStore.shared.ingest(savedSessions)
+                    PortForwardStore.shared.ingest(portForwards)
                 } else {
                     HostGroupsStore.shared.replaceAll(h.groups)
                     SavedHostsStore.shared.replaceAll(h.hosts)
                     SnippetsStore.shared.replaceAll(snippets)
                     SavedSessionsStore.shared.replaceAll(savedSessions)
+                    PortForwardStore.shared.replaceAll(portForwards)
                 }
             }
             (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
@@ -304,19 +364,24 @@ enum SyncEngine {
 
         > ⚠️ Keep `manifest.json` — it stores the key‑derivation salt needed to
         > decrypt your data. Your master password is **never** stored here, and there
-                let portForwards = h.portForwards ?? []
         > is no way to recover the data if you forget it.
         """
     }
 
     // MARK: - Remote reads
-                    PortForwardStore.shared.ingest(portForwards)
 
+    /// Strict manifest read for the PUSH guard. The provider returns nil ONLY for
+    /// a genuine "not found" (true 404 / missing file) and THROWS on any I/O
+    /// error — so nil here authoritatively means "remote is empty". Crucially, a
+    /// manifest that EXISTS but won't decode must never collapse to nil (which
+    /// the push path reads as "empty" and would overwrite): that's a hard error.
     private static func readManifest(_ provider: SyncProvider) async throws -> SyncManifest? {
         guard let d = try await provider.readManifest() else { return nil }
-        return try? JSONDecoder.sync.decode(SyncManifest.self, from: d)
+        guard let manifest = try? JSONDecoder.sync.decode(SyncManifest.self, from: d) else {
+            throw EngineError.remoteUnreadable
+        }
+        return manifest
     }
-                    PortForwardStore.shared.replaceAll(portForwards)
 
     private static func readEncrypted<T: Decodable>(
         _ provider: SyncProvider, name: String, key: SymmetricKey, as type: T.Type
@@ -354,6 +419,9 @@ enum SyncEngine {
                 p.backgroundImage = .init(name: URL(fileURLWithPath: expanded).lastPathComponent, data: bytes)
             }
         }
+        // Generic snapshot of every syncable pref — covers current & future
+        // settings without a per-key change here.
+        p.defaults = syncableDefaultsBlob()
         return p
     }
 
@@ -453,6 +521,13 @@ enum SyncEngine {
         if let v = p.sftpShowHidden { d.set(v, forKey: "SarvSFTPShowHidden") }
         if let v = p.bgVisibility { d.set(v, forKey: "SarvBgVisibility") }
         if let kb = p.appKeybinds { d.set(kb, forKey: "SarvAppKeybinds") }
+
+        // Generic prefs snapshot (payloads written by this version): applies every
+        // synced Sarv* key, covering settings the explicit fields above don't
+        // (indent width, font weight, notifications, hosts-UI, session restore, …).
+        // Excludes SarvBgImagePath (handled below) and SarvSync*/internal keys.
+        if let blob = p.defaults { applyDefaultsBlob(blob) }
+
         // Background image path: set to the local copy, or clear it if removed.
         let imagePath = localImagePath ?? (p.bgImagePath ?? "")
         if imagePath.isEmpty {
@@ -462,9 +537,6 @@ enum SyncEngine {
         }
     }
 
-        // Generic snapshot of every syncable pref — covers current & future
-        // settings without a per-key change here.
-        p.defaults = syncableDefaultsBlob()
     // MARK: - Paths
 
     private static func ghosttyConfigURL() -> URL {
@@ -496,10 +568,3 @@ enum SyncEngine {
         return nil
     }
 }
-
-        // Generic prefs snapshot (payloads written by this version): applies every
-        // synced Sarv* key, covering settings the explicit fields above don't
-        // (indent width, font weight, notifications, hosts-UI, session restore, …).
-        // Excludes SarvBgImagePath (handled below) and SarvSync*/internal keys.
-        if let blob = p.defaults { applyDefaultsBlob(blob) }
-

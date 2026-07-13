@@ -159,11 +159,22 @@ final class SyncSettings: ObservableObject {
     /// draft never flips it.
     var canSync: Bool { enabled && isConfigured }
 
+    /// True when the remote holds a version this device has NOT pulled yet. In
+    /// this state the device must pull before it may push — otherwise it would
+    /// overwrite the shared backup with state that never incorporated the
+    /// remote's newer data (the fresh-machine data-loss case). Single source of
+    /// truth for the push guard, the auto-push suppression, and the disabled
+    /// "Sync ↑" button.
+    var remoteIsNewer: Bool {
+        if let rv = remoteNewerVersion, rv > lastSyncedVersion { return true }
+        return false
+    }
+
     var status: SyncStatus {
         if !canSync { return .disabled }
         if isSyncing { return .syncing }
         if let err = lastError { return .error(err) }
-        if let rv = remoteNewerVersion, rv > lastSyncedVersion { return .remoteNewer }
+        if remoteIsNewer { return .remoteNewer }
         return .idle
     }
 

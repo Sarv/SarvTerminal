@@ -35,6 +35,12 @@ struct SyncSectionView: View {
         patField = ""
     }
 
+    /// True when the remote holds a version this device hasn't pulled yet (e.g. a
+    /// fresh machine that just configured sync). The user must Pull first, so we
+    /// disable "Sync ↑" to stop stale/blank local state from overwriting the
+    /// newer backup.
+    private var mustPullFirst: Bool { settings.remoteIsNewer }
+
     /// True when the draft differs from the applied config (Save will change something).
     private var hasUnsavedChanges: Bool {
         draftProvider != settings.provider
@@ -280,6 +286,10 @@ struct SyncSectionView: View {
                 Spacer()
                 Button("Pull") { run("Pulled") { try await SyncEngine.pull(masterPassword: $0) } }
                 Button("Sync ↑") { run("Synced") { _ = try await SyncEngine.push(masterPassword: $0, force: true) } }
+                    .disabled(mustPullFirst)
+                    .help(mustPullFirst
+                          ? "The remote has newer data this device hasn't pulled yet. Press Pull first, then you can sync."
+                          : "Force-upload this device's settings, overwriting the remote.")
                 Button("Save") { save() }.keyboardShortcut(.defaultAction)
             }
             .disabled(busy)
@@ -370,6 +380,10 @@ struct SyncSectionView: View {
                     message = .success("Saved")
                     bump()
                 }
+                // Learn the remote's version now so "Sync ↑" is disabled right
+                // away if the remote already holds data we haven't pulled (a
+                // fresh machine must Pull first).
+                try? await SyncEngine.checkRemote()
                 if settings.isConfigured { SyncCoordinator.shared.scheduleAutoPush() }
             } catch {
                 await MainActor.run { message = .error(error.localizedDescription) }

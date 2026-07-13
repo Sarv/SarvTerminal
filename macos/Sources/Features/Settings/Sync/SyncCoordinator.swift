@@ -99,6 +99,13 @@ final class SyncCoordinator {
         // push once more when this one finishes.
         let canStart = await MainActor.run { () -> Bool in
             guard SyncSettings.shared.canSync, !isApplyingRemote else { return false }
+            // Never auto-push while the remote is known to be newer than what we
+            // last pulled: uploading now would overwrite unpulled data (the
+            // fresh-machine case — e.g. closing Settings right after configuring
+            // sync must NOT push blank local state). The user pulls first; then
+            // auto-push resumes. The engine enforces this too (belt-and-braces),
+            // but skipping here avoids a wasted, guaranteed-to-fail round-trip.
+            guard !SyncSettings.shared.remoteIsNewer else { return false }
             if isPushing { pendingPush = true; return false }
             isPushing = true
             SyncSettings.shared.beginSyncing()
@@ -110,6 +117,13 @@ final class SyncCoordinator {
             let pw = try await masterPassword()
             _ = try await SyncEngine.push(masterPassword: pw)
             await MainActor.run { SyncSettings.shared.lastError = nil }
+        } catch let error as SyncEngine.EngineError where error == .remoteHasUnpulledData {
+            // Not a failure — this device just hasn't pulled the remote's latest
+            // yet (e.g. a fresh machine that configured sync but hasn't pulled).
+            // Refresh the remote-version check so the UI flips to "Remote is
+            // newer — pull to update" instead of showing a scary error, and the
+            // blank local state is never uploaded over the real backup.
+            try? await SyncEngine.checkRemote()
         } catch {
             // Transient conflicts are handled internally — stay silent and let
             // the next sync resolve them. Only surface genuine errors.
