@@ -13,11 +13,17 @@ just by wiping the debug locations.
 
 | Data | Release app | Debug ("Sarv Terminal Dev") build |
 |---|---|---|
-| Ghostty terminal config | `~/.config/ghostty/config` | `~/.config/ghostty-dev/config` |
+| Terminal config | `~/.config/sarvterminal/config` | `~/.config/sarvterminal-dev/config` |
 | App data (hosts, groups, snippets, port-forwards, sync assets) | `~/.config/sarvterminal` | `~/.config/sarvterminal-dev` |
 | App preferences (`UserDefaults`) | `com.sarv.terminal` domain | `com.sarv.terminal.debug` domain |
 
 So the debug build **cannot touch your real data** — the isolation is built in.
+
+> **Note:** the terminal config now lives **inside** the app-data dir (`…/config`).
+> SarvTerminal no longer uses the shared `~/.config/ghostty/config`, so it never
+> collides with a co-installed Ghostty — and the whole debug instance is one dir
+> (`~/.config/sarvterminal-dev`). The sync feature reads/writes this same isolated
+> file, so a sync pull can never overwrite a real Ghostty install's config.
 
 ## Build & launch the debug build
 
@@ -28,17 +34,18 @@ So the debug build **cannot touch your real data** — the isolation is built in
 This builds **Sarv Terminal Dev** to `/tmp/SarvTerminal_Dev.app` and launches it
 (distinct name, icon, and bundle id so it never collides with the release app).
 
-## ⚠️ One gotcha: the debug config is re-seeded from your release config
+## ⚠️ One gotcha: the config is re-seeded from your existing config
 
-When `~/.config/ghostty-dev/config` is **missing**, the debug build **copies your
-release `~/.config/ghostty/config`** into it on launch, so the dev build starts usable.
-That means a plain `rm -rf ~/.config/ghostty-dev` does **not** give you a blank terminal
-config — it gets re-seeded (you'll see your real theme/font). To get a truly fresh
-config, **leave an empty config file** so the seed is skipped:
+When `~/.config/sarvterminal-dev/config` is **missing**, the debug build **seeds it on
+launch** — copying the first that exists of: an old `~/.config/ghostty-dev/config`, your
+release `~/.config/sarvterminal/config`, or the legacy `~/.config/ghostty/config` — so the
+dev build starts usable. That means a plain `rm -rf ~/.config/sarvterminal-dev` does **not**
+give you a blank terminal config — it gets re-seeded (you'll see your real theme/font). To
+get a truly fresh config, **leave an empty config file** so the seed is skipped:
 
 ```sh
-rm -rf ~/.config/ghostty-dev
-mkdir -p ~/.config/ghostty-dev && : > ~/.config/ghostty-dev/config
+rm -rf ~/.config/sarvterminal-dev
+mkdir -p ~/.config/sarvterminal-dev && : > ~/.config/sarvterminal-dev/config
 ```
 
 ## The round-trip test (push → wipe → pull)
@@ -52,20 +59,20 @@ Do the whole loop on the **debug build** — your release data is never involved
    and **push** (Sync ↑).
 3. **Back up** the debug instance (optional but recommended):
    ```sh
-   cp -R ~/.config/sarvterminal-dev ~/sarvterminal-dev.bak
-   cp -R ~/.config/ghostty-dev       ~/ghostty-dev.bak
+   cp -R ~/.config/sarvterminal-dev ~/sarvterminal-dev.bak   # includes the terminal config
    defaults export com.sarv.terminal.debug ~/sarv-debug-defaults.bak.plist
    ```
 4. **Wipe to a fresh "new machine"** (quit the dev app first):
    ```sh
    pkill -f "SarvTerminal_Dev.app/Contents/MacOS/SarvTerminalDev"
-   rm -rf ~/.config/sarvterminal-dev ~/.config/ghostty-dev
-   mkdir -p ~/.config/ghostty-dev && : > ~/.config/ghostty-dev/config
+   rm -rf ~/.config/sarvterminal-dev
+   mkdir -p ~/.config/sarvterminal-dev && : > ~/.config/sarvterminal-dev/config
    defaults delete com.sarv.terminal.debug 2>/dev/null
    defaults write com.sarv.terminal.debug SarvDidMigrateDefaults -bool true
    ```
-   The last line stops the app from re-importing legacy `com.mitchellh.ghostty`
-   preferences, so the instance is genuinely blank.
+   The empty `config` file stops the terminal-config re-seed; the last line stops the
+   app from re-importing legacy `com.mitchellh.ghostty` preferences — so the instance
+   is genuinely blank.
 5. **Relaunch** (`open -n /tmp/SarvTerminal_Dev.app`) → confirm it's empty: default
    theme, no hosts, no tunnels.
 6. **Configure sync** to the **same** repo/folder + master password → **pull**.
@@ -76,9 +83,8 @@ Do the whole loop on the **debug build** — your release data is never involved
 
 ```sh
 pkill -f "SarvTerminal_Dev.app/Contents/MacOS/SarvTerminalDev"
-rm -rf ~/.config/sarvterminal-dev ~/.config/ghostty-dev
+rm -rf ~/.config/sarvterminal-dev
 cp -R ~/sarvterminal-dev.bak ~/.config/sarvterminal-dev
-cp -R ~/ghostty-dev.bak       ~/.config/ghostty-dev
 defaults import com.sarv.terminal.debug ~/sarv-debug-defaults.bak.plist
 ```
 
