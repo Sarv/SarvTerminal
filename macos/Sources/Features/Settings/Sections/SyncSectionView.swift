@@ -84,6 +84,12 @@ struct SyncSectionView: View {
                     Text("Back up your terminal customization, keybinds, and saved hosts — encrypted with a master password — to GitHub or a synced folder.")
                         .font(.caption).foregroundStyle(.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
+                    HStack(alignment: .top, spacing: 5) {
+                        Image(systemName: "lock.display")
+                        Text("Secure Keyboard Entry (in the app menu) is a per-machine security setting and is **not** synced.")
+                    }
+                    .font(.caption).foregroundStyle(.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
