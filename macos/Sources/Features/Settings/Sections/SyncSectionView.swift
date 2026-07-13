@@ -229,7 +229,7 @@ struct SyncSectionView: View {
                 row("Update available") {
                     HStack(spacing: 8) {
                         Text("A newer version is in the remote.").font(.callout).foregroundStyle(.secondaryText)
-                        Button("Pull now") { run("Pulled") { try await SyncEngine.pull(masterPassword: $0) } }
+                        Button("Pull now") { run("Pulled", onSuccess: promptRestartAfterPull) { try await SyncEngine.pull(masterPassword: $0) } }
                             .controlSize(.small)
                     }
                 }
@@ -284,7 +284,7 @@ struct SyncSectionView: View {
                 }
                 if busy { ProgressView().controlSize(.small).padding(.leading, 4) }
                 Spacer()
-                Button("Pull") { run("Pulled") { try await SyncEngine.pull(masterPassword: $0) } }
+                Button("Pull") { run("Pulled", onSuccess: promptRestartAfterPull) { try await SyncEngine.pull(masterPassword: $0) } }
                 Button("Sync ↑") { run("Synced") { _ = try await SyncEngine.push(masterPassword: $0, force: true) } }
                     .disabled(mustPullFirst)
                     .help(mustPullFirst
@@ -394,7 +394,9 @@ struct SyncSectionView: View {
 
     /// Run an op that needs the master password (fetched from Keychain via
     /// biometric prompt off the main thread).
-    private func run(_ successLabel: String, _ op: @escaping (String) async throws -> Void) {
+    private func run(_ successLabel: String,
+                     onSuccess: (@MainActor () -> Void)? = nil,
+                     _ op: @escaping (String) async throws -> Void) {
         busy = true; message = nil; settings.isSyncing = true
         Task {
             do {
@@ -403,11 +405,29 @@ struct SyncSectionView: View {
                 }.value
                 SyncCoordinator.shared.cacheMasterPassword(pw)
                 try await op(pw)
-                await MainActor.run { message = .success(successLabel) }
+                await MainActor.run { message = .success(successLabel); onSuccess?() }
             } catch {
                 await MainActor.run { message = .error(error.localizedDescription) }
             }
             await MainActor.run { busy = false; settings.isSyncing = false }
+        }
+    }
+
+    /// After a manual pull, offer to relaunch. Most pulled settings apply live,
+    /// but some prefs are only read at launch (font weight, notifications,
+    /// hosts-UI, session restore), so a restart is recommended to fully reflect
+    /// everything that changed.
+    @MainActor
+    private func promptRestartAfterPull() {
+        SarvAlert.present(
+            title: "Sync Complete",
+            message: "Your settings were pulled from \(settings.provider.label).\n\nFor all changes to fully take effect, restarting SarvTerminal is recommended.",
+            buttons: [
+                SarvAlert.Button("Restart Now", isDefault: true),
+                SarvAlert.Button("Later", isCancel: true),
+            ]
+        ) { result in
+            if result.buttonIndex == 0 { AppRelaunch.now() }
         }
     }
 
