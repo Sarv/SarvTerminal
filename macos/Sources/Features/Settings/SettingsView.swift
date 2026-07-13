@@ -472,6 +472,9 @@ final class SettingsViewModel: ObservableObject {
             let bytes = Int(cur.scrollbackLimitMB * 1_000_000)
             editor.set("scrollback-limit", String(bytes))
         }
+        if cur.scrollbackCompression != was.scrollbackCompression {
+            editor.set("scrollback-compression", cur.scrollbackCompression ? "true" : "false")
+        }
         if cur.mouseHideWhileTyping != was.mouseHideWhileTyping {
             editor.set("mouse-hide-while-typing",
                        cur.mouseHideWhileTyping ? "true" : "false")
@@ -768,6 +771,7 @@ struct GeneralForm: Equatable {
     var confirmClose: ConfirmCloseOption
     var quitAfterLastWindowClosed: Bool
     var scrollbackLimitMB: Double          // expose as megabytes for usability
+    var scrollbackCompression: Bool
     var mouseHideWhileTyping: Bool
     var focusFollowsMouse: Bool
     var copyOnSelect: CopyOnSelectOption
@@ -787,6 +791,7 @@ struct GeneralForm: Equatable {
         self.quitAfterLastWindowClosed = config?.quitAfterLastWindowClosed ?? false
         let bytes = config?.scrollbackLimit ?? 10_000_000
         self.scrollbackLimitMB = Double(bytes) / 1_000_000
+        self.scrollbackCompression = config?.scrollbackCompression ?? true
         self.mouseHideWhileTyping = config?.mouseHideWhileTyping ?? false
         self.focusFollowsMouse = config?.focusFollowsMouse ?? false
         self.copyOnSelect = CopyOnSelectOption(rawValue: config?.copyOnSelect ?? "false") ?? .off
