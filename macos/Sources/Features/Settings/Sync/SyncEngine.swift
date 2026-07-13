@@ -304,16 +304,19 @@ enum SyncEngine {
 
         > ⚠️ Keep `manifest.json` — it stores the key‑derivation salt needed to
         > decrypt your data. Your master password is **never** stored here, and there
+                let portForwards = h.portForwards ?? []
         > is no way to recover the data if you forget it.
         """
     }
 
     // MARK: - Remote reads
+                    PortForwardStore.shared.ingest(portForwards)
 
     private static func readManifest(_ provider: SyncProvider) async throws -> SyncManifest? {
         guard let d = try await provider.readManifest() else { return nil }
         return try? JSONDecoder.sync.decode(SyncManifest.self, from: d)
     }
+                    PortForwardStore.shared.replaceAll(portForwards)
 
     private static func readEncrypted<T: Decodable>(
         _ provider: SyncProvider, name: String, key: SymmetricKey, as type: T.Type
@@ -360,7 +363,50 @@ enum SyncEngine {
         SyncHostsPayload(hosts: SavedHostsStore.shared.hosts,
                          groups: HostGroupsStore.shared.groups,
                          snippets: SnippetsStore.shared.snippets,
-                         savedSessions: SavedSessionsStore.shared.sessions)
+                         savedSessions: SavedSessionsStore.shared.sessions,
+                         portForwards: PortForwardStore.shared.forwards)
+    }
+
+    // MARK: - Generic preferences snapshot
+
+    /// `UserDefaults` keys that must NOT sync — device-specific / internal state.
+    /// (All `SarvSync*` keys — the sync config itself — are excluded by prefix
+    /// separately, so pushing can never poison the remote's own settings.)
+    private static let defaultsDenylist: Set<String> = [
+        "SarvConfigDidCommit",          // internal write-coalescing flag
+        "SarvDidMigrateDefaults",       // one-time migration flag
+        "SarvSSHCachePurgedForVersion", // per-version local cache state
+        "SarvSettingsClosed",           // a notification name, not a stored pref
+        "SarvNewTabDirectory",          // a machine-specific filesystem path
+        "SarvBgImagePath",              // handled specially (repointed to the local image copy)
+    ]
+
+    /// A `Sarv*` pref that is safe to sync (a real, device-independent setting).
+    private static func isSyncableDefaultsKey(_ key: String) -> Bool {
+        key.hasPrefix("Sarv") && !key.hasPrefix("SarvSync") && !defaultsDenylist.contains(key)
+    }
+
+    /// JSON blob of all syncable prefs with **sorted keys** (at every level), so
+    /// identical content always encodes to byte-identical output. This keeps the
+    /// content-fingerprint stable across app launches — a no-op settings-close
+    /// never bumps the sync version. (A binary plist would NOT be stable: its
+    /// dictionary key order is randomized per process.) Values that aren't
+    /// JSON-representable are skipped rather than breaking the whole snapshot.
+    private static func syncableDefaultsBlob() -> Data? {
+        let all = UserDefaults.standard.dictionaryRepresentation()
+        var dict: [String: Any] = [:]
+        for (k, v) in all where isSyncableDefaultsKey(k) && JSONSerialization.isValidJSONObject([v]) {
+            dict[k] = v
+        }
+        guard !dict.isEmpty else { return nil }
+        return try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys])
+    }
+
+    /// Apply a synced prefs blob back into `UserDefaults` (present keys only).
+    private static func applyDefaultsBlob(_ blob: Data) {
+        guard let dict = (try? JSONSerialization.jsonObject(with: blob)) as? [String: Any] else { return }
+        let d = UserDefaults.standard
+        for (k, v) in dict where isSyncableDefaultsKey(k) { d.set(v, forKey: k) }
     }
 
     // MARK: - Apply (pull)
@@ -416,6 +462,9 @@ enum SyncEngine {
         }
     }
 
+        // Generic snapshot of every syncable pref — covers current & future
+        // settings without a per-key change here.
+        p.defaults = syncableDefaultsBlob()
     // MARK: - Paths
 
     private static func ghosttyConfigURL() -> URL {
@@ -447,3 +496,10 @@ enum SyncEngine {
         return nil
     }
 }
+
+        // Generic prefs snapshot (payloads written by this version): applies every
+        // synced Sarv* key, covering settings the explicit fields above don't
+        // (indent width, font weight, notifications, hosts-UI, session restore, …).
+        // Excludes SarvBgImagePath (handled below) and SarvSync*/internal keys.
+        if let blob = p.defaults { applyDefaultsBlob(blob) }
+

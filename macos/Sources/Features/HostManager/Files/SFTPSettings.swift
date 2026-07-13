@@ -44,6 +44,22 @@ final class SFTPSettings: ObservableObject {
         baselineConfirmDelete = confirmDeleteValue
         baselineShowHidden = showHiddenValue
         baselineIndentWidth = indentWidthValue
+
+        // A sync pull writes these keys straight into UserDefaults, bypassing this
+        // in-memory singleton. Re-read them when a pull lands so pulled settings
+        // apply live (no app restart needed).
+        NotificationCenter.default.addObserver(
+            forName: .sarvSyncDidPull, object: nil, queue: .main
+        ) { [weak self] _ in self?.reloadFromDefaults() }
+    }
+
+    /// Re-read every setting from UserDefaults (called after a sync pull).
+    func reloadFromDefaults() {
+        let d = UserDefaults.standard
+        autoSave = d.bool(forKey: Keys.autoSave)
+        confirmDelete = d.object(forKey: Keys.confirmDelete) as? Bool ?? true
+        showHidden = d.object(forKey: Keys.showHidden) as? Bool ?? true
+        indentWidth = d.object(forKey: Keys.indentWidth) as? Int ?? Self.defaultIndentWidth
     }
 
     // MARK: - Baseline / revert / reset

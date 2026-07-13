@@ -47,6 +47,13 @@ struct SyncSettingsPayload: Codable {
     /// The background image bytes, so it survives across machines.
     var backgroundImage: BackgroundImageBlob?
 
+    /// Generic snapshot of ALL syncable `Sarv*` UserDefaults (a sorted, plist-
+    /// encoded blob). This is the source of truth going forward — it covers every
+    /// current and future preference automatically, so new settings never need a
+    /// per-key code change. The explicit fields above are kept only so payloads
+    /// written by this version can still be read by older app versions.
+    var defaults: Data?
+
     struct BackgroundImageBlob: Codable {
         var name: String
         var data: Data
@@ -57,7 +64,8 @@ struct SyncSettingsPayload: Codable {
     var isEmpty: Bool {
         ghosttyConfig == nil && bgShared == nil && bgImagePath == nil &&
         bgVisibility == nil && appKeybinds == nil && sftpAutoSave == nil &&
-        sftpConfirmDelete == nil && sftpShowHidden == nil && backgroundImage == nil
+        sftpConfirmDelete == nil && sftpShowHidden == nil && backgroundImage == nil &&
+        defaults == nil
     }
 }
 
@@ -67,9 +75,11 @@ struct SyncHostsPayload: Codable {
     var groups: [HostGroup]
     var snippets: [Snippet]?   // optional for back-compat with older payloads
     var savedSessions: [SavedSession]?   // optional for back-compat with older payloads
+    var portForwards: [PortForward]?   // optional for back-compat with older payloads
 
     var isEmpty: Bool {
-        hosts.isEmpty && groups.isEmpty && (snippets?.isEmpty ?? true) && (savedSessions?.isEmpty ?? true)
+        hosts.isEmpty && groups.isEmpty && (snippets?.isEmpty ?? true)
+            && (savedSessions?.isEmpty ?? true) && (portForwards?.isEmpty ?? true)
     }
 }
 
