@@ -6,7 +6,7 @@ import SwiftUI
 ///
 /// Discovery:
 /// - Built-in: `<bundle resources>/ghostty/themes/*`
-/// - User:     `$XDG_CONFIG_HOME/ghostty/themes/*` (or `~/.config/ghostty/themes/*`)
+/// - User:     `AppPaths.terminalThemesDir` (`~/.config/sarvterminal/themes/*`)
 ///
 /// Previews are parsed lazily on first popover open (async — UI stays
 /// responsive) and cached for the lifetime of the picker instance.
@@ -337,15 +337,9 @@ struct ThemePicker: View {
                 into: &byName
             )
         }
-        // User (user overrides built-in if same name)
-        let env = ProcessInfo.processInfo.environment
-        let baseDir: URL = {
-            if let xdg = env["XDG_CONFIG_HOME"], !xdg.isEmpty {
-                return URL(fileURLWithPath: xdg)
-            }
-            return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config")
-        }()
-        scan(baseDir.appendingPathComponent("ghostty/themes"), into: &byName)
+        // User (user overrides built-in if same name). Our ISOLATED themes dir
+        // (`sarvterminal/themes`), never the shared `ghostty/themes`.
+        scan(AppPaths.terminalThemesDir, into: &byName)
 
         return byName.values.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending

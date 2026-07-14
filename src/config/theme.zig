@@ -26,8 +26,15 @@ pub const Location = enum {
     ) error{OutOfMemory}!?[]const u8 {
         return switch (self) {
             .user => user: {
+                // SarvTerminal divergence: resolve user themes from our
+                // ISOLATED `sarvterminal/themes`, NOT the shared `ghostty/themes`,
+                // so a co-installed Ghostty never collides. The macOS app seeds
+                // this dir from the legacy `ghostty/themes` on first launch and
+                // agrees on this exact path (see AppPaths.terminalThemesDir).
+                // This literal MUST equal `AppIdentity.releaseConfigDirName` on
+                // the Swift side — if the app is renamed, change both.
                 const subdir = std.fs.path.join(arena_alloc, &.{
-                    "ghostty", "themes",
+                    "sarvterminal", "themes",
                 }) catch return error.OutOfMemory;
 
                 break :user internal_os.xdg.config(

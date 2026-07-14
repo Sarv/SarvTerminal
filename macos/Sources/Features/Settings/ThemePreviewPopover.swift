@@ -33,14 +33,8 @@ struct ThemePreviewButton: View {
 enum ThemeFileResolver {
     static func candidateURLs(for name: String) -> [URL] {
         var urls: [URL] = []
-        let env = ProcessInfo.processInfo.environment
-        let userBase: URL = {
-            if let xdg = env["XDG_CONFIG_HOME"], !xdg.isEmpty {
-                return URL(fileURLWithPath: xdg)
-            }
-            return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".config")
-        }()
-        urls.append(userBase.appendingPathComponent("ghostty/themes").appendingPathComponent(name))
+        // Our ISOLATED user themes dir (`sarvterminal/themes`), not `ghostty/themes`.
+        urls.append(AppPaths.terminalThemesDir.appendingPathComponent(name))
         if let resourcePath = Bundle.main.resourcePath {
             urls.append(URL(fileURLWithPath: resourcePath)
                 .appendingPathComponent("ghostty/themes")
