@@ -209,8 +209,8 @@ class AppDelegate: NSObject,
         #if !DEBUG
         AppPaths.migrateLegacyDefaultsIfNeeded()
         #endif
-        // Clear Ghostty's SSH terminfo cache once per version change so stale
-        // pre-1.8 entries can't force an unresolved `xterm-ghostty` TERM on
+        // Clear our (isolated) SSH terminfo cache once per version change so
+        // stale pre-1.8 entries can't force an unresolved `xterm-ghostty` TERM on
         // remotes (which breaks Ctrl+R). Runs for both debug and release.
         AppPaths.purgeStaleSSHTerminfoCacheOnUpgrade()
         #if DEBUG

@@ -17,9 +17,18 @@ const MAX_CACHE_SIZE = 512 * 1024;
 /// Path to a file where the cache is stored.
 path: []const u8,
 
+/// SarvTerminal divergence: the state-dir program name for the SSH terminfo
+/// cache. Upstream Ghostty uses `"ghostty"` (a dir shared with a co-installed
+/// Ghostty); we isolate to `"sarvterminal"` so the two apps never share
+/// `${XDG_STATE_HOME}/<program>/ssh_cache`. MUST equal the Swift side's
+/// `AppIdentity.releaseConfigDirName` (see `AppPaths.sshTerminfoCacheFile`).
+/// Every runtime `defaultPath` call passes this — do not hardcode a program
+/// name at the call sites.
+pub const default_program = "sarvterminal";
+
 /// Returns the default path for the cache for a given program.
 ///
-/// On all platforms, this is `${XDG_STATE_HOME}/ghostty/ssh_cache`.
+/// On all platforms, this is `${XDG_STATE_HOME}/<program>/ssh_cache`.
 ///
 /// The returned value is allocated and must be freed by the caller.
 pub fn defaultPath(
@@ -414,7 +423,7 @@ test "disk cache default path" {
     const testing = std.testing;
     const alloc = std.testing.allocator;
 
-    const path = try DiskCache.defaultPath(alloc, "ghostty");
+    const path = try DiskCache.defaultPath(alloc, DiskCache.default_program);
     defer alloc.free(path);
     try testing.expect(path.len > 0);
 }
