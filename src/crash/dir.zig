@@ -6,7 +6,9 @@ const internal_os = @import("../os/main.zig");
 /// Returns a Dir for the default directory. The Dir.path field must be
 /// freed with the given allocator.
 pub fn defaultDir(alloc: Allocator) !Dir {
-    const crash_dir = try internal_os.xdg.state(alloc, .{ .subdir = "ghostty/crash" });
+    // SarvTerminal divergence: isolate crash reports to our own state dir
+    // instead of the shared `ghostty/crash` (see UPSTREAM.md).
+    const crash_dir = try internal_os.xdg.state(alloc, .{ .subdir = "sarvterminal/crash" });
     errdefer alloc.free(crash_dir);
     return .{ .path = crash_dir };
 }

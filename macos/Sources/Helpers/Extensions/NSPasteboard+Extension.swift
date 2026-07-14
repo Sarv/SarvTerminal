@@ -27,9 +27,10 @@ extension NSPasteboard.PasteboardType {
 }
 
 extension NSPasteboard {
-    /// The pasteboard to used for Ghostty selection.
+    /// The pasteboard used for our selection. Named under our own bundle id so
+    /// it isn't shared OS-wide with a co-installed Ghostty's selection buffer.
     static var ghosttySelection: NSPasteboard = {
-        NSPasteboard(name: .init("com.mitchellh.ghostty.selection"))
+        NSPasteboard(name: .init("com.sarv.terminal.selection"))
     }()
 
     /// Gets the contents of the pasteboard as a string following a specific set of semantics.

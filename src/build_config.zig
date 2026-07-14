@@ -55,7 +55,13 @@ pub const i18n: bool = config.i18n;
 /// There are many places that don't use this variable so simply swapping
 /// this variable is NOT ENOUGH to change the bundle ID. I just wanted to
 /// avoid it in Zig coe as much as possible.
-pub const bundle_id = "com.mitchellh.ghostty";
+///
+/// SarvTerminal divergence: set to our real bundle id so the core's macOS
+/// App Support/Caches paths (e.g. the Sentry crash-DB cache) land under
+/// `com.sarv.terminal`, never the shared `com.mitchellh.ghostty`. This MUST
+/// stay in sync with the macOS `PRODUCT_BUNDLE_IDENTIFIER` and the i18n
+/// `domain` in `src/build/GhosttyI18n.zig`.
+pub const bundle_id = "com.sarv.terminal";
 
 /// True if we should have "slow" runtime safety checks. The initial motivation
 /// for this was terminal page/pagelist integrity checks. These were VERY

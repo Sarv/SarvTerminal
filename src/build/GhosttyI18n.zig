@@ -6,7 +6,11 @@ const Config = @import("Config.zig");
 const gresource = @import("../apprt/gtk/build/gresource.zig");
 const locales = @import("../os/i18n_locales.zig").locales;
 
-const domain = "com.mitchellh.ghostty";
+// SarvTerminal divergence: keep the gettext text-domain in sync with
+// `build_config.bundle_id` (`com.sarv.terminal`). Runtime binds the domain via
+// `build_config.bundle_id` (see src/os/i18n.zig), so the compiled `<domain>.mo`
+// filename must match it or translations silently fall back to English.
+const domain = "com.sarv.terminal";
 
 owner: *std.Build,
 steps: []*std.Build.Step,

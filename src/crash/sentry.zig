@@ -125,9 +125,13 @@ fn initThread(gpa: Allocator) !void {
             );
         }
 
+        // SarvTerminal divergence: isolated from the shared `ghostty/sentry`.
+        // (macOS uses the NSCachesDirectory branch above, scoped by
+        // `build_config.bundle_id` = `com.sarv.terminal`; this XDG path is the
+        // Linux/other fallback.)
         break :cache_dir try internal_os.xdg.cache(
             alloc,
-            .{ .subdir = "ghostty/sentry" },
+            .{ .subdir = "sarvterminal/sentry" },
         );
     };
     sentry.c.sentry_options_set_database_path_n(

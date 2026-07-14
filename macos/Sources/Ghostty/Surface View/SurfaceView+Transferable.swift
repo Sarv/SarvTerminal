@@ -47,7 +47,12 @@ extension Ghostty.SurfaceView: Transferable {
 extension UTType {
     /// A format that encodes the bare UUID only for the surface. This can be used if you have
     /// a way to look up a surface by ID.
-    static let ghosttySurfaceId = UTType(exportedAs: "com.mitchellh.ghosttySurfaceId")
+    ///
+    /// The exported UTI is under OUR bundle id (`com.sarv.terminal.surfaceId`), NOT
+    /// the shared `com.mitchellh.ghosttySurfaceId`, so a co-installed Ghostty and
+    /// SarvTerminal never register the same system-wide type. (The Swift symbol
+    /// name stays `ghosttySurfaceId` — it's internal and not an OS identifier.)
+    static let ghosttySurfaceId = UTType(exportedAs: "com.sarv.terminal.surfaceId")
 }
 
 #if canImport(AppKit)
