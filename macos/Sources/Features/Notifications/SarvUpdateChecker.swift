@@ -29,7 +29,7 @@ final class SarvUpdateChecker {
     private static let interval: TimeInterval = 60 * 60 // 1 hour
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.sarv.terminal",
+        subsystem: AppIdentity.bundleID,
         category: "update-checker"
     )
 

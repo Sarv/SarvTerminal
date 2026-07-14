@@ -10,14 +10,9 @@ enum AppPaths {
     /// `~/.config/sarvterminal` (release) or `~/.config/sarvterminal-dev` (debug).
     /// The directory is created if it doesn't exist.
     static var configDir: URL {
-        #if DEBUG
-        let name = "sarvterminal-dev"
-        #else
-        let name = "sarvterminal"
-        #endif
         let dir = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".config", isDirectory: true)
-            .appendingPathComponent(name, isDirectory: true)
+            .appendingPathComponent(AppIdentity.configDirName, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -38,13 +33,8 @@ enum AppPaths {
     /// their settings. This is the single source of truth — EVERY reader/writer of
     /// the terminal config must use it (never re-derive the path by hand).
     static var ghosttyConfigFile: URL {
-        #if DEBUG
-        let dirName = "sarvterminal-dev"
-        #else
-        let dirName = "sarvterminal"
-        #endif
         let file = xdgConfigBaseDir
-            .appendingPathComponent(dirName, isDirectory: true)
+            .appendingPathComponent(AppIdentity.configDirName, isDirectory: true)
             .appendingPathComponent("config")
         seedTerminalConfigIfNeeded(file)
         return file
@@ -55,8 +45,45 @@ enum AppPaths {
     /// never write here, so a real Ghostty install is left untouched.
     private static var legacyGhosttyConfigFile: URL {
         xdgConfigBaseDir
-            .appendingPathComponent("ghostty", isDirectory: true)
+            .appendingPathComponent(AppIdentity.legacyReleaseConfigDirName, isDirectory: true)
             .appendingPathComponent("config")
+    }
+
+    /// The user **themes** directory the terminal core resolves `theme = <name>`
+    /// against — kept in our OWN `sarvterminal/themes`, NOT the shared
+    /// `ghostty/themes`, so a co-installed Ghostty never collides.
+    ///
+    /// UNLIKE the config file this is NOT build-split: the Zig core resolves a
+    /// single hardcoded `sarvterminal/themes` (see `src/config/theme.zig`), and
+    /// Swift must agree with it, so debug and release share this dir. That's fine
+    /// — themes are read-only user assets, not settings that dev/release diverge
+    /// on. Seeded once from the legacy `ghostty/themes` so users who had custom
+    /// themes keep them (the source is copied, never moved/deleted).
+    static var terminalThemesDir: URL {
+        // Uses the RELEASE dir name (not the build-split `configDirName`): the
+        // Zig core resolves a single hardcoded path, so both builds must agree
+        // on `<releaseConfigDirName>/themes`.
+        let dir = xdgConfigBaseDir
+            .appendingPathComponent(AppIdentity.releaseConfigDirName, isDirectory: true)
+            .appendingPathComponent("themes", isDirectory: true)
+        seedTerminalThemesIfNeeded(dir)
+        return dir
+    }
+
+    /// The legacy shared Ghostty themes dir — first-launch seed source only.
+    private static var legacyGhosttyThemesDir: URL {
+        xdgConfigBaseDir
+            .appendingPathComponent(AppIdentity.legacyReleaseConfigDirName, isDirectory: true)
+            .appendingPathComponent("themes", isDirectory: true)
+    }
+
+    /// Default location for a user-supplied custom app icon when
+    /// `macos-custom-icon` is unset — isolated at `sarvterminal/Ghostty.icns`
+    /// (release) / `sarvterminal-dev/Ghostty.icns` (debug), NOT `ghostty/`.
+    static var terminalCustomIconFile: URL {
+        xdgConfigBaseDir
+            .appendingPathComponent(AppIdentity.configDirName, isDirectory: true)
+            .appendingPathComponent("Ghostty.icns")
     }
 
     /// `$XDG_CONFIG_HOME` if set, otherwise `~/.config`.
@@ -80,13 +107,16 @@ enum AppPaths {
             .appendingPathComponent("state", isDirectory: true)
     }
 
-    /// Ghostty's SSH terminfo cache: `<state>/ghostty/ssh_cache`. Records remote
-    /// hosts where `xterm-ghostty` terminfo was installed. Written by the core
-    /// CLI (keyed by program name `ghostty`), so it is shared across debug and
-    /// release builds — deliberately NOT namespaced per build.
+    /// Our ISOLATED SSH terminfo cache: `<state>/sarvterminal/ssh_cache`.
+    /// Records remote hosts where `xterm-ghostty` terminfo was installed. Written
+    /// by the core CLI (`+ssh` / `+ssh-cache`), which we diverged to key on
+    /// `DiskCache.default_program` = `"sarvterminal"` (NOT the shared `ghostty`),
+    /// so a co-installed Ghostty never shares this cache. Uses the RELEASE dir
+    /// name (not build-split) because the core hardcodes a single program name —
+    /// this MUST equal `DiskCache.default_program` in the Zig core.
     static var sshTerminfoCacheFile: URL {
         xdgStateBaseDir
-            .appendingPathComponent("ghostty", isDirectory: true)
+            .appendingPathComponent(AppIdentity.releaseConfigDirName, isDirectory: true)
             .appendingPathComponent("ssh_cache")
     }
 
@@ -119,9 +149,9 @@ enum AppPaths {
         var sources: [URL] = []
         #if DEBUG
         // Keep an existing dev config; otherwise fall back to the release app's.
-        sources.append(xdgConfigBaseDir.appendingPathComponent("ghostty-dev", isDirectory: true)
+        sources.append(xdgConfigBaseDir.appendingPathComponent(AppIdentity.legacyDebugConfigDirName, isDirectory: true)
             .appendingPathComponent("config"))
-        sources.append(xdgConfigBaseDir.appendingPathComponent("sarvterminal", isDirectory: true)
+        sources.append(xdgConfigBaseDir.appendingPathComponent(AppIdentity.releaseConfigDirName, isDirectory: true)
             .appendingPathComponent("config"))
         #endif
         sources.append(legacyGhosttyConfigFile) // the old shared ~/.config/ghostty/config
@@ -131,6 +161,23 @@ enum AppPaths {
             return
         }
         fm.createFile(atPath: dest.path, contents: nil)
+    }
+
+    /// One-time seed of our isolated themes dir from the legacy shared
+    /// `ghostty/themes`, so users who kept custom themes there don't see
+    /// `theme = <name>` break after isolation. Copies the whole directory and
+    /// NEVER touches the source — a co-installed Ghostty keeps its themes.
+    /// No-op once our themes dir exists.
+    private static func seedTerminalThemesIfNeeded(_ dest: URL) {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: dest.path) else { return }
+        try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let legacy = legacyGhosttyThemesDir
+        if fm.fileExists(atPath: legacy.path) {
+            try? fm.copyItem(at: legacy, to: dest)
+        } else {
+            try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        }
     }
 
     /// One-time migration of preferences from the old `com.mitchellh.ghostty*`
@@ -144,7 +191,7 @@ enum AppPaths {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: "SarvDidMigrateDefaults") else { return }
         let current = Bundle.main.bundleIdentifier ?? ""
-        for domain in ["com.mitchellh.ghostty.debug", "com.mitchellh.ghostty"] where domain != current {
+        for domain in AppIdentity.legacyBundleIDs where domain != current {
             guard let dict = defaults.persistentDomain(forName: domain), !dict.isEmpty else { continue }
             for (key, value) in dict where defaults.object(forKey: key) == nil {
                 defaults.set(value, forKey: key)

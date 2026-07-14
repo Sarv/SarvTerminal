@@ -48,7 +48,7 @@ final class SarvNotifications {
     static let shared = SarvNotifications()
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.sarv.terminal",
+        subsystem: AppIdentity.bundleID,
         category: "notifications"
     )
 

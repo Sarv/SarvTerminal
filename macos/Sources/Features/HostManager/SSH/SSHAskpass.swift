@@ -32,8 +32,7 @@ enum SSHAskpass {
     private static func supportDirectory() -> URL? {
         guard let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.mitchellh.ghostty"
-        return base.appendingPathComponent(bundleID, isDirectory: true)
+        return base.appendingPathComponent(AppIdentity.bundleID, isDirectory: true)
     }
 
     /// Environment variables to set on an ssh surface so it reads `password`
