@@ -298,7 +298,10 @@ pub const Transport = struct {
         // Build our final path and write to it.
         const path = try std.fs.path.join(alloc, &.{
             dir.path,
-            try std.fmt.allocPrint(alloc, "{s}.ghosttycrash", .{uuid.string()}),
+            // SarvTerminal divergence: our own crash-report extension (upstream
+            // uses `.ghosttycrash`). The reader iterates all files in the crash
+            // dir (see crash/dir.zig), so the extension is free to change.
+            try std.fmt.allocPrint(alloc, "{s}.sarvcrash", .{uuid.string()}),
         });
         const file = try std.fs.cwd().createFile(path, .{});
         defer file.close();

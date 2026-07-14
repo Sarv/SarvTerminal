@@ -293,7 +293,8 @@ re-apply if an upstream refactor drops it.
   - `src/crash/dir.zig` — **guarded core file.** crash reports subdir
     `"sarvterminal/crash"`, not `"ghostty/crash"`.
   - `src/crash/sentry.zig` — **guarded core file.** XDG cache fallback subdir
-    `"sarvterminal/sentry"` (macOS uses the NSCaches branch, scoped by `bundle_id`).
+    `"sarvterminal/sentry"` (macOS uses the NSCaches branch, scoped by `bundle_id`);
+    crash-report file extension is `.sarvcrash`, not `.ghosttycrash`.
   - `macos/Sources/Helpers/Extensions/NSPasteboard+Extension.swift` — the selection
     pasteboard is named `com.sarv.terminal.selection`, not the ghostty name.
 
