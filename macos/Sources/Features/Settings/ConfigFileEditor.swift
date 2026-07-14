@@ -1,6 +1,7 @@
 import Foundation
 
-/// Line-based editor for `~/.config/ghostty/config`.
+/// Line-based editor for our isolated terminal config
+/// (`AppPaths.ghosttyConfigFile`, i.e. `~/.config/sarvterminal/config`).
 ///
 /// Design choices:
 /// - **In-place edit**, not full rewrite. We respect the user's existing

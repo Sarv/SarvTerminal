@@ -5,7 +5,7 @@ import SwiftUI
 /// **B.1 scope (current):** background color / opacity / blur + window theme.
 /// **B.1.1 follow-up:** theme picker (with discovery of built-in + user themes),
 /// foreground / cursor / selection color overrides, palette editor.
-/// **B.3:** Save actually writes these to `~/.config/ghostty/config` and reloads.
+/// **B.3:** Save actually writes these to `~/.config/sarvterminal/config` and reloads.
 struct AppearanceSectionView: View {
     @ObservedObject var viewModel: SettingsViewModel
 

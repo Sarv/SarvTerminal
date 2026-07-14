@@ -187,7 +187,7 @@ Identity references its secret by ID only. The plaintext model never contains th
 ### On-disk structure
 
 ```
-~/Library/Application Support/com.mitchellh.ghostty/host-manager/
+~/Library/Application Support/com.sarv.terminal/host-manager/
 ├── plaintext.json          ← non-sensitive: hosts, groups, identities (metadata only), tags
 ├── vault/                  ← encrypted secrets
 │   ├── meta.enc            ← verifier blob + KDF params (proves correct master pw)
@@ -231,9 +231,9 @@ Single JSON document. Pretty-printed for git diff readability.
 
 | Service | Account | Purpose | Access |
 |---|---|---|---|
-| `com.mitchellh.ghostty.hostmgr` | `master-password` | The master pw, after first manual entry | biometryCurrentSet |
-| `com.mitchellh.ghostty.hostmgr` | `git-pat` | GitHub/GitLab PAT for sync | biometryCurrentSet |
-| `com.mitchellh.ghostty.hostmgr` | `key-passphrase-<identity-id>` | SSH key passphrase | biometryCurrentSet |
+| `com.sarv.terminal.hostmgr` | `master-password` | The master pw, after first manual entry | biometryCurrentSet |
+| `com.sarv.terminal.hostmgr` | `git-pat` | GitHub/GitLab PAT for sync | biometryCurrentSet |
+| `com.sarv.terminal.hostmgr` | `key-passphrase-<identity-id>` | SSH key passphrase | biometryCurrentSet |
 
 All entries use `kSecAccessControlBiometryCurrentSet | kSecAccessControlOr | kSecAccessControlDevicePasscode` so Touch ID unlocks them, falling back to device passcode.
 

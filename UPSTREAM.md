@@ -207,22 +207,95 @@ re-apply if an upstream refactor drops it.
 - **What we do:** read/write our terminal config ONLY at `~/.config/sarvterminal/config`
   (release) / `~/.config/sarvterminal-dev/config` (debug), seeded once from the legacy
   `~/.config/ghostty/config`. We deliberately do NOT call `ghostty_config_load_default_files`.
+- **Rename knob:** `macos/Sources/Helpers/AppIdentity.swift` — OURS. SINGLE
+  source of truth for the on-disk dir names (`sarvterminal[-dev]`), the legacy
+  seed dirs (`ghostty[-dev]`), and the bundle-id accessor + legacy migration
+  domains. Rename the app = change these constants (plus the one mirrored Zig
+  literal in `src/config/theme.zig`; see 8.2). NOTE: Keychain service names and
+  UserDefaults suite names are deliberately NOT here — they are frozen storage
+  keys, and rewiring them to the rename knob would orphan users' saved secrets.
 - **Anchors to preserve:**
   - `macos/Sources/Helpers/AppPaths.swift` — OURS (not an upstream file → no merge
-    risk). Owns `ghosttyConfigFile` (sarv dir) + `seedTerminalConfigIfNeeded`.
+    risk). Owns `ghosttyConfigFile` (sarv dir) + `seedTerminalConfigIfNeeded`,
+    plus `terminalThemesDir`/`seedTerminalThemesIfNeeded` and
+    `terminalCustomIconFile` (see 8.2). All dir names come from `AppIdentity`.
   - `macos/Sources/Ghostty/Ghostty.Config.swift` — **guarded upstream file.**
     `loadUserBaseConfig(into:)` must call `ghostty_config_load_file(cfg,
     AppPaths.ghosttyConfigFile.path)` and must NOT be reverted to
     `ghostty_config_load_default_files(cfg)`. ← re-check this after every sync.
-- **Known residuals — read-only, no write collision, left shared on purpose:**
-  - Custom user themes still resolve (via the core) from `~/.config/ghostty/themes`.
-  - The custom app-icon default still points at `~/.config/ghostty/Ghostty.icns`
-    (`Ghostty.Config.swift` ~L430).
-  - SSH terminfo cache `~/.local/state/ghostty/ssh_cache` + the `xterm-ghostty`
-    terminfo entry stay shared (compatibility-desirable).
-  - Fully isolating those too would mean changing the core's `"ghostty"` XDG subdir
-    in `src/os/xdg.zig` + `src/config/Config.zig` — **deferred** (bigger core
-    divergence; not needed to stop the config-file write collision).
+  - `macos/Sources/Ghostty/Ghostty.App.swift` — **guarded upstream file.**
+    `openConfig()` must open `AppPaths.ghosttyConfigFile.path`, NOT the core's
+    `ghostty_config_open_path()` (which resolves to `~/.config/ghostty/config`
+    for anyone who has one). Covers both the "Open Configuration File" menu and
+    the in-terminal `open_config` action.
+- **No known residuals.** The SSH terminfo cache is now isolated too (see 8.3).
+  The `xterm-ghostty` terminfo NAME installed on remotes stays shared (it's the
+  `TERM` value — a protocol identity, not a local file), but our local cache of
+  "which host already has it" is no longer shared.
+
+### 8.2 Isolated user **themes** dir + custom-icon default (core divergence)
+- **Why:** with `theme = <name>` in our config, the *core* resolves the theme file
+  from a user themes dir. Leaving that at the shared `~/.config/ghostty/themes`
+  meant we still read out of a co-installed Ghostty's dir. Full isolation moves it
+  to `~/.config/sarvterminal/themes`.
+- **What we do:** the core resolves user themes from `sarvterminal/themes`, and the
+  macOS app seeds that dir once from the legacy `ghostty/themes` (copy, never move)
+  so existing custom themes keep working. NOT build-split — the core hardcodes one
+  path, so debug + release share `sarvterminal/themes` (themes are read-only assets).
+- **Anchors to preserve:**
+  - `src/config/theme.zig` — **guarded core file.** `Location.dir` for `.user`
+    must join `{"sarvterminal", "themes"}`, NOT `{"ghostty", "themes"}`.
+    ← re-check after every sync (upstream will show `"ghostty"`). This `"sarvterminal"`
+    literal MUST equal `AppIdentity.releaseConfigDirName` on the Swift side.
+  - `macos/Sources/Features/Settings/ThemePicker.swift` and
+    `.../ThemePreviewPopover.swift` (`ThemeFileResolver`) — the Swift theme
+    discovery/preview must read `AppPaths.terminalThemesDir`, matching the core.
+  - `macos/Sources/Ghostty/Ghostty.Config.swift` — `macosCustomIcon` default is
+    `AppPaths.terminalCustomIconFile.path` (`sarvterminal/Ghostty.icns`), not
+    `~/.config/ghostty/Ghostty.icns`.
+
+### 8.3 Isolated SSH terminfo cache (core divergence)
+- **Why:** the bundled `+ssh` wrapper records "host X already has `xterm-ghostty`
+  terminfo" in `${XDG_STATE_HOME}/<program>/ssh_cache`. Upstream keys it on
+  `"ghostty"`, sharing the file with a co-installed Ghostty (and our upgrade-purge
+  would delete that shared file). We key it on `"sarvterminal"` instead. The
+  terminfo NAME on remotes stays `xterm-ghostty` (that's the `TERM` protocol
+  value, deliberately unchanged); only the LOCAL cache path is isolated. Existing
+  users' caches are NOT migrated — the cache self-heals on the next SSH, and NOT
+  copying avoids dragging any stale pre-1.8 entries into the fresh cache.
+- **Anchors to preserve:**
+  - `src/cli/ssh-cache/DiskCache.zig` — **guarded core file.** Defines
+    `pub const default_program = "sarvterminal"` (upstream has no such constant
+    and hardcodes `"ghostty"`). MUST equal `AppIdentity.releaseConfigDirName`.
+  - `src/cli/ssh.zig` and `src/cli/ssh_cache.zig` — **guarded core files.** Both
+    `DiskCache.defaultPath(alloc, …)` calls must pass `DiskCache.default_program`,
+    NOT the literal `"ghostty"`. ← re-check after every sync.
+  - `macos/Sources/Helpers/AppPaths.swift` — `sshTerminfoCacheFile` uses
+    `AppIdentity.releaseConfigDirName`, matching the core.
+
+### 8.4 Core bundle id + crash dirs + selection pasteboard (core divergence)
+- **Why:** the core's `build_config.bundle_id` was `com.mitchellh.ghostty`, so any
+  macOS App Support/Caches path it derives (live one: the Sentry crash-DB cache,
+  written every launch) landed under a dir shared with a co-installed Ghostty.
+  Crash reports and the selection pasteboard were likewise ghostty-named.
+- **What we do:** point them all at our own name. NOTE: this does NOT touch sync —
+  the Swift Keychain service names (`com.sarv.terminal.*`) are independent hardcoded
+  literals, and the macOS bundle id is set by Xcode `PRODUCT_BUNDLE_IDENTIFIER`
+  (already `com.sarv.terminal`), not by this Zig constant.
+- **Anchors to preserve:**
+  - `src/build_config.zig` — **guarded core file.** `bundle_id = "com.sarv.terminal"`
+    (upstream has `"com.mitchellh.ghostty"`). ← re-check after every sync.
+  - `src/build/GhosttyI18n.zig` — **guarded core file.** `domain` must equal
+    `bundle_id` (`"com.sarv.terminal"`), and `po/<domain>.pot` is renamed to match,
+    so the compiled `<domain>.mo` matches the runtime `bindtextdomain(bundle_id)`
+    (else core gettext strings fall back to English — only affects GTK/Linux; macOS
+    doesn't call core `_()`).
+  - `src/crash/dir.zig` — **guarded core file.** crash reports subdir
+    `"sarvterminal/crash"`, not `"ghostty/crash"`.
+  - `src/crash/sentry.zig` — **guarded core file.** XDG cache fallback subdir
+    `"sarvterminal/sentry"` (macOS uses the NSCaches branch, scoped by `bundle_id`).
+  - `macos/Sources/Helpers/Extensions/NSPasteboard+Extension.swift` — the selection
+    pasteboard is named `com.sarv.terminal.selection`, not the ghostty name.
 
 ### Upstream activity on our guarded **core** files (base → tip, at last check)
 

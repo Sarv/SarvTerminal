@@ -1106,7 +1106,7 @@ enum BackgroundBlurOption: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// The string we'd emit into ~/.config/ghostty/config for this option.
+    /// The string we'd emit into our terminal config (`~/.config/sarvterminal/config`) for this option.
     /// Used by B.3's save logic.
     var configValue: String {
         switch self {
@@ -1576,7 +1576,7 @@ private struct SectionPlaceholderView: View {
     private var stubBody: String {
         """
         Form controls for \(section.title.lowercased()) options will land in a follow-up \
-        iteration. For now, edit `~/.config/ghostty/config` and press ⌘⇧, to reload.
+        iteration. For now, edit `~/.config/sarvterminal/config` and press ⌘⇧, to reload.
 
         Run `ghostty +show-config --docs` in a terminal to see every available option \
         with documentation.
