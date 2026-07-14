@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sarv Terminal 1.9.2</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Sarv Terminal 1.9.2</h1>
+  <div class="meta">Improvements &amp; fixes</div>
+  <h2>Core</h2>
+  <ul>
+    <li>name crash reports .sarvcrash instead of ghostty's extension</li>
+    <li>isolate bundle id, crash dirs, surface uti, and selection pasteboard from ghostty</li>
+  </ul>
+  <h2>SSH</h2>
+  <ul>
+    <li>isolate the ssh terminfo cache from a co-installed ghostty</li>
+  </ul>
+  <h2>Config</h2>
+  <ul>
+    <li>isolate user themes and custom-icon path from a co-installed ghostty</li>
+    <li>open the isolated config file, not a co-installed ghostty's</li>
+    <li>isolate terminal config from a co-installed Ghostty</li>
+  </ul>
+  <h2>Settings</h2>
+  <ul>
+    <li>add scrollback compression toggle</li>
+  </ul>
+  <h2>Colorize</h2>
+  <ul>
+    <li>adapt to new PageList.Node union API</li>
+  </ul>
+</body>
+</html>
