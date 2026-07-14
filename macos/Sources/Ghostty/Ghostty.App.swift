@@ -125,7 +125,14 @@ extension Ghostty {
         }
 
         func openConfig() {
-            let str = configPath ?? Ghostty.AllocatedString(ghostty_config_open_path()).string
+            // Open OUR isolated config (`sarvterminal[-dev]/config`), NOT the
+            // core's `ghostty_config_open_path()` (`~/.config/ghostty/config`).
+            // The app reads only the isolated file, so sending the user to edit
+            // the shared Ghostty file would silently drop their edits and write
+            // into the directory we deliberately isolate from. Accessing
+            // `AppPaths.ghosttyConfigFile` also seeds/creates the file so the
+            // editor has something to open.
+            let str = configPath ?? AppPaths.ghosttyConfigFile.path
             guard !str.isEmpty else { return }
             #if os(macOS)
             let fileURL = URL(fileURLWithPath: str).absoluteString
