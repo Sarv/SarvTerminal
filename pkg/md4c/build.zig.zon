@@ -1,0 +1,19 @@
+.{
+    .name = .md4c,
+    .version = "0.5.2",
+    .fingerprint = 0xc847502bd760ee04,
+    .paths = .{""},
+    .dependencies = .{
+        // mity/md4c — CommonMark + GFM markdown parser and HTML renderer (C, MIT).
+        // Used in production by Qt and LibreOffice. Vendored here for the future
+        // in-app Markdown viewer (see ROADMAP.md); the source is fetched, not
+        // committed, matching the other pkg/ wrappers.
+        .md4c = .{
+            .url = "https://github.com/mity/md4c/archive/refs/tags/release-0.5.2.tar.gz",
+            .hash = "N-V-__8AABchEAAlECji-MmwhoTDo_4aoyB1HkgVStV-vfho",
+            .lazy = true,
+        },
+
+        .apple_sdk = .{ .path = "../apple-sdk" },
+    },
+}
