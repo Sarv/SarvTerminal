@@ -228,13 +228,34 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
 
     // MARK: - NSWindowDelegate
 
-    // The red button quits the app, same as ⌘Q. We route through
-    // NSApp.terminate (not a bare window close) so the standard
-    // applicationShouldTerminate flow runs — including the running-process
-    // confirmation — instead of silently hiding the window. Returning false
-    // means if the user cancels that confirmation, the window stays put.
+    // The red button quits the app, same as ⌘Q. If any session still has a
+    // running process (an agent like Claude, an SSH connection, a long-running
+    // command…), we confirm first so the user doesn't kill it by accident. We
+    // check here rather than relying on the app's standard quit confirmation:
+    // that path only inspects `BaseTerminalController` windows, but our terminals
+    // are embedded in this `HostManagerController` window, so it never sees them.
+    // Always returns false — quitting is driven by NSApp.terminate below.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        NSApp.terminate(nil)
+        let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty
+
+        // Nothing running → quit immediately (plain ⌘Q semantics).
+        guard ghostty?.needsConfirmQuit ?? false else {
+            NSApp.terminate(nil)
+            return false
+        }
+
+        // Something is running → confirm before terminating. `present` defers a
+        // runloop turn so the modal is responsive from this delegate callback.
+        SarvAlert.present(
+            title: "Quit Sarv Terminal?",
+            message: "A terminal session still has a running process (e.g. an agent or SSH connection). If you quit, it will be terminated.",
+            buttons: [
+                .init("Quit", isDestructive: true),
+                .init("Cancel", isCancel: true),
+            ]
+        ) { result in
+            if result.buttonIndex == 0 { NSApp.terminate(nil) }
+        }
         return false
     }
 }
