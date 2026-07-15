@@ -305,6 +305,19 @@ pub fn add(
         }
     }
 
+    // md4c (Markdown → HTML for the in-app Markdown viewer; see ROADMAP.md)
+    if (b.lazyDependency("md4c", .{
+        .target = target,
+        .optimize = optimize,
+    })) |md4c_dep| {
+        step.root_module.addImport("md4c", md4c_dep.module("md4c"));
+        step.linkLibrary(md4c_dep.artifact("md4c"));
+        try static_libs.append(
+            b.allocator,
+            md4c_dep.artifact("md4c").getEmittedBin(),
+        );
+    }
+
     // Glslang
     if (b.lazyDependency("glslang", .{
         .target = target,

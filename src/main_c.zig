@@ -156,6 +156,14 @@ pub export fn ghostty_string_free(str: String) void {
     str.deinit();
 }
 
+/// Render Markdown (UTF-8) to sanitized HTML (UTF-8, GFM dialect, raw HTML
+/// disabled). Returns an empty string on failure. The result must be freed with
+/// ghostty_string_free.
+pub export fn ghostty_markdown_to_html(md: [*]const u8, len: usize) String {
+    const html = @import("markdown.zig").toHtml(state.alloc, md[0..len]) catch return .empty;
+    return String.fromSlice(html);
+}
+
 // On Windows, Zig's _DllMainCRTStartup does not initialize the MSVC C
 // runtime when targeting MSVC ABI. Without initialization, any C library
 // function that depends on CRT internal state (setlocale, malloc from C
