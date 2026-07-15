@@ -636,12 +636,14 @@ final class VaultsTabsModel: ObservableObject {
         // it rather than typing `cd` afterwards — a typed `cd` races the shell's
         // login startup (profile scripts, dotenv prompts) and gets lost.
         let surface: Ghostty.SurfaceView = {
-            if let workingDirectory, !workingDirectory.isEmpty {
-                var cfg = Ghostty.SurfaceConfiguration()
-                cfg.workingDirectory = workingDirectory
-                return Ghostty.SurfaceView(app, baseConfig: cfg)
-            }
-            return Ghostty.SurfaceView(app)
+            var cfg = Ghostty.SurfaceConfiguration()
+            // Always pass an explicit cwd. Without one, the core spawns the shell
+            // in the APP PROCESS's directory (e.g. `/` or the config dir) instead
+            // of the user's — so fall back to the configured new-tab directory
+            // (home by default).
+            cfg.workingDirectory = (workingDirectory.flatMap { $0.isEmpty ? nil : $0 })
+                ?? Self.newTabWorkingDirectory
+            return Ghostty.SurfaceView(app, baseConfig: cfg)
         }()
         let tab = TerminalTab(surface: surface, name: uniqueTabName(base: name))
         tab.launchCommand = command
@@ -949,7 +951,12 @@ final class VaultsTabsModel: ObservableObject {
               let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
         let anchor = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf()
         guard let anchor else { return }
-        let newView = Ghostty.SurfaceView(app)
+        // Inherit the directory of the pane we split from so the new shell opens
+        // in the same place (e.g. your project dir), falling back to the new-tab
+        // directory — never the app process's cwd (`/` or the config dir).
+        var cfg = Ghostty.SurfaceConfiguration()
+        cfg.workingDirectory = anchor.pwd ?? Self.newTabWorkingDirectory
+        let newView = Ghostty.SurfaceView(app, baseConfig: cfg)
         guard let newTree = try? tab.surfaceTree.inserting(view: newView, at: anchor, direction: direction) else { return }
         tab.surfaceTree = newTree
         // Don't steal focus to the surface — the chooser overlay wants it.
