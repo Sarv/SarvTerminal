@@ -228,13 +228,13 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
 
     // MARK: - NSWindowDelegate
 
-    // Vaults is the home window, so the red button doesn't destroy it (that
-    // would kill every running session). Instead it hides the app — the window
-    // disappears but sessions keep running; click the Dock icon to bring it
-    // back. Returning false keeps the window object alive behind the hide.
-    // (To fully quit, use ⌘Q.)
+    // The red button quits the app, same as ⌘Q. We route through
+    // NSApp.terminate (not a bare window close) so the standard
+    // applicationShouldTerminate flow runs — including the running-process
+    // confirmation — instead of silently hiding the window. Returning false
+    // means if the user cancels that confirmation, the window stays put.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        NSApp.hide(nil)
+        NSApp.terminate(nil)
         return false
     }
 }
