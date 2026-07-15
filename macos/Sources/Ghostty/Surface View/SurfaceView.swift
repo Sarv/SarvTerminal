@@ -140,12 +140,21 @@ extension Ghostty {
                 .zIndex(1)
 #endif
 
-                VStack(spacing: 0) {
-                    // If we have a URL from hovering a link, we show that.
-                    if let url = surfaceView.hoverUrl {
-                        URLHoverBanner(url: url)
+                // "⌘ click to open" hint pinned next to the cursor while a link
+                // is hovered. mouseLocationInSurface is AppKit bottom-left, so we
+                // flip y for the SwiftUI (top-left) overlay and nudge it down-right
+                // of the pointer.
+                if surfaceView.hoverUrl != nil,
+                   let mouse = surfaceView.mouseLocationInSurface {
+                    GeometryReader { geo in
+                        URLHoverBanner()
+                            .offset(x: mouse.x + 14, y: (geo.size.height - mouse.y) + 16)
                     }
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+                }
 
+                VStack(spacing: 0) {
                     // Show a bar to indicate a child process has exited.
                     if let msg = surfaceView.childExitedMessage {
                         ChildExitedMessageBar(msg: msg)
