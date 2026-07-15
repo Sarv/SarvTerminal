@@ -298,6 +298,30 @@ re-apply if an upstream refactor drops it.
   - `macos/Sources/Helpers/Extensions/NSPasteboard+Extension.swift` — the selection
     pasteboard is named `com.sarv.terminal.selection`, not the ghostty name.
 
+### 8.5 In-app Markdown viewer + openable file-path links (core divergence)
+- **Why:** open `.md` files in an in-app viewer (rendered + editable source) and
+  make file paths in terminal output discoverable/clickable, without holding ⌘ to
+  even see them.
+- **What we do & anchors to preserve:**
+  - `pkg/md4c/` + `build.zig.zon` + `src/build/SharedDeps.zig` — vendor md4c and
+    link it into the core (see [[third-party-c-libs-in-pkg]] pattern).
+  - `src/markdown.zig`, `src/main_c.zig`, `include/ghostty.h` — the
+    `ghostty_markdown_to_html` C API (GFM, raw-HTML-escaped). **Guarded** (main_c.zig,
+    ghostty.h).
+  - `src/config/url.zig` — **guarded.** Added a 4th regex branch for bare openable
+    filenames (`README.md`) and split `regex` into `url_regex` + `path_regex`.
+  - `src/config/Config.zig` — **guarded.** Two default links: URLs (`hover_mods`)
+    and file paths (`hover_activate_mods`).
+  - `src/input/Link.zig` — **guarded.** New `Highlight.hover_activate_mods` =
+    highlight on plain hover, activate only with mods.
+  - `src/Surface.zig` — **guarded.** `linkAtPos`/`linkAtPin` gained a
+    `for_activation` param; the mouse-leave path now clears the renderer hover
+    highlight (`hyperlink_hover` dirty + reset `mouse.point`/`over_link`).
+  - `src/renderer/link.zig` — **guarded.** `hover_activate_mods` draws like `hover`.
+  - macOS UI (ours): `MarkdownHTML.swift` (md4c-backed), `Ghostty.App.swift`
+    (`openURL` routes local `.md` to the viewer), `URLHoverBanner.swift` +
+    `SurfaceView.swift` (cursor-adjacent "⌘ click to open" hint).
+
 ### Upstream activity on our guarded **core** files (base → tip, at last check)
 
 | File | Upstream commits since base |
