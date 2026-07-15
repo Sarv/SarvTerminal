@@ -1,106 +1,27 @@
 import Foundation
+import GhosttyKit
 
-/// Tiny, dependency-free Markdown → HTML converter for the file viewer.
-/// Handles headings, bold/italic, inline + fenced code, links, lists,
-/// blockquotes, and horizontal rules — enough to render docs/README/CLAUDE.md.
+/// Markdown → HTML for the file viewer. The actual rendering is done by **md4c
+/// in the core** (`ghostty_markdown_to_html` — CommonMark + GFM tables, task
+/// lists, strikethrough, with raw HTML escaped for safety); this type only wraps
+/// the result in a styled page so the same engine serves every platform.
+/// See `pkg/md4c` and `src/markdown.zig`.
 enum MarkdownHTML {
 
     static func page(from markdown: String) -> String {
         "<!doctype html><html><head><meta charset='utf-8'>\(style)</head><body>\(body(markdown))</body></html>"
     }
 
-    // MARK: Block parsing
-
+    /// Render the markdown body to HTML via md4c. Falls back to the raw text in a
+    /// `<pre>` block if the renderer yields nothing for non-empty input.
     private static func body(_ md: String) -> String {
-        var html = ""
-        var inFence = false
-        var fence: [String] = []
-        var list: String?            // "ul" or "ol" while inside a list
-        let lines = md.components(separatedBy: "\n")
-
-        func closeList() { if let l = list { html += "</\(l)>"; list = nil } }
-
-        for raw in lines {
-            // Fenced code blocks ``` … ```
-            if raw.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                if inFence {
-                    html += "<pre><code>\(escape(fence.joined(separator: "\n")))</code></pre>"
-                    fence = []; inFence = false
-                } else {
-                    closeList(); inFence = true
-                }
-                continue
-            }
-            if inFence { fence.append(raw); continue }
-
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty { closeList(); continue }
-
-            // Horizontal rule
-            if line == "---" || line == "***" || line == "___" { closeList(); html += "<hr>"; continue }
-
-            // Headings
-            if let h = heading(line) { closeList(); html += h; continue }
-
-            // Blockquote
-            if line.hasPrefix("> ") { closeList(); html += "<blockquote>\(inline(String(line.dropFirst(2))))</blockquote>"; continue }
-
-            // Lists
-            if let item = unordered(line) {
-                if list != "ul" { closeList(); html += "<ul>"; list = "ul" }
-                html += "<li>\(inline(item))</li>"; continue
-            }
-            if let item = ordered(line) {
-                if list != "ol" { closeList(); html += "<ol>"; list = "ol" }
-                html += "<li>\(inline(item))</li>"; continue
-            }
-
-            // Paragraph
-            closeList()
-            html += "<p>\(inline(line))</p>"
+        let html = md.withCString { cptr in
+            Ghostty.AllocatedString(
+                ghostty_markdown_to_html(cptr, UInt(strlen(cptr)))
+            ).string
         }
-        if inFence { html += "<pre><code>\(escape(fence.joined(separator: "\n")))</code></pre>" }
-        closeList()
+        if html.isEmpty && !md.isEmpty { return "<pre>\(escape(md))</pre>" }
         return html
-    }
-
-    private static func heading(_ line: String) -> String? {
-        var level = 0
-        for c in line { if c == "#" { level += 1 } else { break } }
-        guard level >= 1, level <= 6, line.dropFirst(level).first == " " else { return nil }
-        let text = String(line.dropFirst(level + 1))
-        return "<h\(level)>\(inline(text))</h\(level)>"
-    }
-
-    private static func unordered(_ line: String) -> String? {
-        for p in ["- ", "* ", "+ "] where line.hasPrefix(p) { return String(line.dropFirst(2)) }
-        return nil
-    }
-
-    private static func ordered(_ line: String) -> String? {
-        guard let dot = line.firstIndex(of: "."), line[..<dot].allSatisfy(\.isNumber), !line[..<dot].isEmpty else { return nil }
-        let after = line.index(after: dot)
-        guard after < line.endIndex, line[after] == " " else { return nil }
-        return String(line[line.index(after: after)...])
-    }
-
-    // MARK: Inline parsing (escape first, then markup)
-
-    private static func inline(_ text: String) -> String {
-        var s = escape(text)
-        s = replace(s, #"`([^`]+)`"#, "<code>$1</code>")
-        s = replace(s, #"\[([^\]]+)\]\(([^)]+)\)"#, "<a href=\"$2\">$1</a>")
-        s = replace(s, #"\*\*([^*]+)\*\*"#, "<strong>$1</strong>")
-        s = replace(s, #"__([^_]+)__"#, "<strong>$1</strong>")
-        s = replace(s, #"\*([^*]+)\*"#, "<em>$1</em>")
-        s = replace(s, #"_([^_]+)_"#, "<em>$1</em>")
-        return s
-    }
-
-    private static func replace(_ s: String, _ pattern: String, _ template: String) -> String {
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return s }
-        let range = NSRange(s.startIndex..., in: s)
-        return re.stringByReplacingMatches(in: s, range: range, withTemplate: template)
     }
 
     private static func escape(_ s: String) -> String {
@@ -128,7 +49,10 @@ enum MarkdownHTML {
       blockquote { border-left: 3px solid #4c566a; margin: .6em 0; padding: .2em 0 .2em 12px; color: #aeb7c6; }
       ul,ol { padding-left: 1.4em; }
       hr { border: none; border-top: 1px solid #3b4252; margin: 1.2em 0; }
-      table { border-collapse: collapse; } td,th { border: 1px solid #3b4252; padding: 4px 8px; }
+      table { border-collapse: collapse; margin: .6em 0; }
+      td,th { border: 1px solid #3b4252; padding: 4px 8px; }
+      th { background: rgba(255,255,255,.05); }
+      img { max-width: 100%; }
     </style>
     """
 }

@@ -843,6 +843,20 @@ extension Ghostty {
                 url = URL(filePath: expandedPath)
             }
 
+            // Markdown files open in our in-app viewer (rendered + editable
+            // source, like Warp) instead of an external app. md4c powers the
+            // rendering (see MarkdownHTML). Only for local files that exist;
+            // everything else falls through to the default behavior below.
+            if url.isFileURL,
+               ["md", "markdown"].contains(url.pathExtension.lowercased()),
+               FileManager.default.fileExists(atPath: url.path) {
+                let path = url.path
+                DispatchQueue.main.async {
+                    FileEditorWindowController.shared.open(path: path)
+                }
+                return true
+            }
+
             switch action.kind {
             case .text:
                 // Open with the default editor for `*.ghostty` file or just system text editor
