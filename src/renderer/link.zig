@@ -33,6 +33,9 @@ pub const Link = struct {
             .always_mods => |v| mouse_mods.equal(v),
             .hover => mouse_viewport != null,
             .hover_mods => |v| mouse_viewport != null and mouse_mods.equal(v),
+            // Underline on plain hover (discoverable); activation mods are only
+            // enforced at click time, not for drawing the highlight.
+            .hover_activate_mods => mouse_viewport != null,
         };
     }
 };
@@ -128,7 +131,7 @@ pub const Set = struct {
 
                 switch (link.highlight) {
                     .always, .always_mods => {},
-                    .hover, .hover_mods => if (mouse_viewport) |vp| {
+                    .hover, .hover_mods, .hover_activate_mods => if (mouse_viewport) |vp| {
                         for (map.items[start..end]) |pt| {
                             if (pt.eql(vp)) break;
                         } else continue;

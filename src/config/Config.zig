@@ -3941,11 +3941,19 @@ pub fn default(alloc_gpa: Allocator) Allocator.Error!Config {
     // Add our default command palette entries
     try result.@"command-palette-entry".init(alloc);
 
-    // Add our default link for URL detection
+    // Default links. URLs highlight only while a mod is held (classic terminal
+    // behavior). File paths highlight on PLAIN hover so they're discoverable
+    // (underline + pointer + "⌘ click to open" banner) but still only OPEN on
+    // mod-click — see Highlight.hover_activate_mods.
     try result.link.links.append(alloc, .{
-        .regex = url.regex,
+        .regex = url.url_regex,
         .action = .{ .open = {} },
         .highlight = .{ .hover_mods = inputpkg.ctrlOrSuper(.{}) },
+    });
+    try result.link.links.append(alloc, .{
+        .regex = url.path_regex,
+        .action = .{ .open = {} },
+        .highlight = .{ .hover_activate_mods = inputpkg.ctrlOrSuper(.{}) },
     });
 
     return result;

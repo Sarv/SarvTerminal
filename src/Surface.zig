@@ -1603,7 +1603,7 @@ fn mouseRefreshLinks(
             }
         }
 
-        const link = (try self.linkAtPos(pos)) orelse break :link .{ null, false };
+        const link = (try self.linkAtPos(pos, false)) orelse break :link .{ null, false };
         switch (link.action) {
             .open => {
                 const str = try self.io.terminal.screens.active.selectionString(alloc, .{
@@ -1658,6 +1658,13 @@ fn mouseRefreshLinks(
     // No link, if we're previously over a link then we need to clear
     // the over-link apprt state.
     if (over_link) {
+        // Clear the renderer's hover highlight too. Without this the underline
+        // stays drawn at the last link after the mouse moves away — visible with
+        // plain-hover (mod-less) highlighting where nothing else re-gates it.
+        self.mouse.over_link = false;
+        self.renderer_state.mouse.point = null;
+        self.renderer_state.terminal.screens.active.dirty.hyperlink_hover = true;
+
         _ = try self.rt_app.performAction(
             .{ .surface = self },
             .mouse_shape,
@@ -4010,6 +4017,7 @@ pub fn mouseButtonCallback(
                 if (self.linkAtPin(
                     pin,
                     null,
+                    false,
                 )) |result_| {
                     if (result_) |result| {
                         press_selection = result.selection;
@@ -4099,7 +4107,7 @@ pub fn mouseButtonCallback(
 
                 // If there is a link at this position, we want to
                 // select the link. Otherwise, select the word.
-                if (try self.linkAtPos(pos)) |link| {
+                if (try self.linkAtPos(pos, false)) |link| {
                     try self.setSelectionAndCopy(link.selection);
                 } else {
                     const sel = screen.selectWord(
@@ -4296,6 +4304,11 @@ const Link = struct {
 fn linkAtPos(
     self: *Surface,
     pos: apprt.CursorPos,
+    // When true, this lookup is for ACTIVATING a link (a click that opens it),
+    // so `hover_activate_mods` links require their mods. When false, it's for
+    // DISPLAY (hover highlight/preview/selection), where those links match on
+    // plain hover. Other highlight modes ignore this.
+    for_activation: bool,
 ) !?Link {
     // Convert our cursor position to a screen point.
     const screen: *terminal.Screen = self.renderer_state.terminal.screens.active;
@@ -4321,7 +4334,7 @@ fn linkAtPos(
     }
 
     // Fall back to configured links
-    return try self.linkAtPin(mouse_pin, mouse_mods);
+    return try self.linkAtPin(mouse_pin, mouse_mods, for_activation);
 }
 
 /// Detects if a link is present at the given pin.
@@ -4334,6 +4347,7 @@ fn linkAtPin(
     self: *Surface,
     mouse_pin: terminal.Pin,
     mouse_mods: ?input.Mods,
+    for_activation: bool,
 ) !?Link {
     if (self.config.links.len == 0) return null;
 
@@ -4359,6 +4373,9 @@ fn linkAtPin(
         if (mouse_mods) |mods| switch (link.highlight) {
             .always, .hover => {},
             .always_mods, .hover_mods => |v| if (!v.equal(mods)) continue,
+            // Discoverable on plain hover; only skipped when we're activating
+            // (opening) and the required mods aren't held.
+            .hover_activate_mods => |v| if (for_activation and !v.equal(mods)) continue,
         };
 
         var it = strmap.searchIterator(link.regex);
@@ -4401,7 +4418,7 @@ fn mouseModsWithCapture(self: *Surface, mods: input.Mods) input.Mods {
 ///
 /// Requires the renderer state mutex is held.
 fn processLinks(self: *Surface, pos: apprt.CursorPos) !bool {
-    const link = try self.linkAtPos(pos) orelse return false;
+    const link = try self.linkAtPos(pos, true) orelse return false;
     switch (link.action) {
         .open => {
             const str = try self.io.terminal.screens.active.selectionString(self.alloc, .{
@@ -5041,7 +5058,7 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
 
             self.renderer_state.mutex.lock();
             defer self.renderer_state.mutex.unlock();
-            if (try self.linkAtPos(pos)) |link_info| {
+            if (try self.linkAtPos(pos, false)) |link_info| {
                 const url_text = switch (link_info.action) {
                     .open => url_text: {
                         // For regex links, get the text from selection

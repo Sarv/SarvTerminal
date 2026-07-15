@@ -49,6 +49,14 @@ pub const Highlight = union(enum) {
     /// detected.
     always_mods: Mods,
     hover_mods: Mods,
+
+    /// SarvTerminal: highlight on plain hover (no mods) so the link is
+    /// DISCOVERABLE — the underline, pointer cursor, and preview show without
+    /// holding a mod — but only ACTIVATE (open on click) when the given mods are
+    /// held. A plain click therefore just selects; only mod-click opens. Used
+    /// for file-path links so users can tell a path is openable without first
+    /// pressing ⌘, while keeping ⌘-click as the safe activation gesture.
+    hover_activate_mods: Mods,
 };
 
 /// Returns a new oni.Regex that can be used to match the link.

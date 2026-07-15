@@ -113,12 +113,35 @@ const bare_relative_path_branch =
     no_trailing_colon ++
     trailing_spaces_at_eol;
 
-pub const regex =
-    scheme_url_branch ++
-    "|" ++
+// Branch 4 (SarvTerminal): bare openable filenames with NO directory separator,
+// e.g. `README.md` in `ls`/`ll` output. Upstream deliberately does not treat a
+// bare `word.ext` as a path (too many false positives), so we scope this to the
+// extensions our in-app viewer opens. The click handler still resolves against
+// the terminal pwd and verifies the file exists (`resolvePathForOpening`), so a
+// non-file mention like `README.md` in prose won't actually open.
+const bare_openable_file_branch =
+    \\(?<![\w./~$-])[\w][\w\-.]*\.(?:md|markdown)\b
+;
+
+/// Scheme URLs only (http, mailto, file:, …). Registered as a default link that
+/// highlights only while a mod is held (classic terminal behavior).
+pub const url_regex = scheme_url_branch;
+
+/// File paths (rooted/`./`/`~/`, slashed relative, and bare openable filenames).
+/// Registered as a default link that highlights on PLAIN hover for
+/// discoverability but only opens on mod-click (see `Highlight.hover_activate_mods`).
+pub const path_regex =
     rooted_or_relative_path_branch ++
     "|" ++
-    bare_relative_path_branch;
+    bare_relative_path_branch ++
+    "|" ++
+    bare_openable_file_branch;
+
+/// Combined URL + path matcher (kept for tests / callers that want everything).
+pub const regex =
+    url_regex ++
+    "|" ++
+    path_regex;
 
 test "url regex" {
     const testing = std.testing;
@@ -143,6 +166,15 @@ test "url regex" {
         .{
             .input = "hello https://example.com world",
             .expect = "https://example.com",
+        },
+        // SarvTerminal: bare openable filenames (e.g. an `ls -al` line).
+        .{
+            .input = "-rw-r--r--  1 sarv staff  123 Jul 15 README.md",
+            .expect = "README.md",
+        },
+        .{
+            .input = "see NOTES.markdown for details",
+            .expect = "NOTES.markdown",
         },
         .{
             .input = "https://example.com/foo(bar) more",
