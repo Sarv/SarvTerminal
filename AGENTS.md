@@ -31,6 +31,23 @@ A file for [guiding coding agents](https://agents.md/).
 - macOS app: `macos/`
 - GTK (Linux and FreeBSD) app: `src/apprt/gtk`
 
+## Linux/GTK Port Roadmap (`LINUX-ROADMAP.md`)
+
+- `LINUX-ROADMAP.md` (repo root) is the single hand-off file for porting our macOS
+  Vaults behavior to the Linux/GTK app (`src/apprt/gtk`). It captures, per change:
+  the symptom, the **root-cause reasoning**, the **platform-agnostic logic/algorithm**,
+  the **macOS→GTK equivalents** (which AppKit/Swift/libproc/ARC bits map to which
+  GTK/Zig mechanism), and **how to verify on Linux**. The goal: a future AI agent
+  can read only this file and reproduce the exact same behavior on Linux.
+- **Process rule — update it at COMMIT time, not per edit.** Whenever you commit a
+  change under `macos/`, add (in the same commit) a matching entry to
+  `LINUX-ROADMAP.md`. We record at commit time because a commit lands only after
+  multiple iterations of testing/fixing once the code actually runs correctly — so
+  the entry captures the final, working logic, not the intermediate churn.
+- Keep one section per logical change, mirroring the commit. Preserve the
+  subsection shape already in the file (Symptom / Root cause & reasoning /
+  platform-agnostic logic / macOS→Linux equivalents / How to verify on Linux).
+
 ## Demo App & Screenshots
 
 - The **demo app** (isolated sample workspace for capturing README/marketing
