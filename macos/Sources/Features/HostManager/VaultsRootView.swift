@@ -210,7 +210,7 @@ private struct VaultsTerminalPane: View {
             broadcasting: tab.broadcasting,
             focusedID: lastFocusedSurface?.value?.id,
             onResolve: { surface, action in VaultsTabsModel.shared.resolveChoice(surface: surface, action: action) },
-            onDismiss: { surface in VaultsTabsModel.shared.closePane(surface: surface) },
+            onDismiss: { surface in VaultsTabsModel.shared.closePaneSkippingConfirm(surface: surface) },
             action: { VaultsTabsModel.shared.performSplitOperation($0, in: tab) }
         )
         .environmentObject(ghostty)

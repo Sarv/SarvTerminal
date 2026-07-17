@@ -205,7 +205,7 @@ private struct VaultsSplitLeaf: View {
                         SSHConnectionView(
                             model: conn.model,
                             controller: conn.controller,
-                            onCancel: { VaultsTabsModel.shared.closePane(surface: surfaceView) }
+                            onCancel: { VaultsTabsModel.shared.closePaneSkippingConfirm(surface: surfaceView) }
                         )
                         .clipped()
                     }

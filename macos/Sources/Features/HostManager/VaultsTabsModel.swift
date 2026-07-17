@@ -1155,16 +1155,28 @@ final class VaultsTabsModel: ObservableObject {
         Ghostty.moveFocus(to: draggedSurface)
     }
 
-    /// Close a single split pane (from its header's × button). Collapses the
-    /// split, or closes the tab if it was the last pane.
-    func closePane(surface: Ghostty.SurfaceView) {
+    /// Close a pane WITHOUT the running-process prompt. Use ONLY for explicit
+    /// "cancel / dismiss this connection attempt" gestures on a connecting or
+    /// blank pane, where the user is aborting the connection — not closing a
+    /// running terminal. Every other pane close must go through
+    /// `requestClosePane` so the confirmation can't be skipped by accident.
+    func closePaneSkippingConfirm(surface: Ghostty.SurfaceView) {
+        performClosePane(surface: surface)
+    }
+
+    /// Actually close a single split pane (collapsing the split, or closing the
+    /// tab if it was the last pane). PRIVATE by design: external callers must use
+    /// `requestClosePane` (prompts if busy) or the explicit
+    /// `closePaneSkippingConfirm`, so a close can never silently bypass the
+    /// running-process confirmation.
+    private func performClosePane(surface: Ghostty.SurfaceView) {
         guard let tab = tab(containing: surface),
               let node = tab.surfaceTree.root?.node(view: surface) else { return }
         awaitingChoice.remove(surface.id)
         teardownConnection(surfaceID: surface.id)   // drop this pane's SSH popup, if any
         let remaining = tab.surfaceTree.removing(node)
         if remaining.isEmpty {
-            closeTerminal(tab.id)
+            performCloseTerminal(tab.id)
         } else {
             tab.surfaceTree = remaining
             if let next = remaining.root?.leftmostLeaf() {
@@ -1546,7 +1558,7 @@ final class VaultsTabsModel: ObservableObject {
             tab.surfaceTree.root?.leaves() ?? [],
             title: "Close Tab?",
             message: "This tab still has a running process. If you close the tab the process will be killed."
-        ) { [weak self] in self?.closeTerminal(id) }
+        ) { [weak self] in self?.performCloseTerminal(id) }
     }
 
     /// User-initiated close of a single pane (pane header ×, ⌘W).
@@ -1556,7 +1568,7 @@ final class VaultsTabsModel: ObservableObject {
             [surface],
             title: "Close Terminal?",
             message: "This terminal still has a running process. If you close it the process will be killed."
-        ) { [weak self] in self?.closePane(surface: surface) }
+        ) { [weak self] in self?.performClosePane(surface: surface) }
     }
 
     /// User-initiated "Close Other Tabs".
@@ -1584,8 +1596,10 @@ final class VaultsTabsModel: ObservableObject {
         ) { [weak self] in self?.closeTabsToRight(of: id) }
     }
 
-    /// Close a terminal tab, selecting a sensible neighbor afterward.
-    func closeTerminal(_ id: UUID) {
+    /// Actually close a terminal tab (selecting a sensible neighbor). PRIVATE by
+    /// design: external callers must go through `requestCloseTerminal` so the
+    /// running-process confirmation can never be bypassed.
+    private func performCloseTerminal(_ id: UUID) {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
         recordAndRelease(terminals[idx], at: idx)
         terminals.remove(at: idx)
@@ -2143,7 +2157,7 @@ final class VaultsTabsModel: ObservableObject {
             self.awaitingChoice.remove(surface.id)
             let remaining = tab.surfaceTree.removing(node)
             if remaining.isEmpty {
-                self.closeTerminal(tab.id)
+                self.performCloseTerminal(tab.id)
             } else {
                 tab.surfaceTree = remaining
                 if let next = remaining.root?.leftmostLeaf() {

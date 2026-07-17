@@ -114,7 +114,7 @@ struct VaultsFocusModeView: View {
                     if tabs.awaitingChoice.contains(surface.id) {
                         SplitChooserView(
                             onChoose: { tabs.resolveChoice(surface: surface, action: $0) },
-                            onDismiss: { tabs.closePane(surface: surface) },
+                            onDismiss: { tabs.closePaneSkippingConfirm(surface: surface) },
                             onDropTab: { draggedID in
                                 tabs.injectTabIntoAwaiting(awaiting: surface, draggedTabID: draggedID)
                             }
@@ -128,7 +128,7 @@ struct VaultsFocusModeView: View {
                         SSHConnectionView(
                             model: conn.model,
                             controller: conn.controller,
-                            onCancel: { tabs.closePane(surface: surface) }
+                            onCancel: { tabs.closePaneSkippingConfirm(surface: surface) }
                         )
                         .clipped()
                     }
