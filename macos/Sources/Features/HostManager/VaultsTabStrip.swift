@@ -480,8 +480,11 @@ private struct TabChip: View {
     @State private var hoveringClose = false
     private var tabs: VaultsTabsModel { .shared }
 
-    /// Leading region (points) that closes on click: left padding (10) + the
-    /// 14pt icon slot the close button occupies. Matches `TabChipInteraction`.
+    /// Close-button hit band (points from the chip's leading edge), matching the
+    /// visible ✕: it's drawn with a 10pt leading padding over the 14pt icon slot,
+    /// so it spans x≈10–24. A little slack on each side keeps it comfortable to
+    /// click without letting a select-click on the far-left edge close the tab.
+    private let closeHitLeadingInset: CGFloat = 8
     private let closeHitWidth: CGFloat = 26
 
     private var menuItems: [TabChipMenuItem] {
@@ -543,6 +546,7 @@ private struct TabChip: View {
             TabChipInteraction(
                 tabID: tab.id,
                 closeHitWidth: closeHitWidth,
+                closeHitLeadingInset: closeHitLeadingInset,
                 onActivate: { tabs.selectTerminal(tab.id) },
                 onClose: { tabs.closeTerminal(tab.id) },
                 onHoverChanged: { hovering = $0 },
