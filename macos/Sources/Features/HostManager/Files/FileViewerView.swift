@@ -96,11 +96,56 @@ final class FileViewerModel: ObservableObject {
     }
 }
 
+/// Shared find/search state for the file viewer. The active content view (the
+/// code editor or the rendered-Markdown web view) registers itself as `target`
+/// and does the actual searching; the `FindBar` UI just drives this object.
+@MainActor
+final class FileFindSession: ObservableObject {
+    @Published var isActive = false
+    @Published var query = ""
+    /// 1-based index of the current match and the total match count.
+    @Published var current = 0
+    @Published var total = 0
+    /// The code editor reports an exact `total`; the web view's `window.find`
+    /// does not, so it sets this false and we show only "No results" / nothing.
+    @Published var countKnown = true
+    /// Bumped to re-focus the field when ⌘F is pressed while the bar is open.
+    @Published var focusNonce = 0
+
+    weak var target: (any FileFindTarget)?
+
+    func toggle() {
+        if isActive { focusNonce += 1 } else { isActive = true }
+    }
+
+    func close() {
+        isActive = false
+        target?.clearFind()
+    }
+
+    func run(forward: Bool, fromStart: Bool = false) {
+        target?.find(query, forward: forward, fromStart: fromStart)
+    }
+}
+
+/// Implemented by whichever content view is on screen so the find bar can search
+/// it without knowing whether it's an NSTextView or a WKWebView.
+@MainActor
+protocol FileFindTarget: AnyObject {
+    /// Search for `query`, moving to the next/previous match. `fromStart` restarts
+    /// from the top (used when the query text changes). Updates the session's
+    /// `current`/`total`/`countKnown`.
+    func find(_ query: String, forward: Bool, fromStart: Bool)
+    func clearFind()
+}
+
 /// File viewer pane: header (name, Rendered/Raw for Markdown, 3-dot menu, close)
 /// over a syntax-highlighted code view or a rendered-Markdown web view.
 struct FileViewerView: View {
     @ObservedObject var model: FileViewerModel
     let onClose: () -> Void
+
+    @StateObject private var find = FileFindSession()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -109,11 +154,26 @@ struct FileViewerView: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(NSColor.textBackgroundColor))
+                .overlay(alignment: .topTrailing) {
+                    if find.isActive { FindBar(find: find) }
+                }
         }
         // Opaque blur backdrop so the file manager is hidden/blurred behind the
         // viewer instead of bleeding through.
         .background(.regularMaterial)
         .onAppear { Task { await model.load() } }
+        // Re-run the search when switching Rendered⇄Raw so the (now different)
+        // target picks up the current query.
+        .onChange(of: model.renderMarkdown) { _ in
+            if find.isActive { find.run(forward: true, fromStart: true) }
+        }
+        // ⌘F opens/refocuses the bar; Esc closes it (only while open).
+        .background {
+            Button("") { find.toggle() }.keyboardShortcut("f", modifiers: .command).hidden()
+            if find.isActive {
+                Button("") { find.close() }.keyboardShortcut(.escape, modifiers: []).hidden()
+            }
+        }
     }
 
     private var header: some View {
@@ -194,6 +254,7 @@ struct FileViewerView: View {
             }
 
             Menu {
+                Button("Find…") { find.toggle() }.keyboardShortcut("f", modifiers: .command)
                 Toggle("Word wrap", isOn: $model.wordWrap)
                 Divider()
                 Button("Refresh file") { Task { await model.load() } }
@@ -232,10 +293,58 @@ struct FileViewerView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity).padding()
         } else if model.isMarkdown && model.renderMarkdown {
-            MarkdownWebView(markdown: model.content)
+            MarkdownWebView(markdown: model.content, findSession: find)
         } else {
-            CodeEditorView(text: $model.content, isEditable: model.isEditing, wordWrap: model.wordWrap, language: model.language, indentWidth: model.indentWidth, onEdit: { model.didEdit() })
+            CodeEditorView(text: $model.content, isEditable: model.isEditing, wordWrap: model.wordWrap, language: model.language, indentWidth: model.indentWidth, findSession: find, onEdit: { model.didEdit() })
         }
+    }
+}
+
+// MARK: - Find bar
+
+/// A compact, floating find bar shown over the content in both Rendered and Raw
+/// modes. It drives whichever `FileFindTarget` is currently registered.
+private struct FindBar: View {
+    @ObservedObject var find: FileFindSession
+    @FocusState private var focused: Bool
+
+    private var countLabel: String {
+        if find.query.isEmpty { return "" }
+        if find.countKnown {
+            return find.total == 0 ? "No results" : "\(find.current)/\(find.total)"
+        }
+        return find.total == 0 ? "No results" : ""
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.secondaryText)
+            TextField("Find", text: $find.query)
+                .textFieldStyle(.plain)
+                .frame(width: 180)
+                .focused($focused)
+                .onSubmit { find.run(forward: true) }
+                .onChange(of: find.query) { _ in find.run(forward: true, fromStart: true) }
+
+            Text(countLabel)
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(.secondaryText)
+                .frame(minWidth: 56, alignment: .trailing)
+
+            Button { find.run(forward: false) } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.plain).disabled(find.query.isEmpty).hoverTip("Previous")
+            Button { find.run(forward: true) } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.plain).disabled(find.query.isEmpty).hoverTip("Next")
+            Button { find.close() } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain).hoverTip("Close (esc)")
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(NSColor.windowBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12)))
+        .shadow(radius: 8, y: 2)
+        .padding(.top, 8).padding(.trailing, 12)
+        .onAppear { focused = true; if !find.query.isEmpty { find.run(forward: true, fromStart: true) } }
+        .onChange(of: find.focusNonce) { _ in focused = true }
     }
 }
 
@@ -247,6 +356,7 @@ private struct CodeEditorView: NSViewRepresentable {
     var wordWrap: Bool
     var language: String
     var indentWidth: Int
+    let findSession: FileFindSession
     let onEdit: () -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -256,6 +366,8 @@ private struct CodeEditorView: NSViewRepresentable {
         scroll.drawsBackground = false
         guard let tv = scroll.documentView as? NSTextView else { return scroll }
         tv.delegate = context.coordinator
+        context.coordinator.textView = tv
+        findSession.target = context.coordinator
         tv.isEditable = isEditable
         tv.isRichText = false
         tv.allowsUndo = true
@@ -281,6 +393,8 @@ private struct CodeEditorView: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let tv = scroll.documentView as? NSTextView else { return }
+        context.coordinator.textView = tv
+        findSession.target = context.coordinator
         if tv.isEditable != isEditable { tv.isEditable = isEditable }
         context.coordinator.indentWidth = indentWidth
         if (tv.textContainer?.widthTracksTextView ?? false) != wordWrap { applyWrap(tv, scroll) }
@@ -318,15 +432,22 @@ private struct CodeEditorView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, FileFindTarget {
         let parent: CodeEditorView
         var language: String
         var indentWidth: Int
+
+        /// Find state (see `FileFindTarget`).
+        weak var textView: NSTextView?
+        private let findSession: FileFindSession
+        private var matchRanges: [NSRange] = []
+        private var currentMatch = 0
 
         init(_ parent: CodeEditorView) {
             self.parent = parent
             self.language = parent.language
             self.indentWidth = parent.indentWidth
+            self.findSession = parent.findSession
         }
 
         func textDidChange(_ notification: Notification) {
@@ -367,6 +488,79 @@ private struct CodeEditorView: NSViewRepresentable {
                 CodeSyntax.apply(to: storage, language: language)
             }
             storage.endEditing()
+        }
+
+        // MARK: FileFindTarget
+
+        func find(_ query: String, forward: Bool, fromStart: Bool) {
+            guard let tv = textView else { return }
+            findSession.countKnown = true
+            let ns = tv.string as NSString
+
+            guard !query.isEmpty else {
+                findSession.total = 0
+                findSession.current = 0
+                clearFind()
+                return
+            }
+
+            // Collect every case-insensitive match.
+            var ranges: [NSRange] = []
+            var start = 0
+            while start < ns.length {
+                let r = ns.range(of: query, options: .caseInsensitive,
+                                 range: NSRange(location: start, length: ns.length - start))
+                if r.location == NSNotFound { break }
+                ranges.append(r)
+                start = r.location + max(1, r.length)
+            }
+            matchRanges = ranges
+            findSession.total = ranges.count
+
+            guard !ranges.isEmpty else {
+                findSession.current = 0
+                highlight(matches: [], current: nil, in: tv)
+                return
+            }
+
+            if fromStart {
+                // Start from the match at/after the caret so incremental typing
+                // doesn't jump around.
+                let caret = tv.selectedRange().location
+                currentMatch = ranges.firstIndex { $0.location >= caret } ?? 0
+            } else {
+                currentMatch += forward ? 1 : -1
+                if currentMatch < 0 { currentMatch = ranges.count - 1 }
+                if currentMatch >= ranges.count { currentMatch = 0 }
+            }
+
+            let target = ranges[currentMatch]
+            findSession.current = currentMatch + 1
+            tv.setSelectedRange(target)
+            tv.scrollRangeToVisible(target)
+            tv.showFindIndicator(for: target)
+            highlight(matches: ranges, current: currentMatch, in: tv)
+        }
+
+        func clearFind() {
+            matchRanges = []
+            currentMatch = 0
+            guard let tv = textView, let lm = tv.layoutManager else { return }
+            let full = NSRange(location: 0, length: (tv.string as NSString).length)
+            lm.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+        }
+
+        /// Temporary (non-persistent, undo-safe) yellow highlight over all
+        /// matches, brighter on the current one.
+        private func highlight(matches: [NSRange], current: Int?, in tv: NSTextView) {
+            guard let lm = tv.layoutManager else { return }
+            let full = NSRange(location: 0, length: (tv.string as NSString).length)
+            lm.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+            for (i, r) in matches.enumerated() {
+                let color = i == current ? NSColor.systemYellow
+                                         : NSColor.systemYellow.withAlphaComponent(0.35)
+                lm.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: r)
+            }
         }
     }
 }
@@ -623,14 +817,151 @@ enum CodeSyntax {
 
 private struct MarkdownWebView: NSViewRepresentable {
     let markdown: String
+    let findSession: FileFindSession
+
+    func makeCoordinator() -> Coordinator { Coordinator(findSession) }
 
     func makeNSView(context: Context) -> WKWebView {
         let web = WKWebView()
         web.setValue(false, forKey: "drawsBackground")  // transparent so our bg shows
+        web.navigationDelegate = context.coordinator
+        context.coordinator.web = web
+        findSession.target = context.coordinator
         return web
     }
 
     func updateNSView(_ web: WKWebView, context: Context) {
+        web.navigationDelegate = context.coordinator
+        context.coordinator.web = web
+        findSession.target = context.coordinator
         web.loadHTMLString(MarkdownHTML.page(from: markdown), baseURL: nil)
+    }
+
+    /// Finds inside the rendered page by wrapping matches in `<mark>` elements
+    /// (yellow, amber for the current one). Unlike `window.find`, the highlight
+    /// is DOM-based so it survives clicks and reports an exact match count.
+    @MainActor
+    final class Coordinator: NSObject, FileFindTarget, WKNavigationDelegate {
+        weak var web: WKWebView?
+        private let findSession: FileFindSession
+
+        init(_ session: FileFindSession) { findSession = session }
+
+        /// Re-apply an active search once the (re)rendered DOM is ready — covers
+        /// both the initial load and switching Raw→Rendered while searching.
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            if findSession.isActive, !findSession.query.isEmpty {
+                find(findSession.query, forward: true, fromStart: true)
+            }
+        }
+
+        func find(_ query: String, forward: Bool, fromStart: Bool) {
+            findSession.countKnown = true
+            guard let web, !query.isEmpty else {
+                findSession.total = 0
+                findSession.current = 0
+                clearFind()
+                return
+            }
+            if fromStart {
+                web.evaluateJavaScript(Self.highlightJS(query)) { [weak self] _, _ in
+                    self?.navigate(forward: true)
+                }
+            } else {
+                navigate(forward: forward)
+            }
+        }
+
+        private func navigate(forward: Bool) {
+            web?.evaluateJavaScript(Self.navigateJS(forward: forward)) { [weak self] result, _ in
+                let dict = result as? [String: Any]
+                self?.findSession.total = (dict?["total"] as? Int) ?? 0
+                self?.findSession.current = (dict?["current"] as? Int) ?? 0
+            }
+        }
+
+        func clearFind() {
+            web?.evaluateJavaScript(Self.clearJS, completionHandler: nil)
+        }
+
+        // MARK: JavaScript
+
+        /// Un-wrap any existing marks, then wrap every case-insensitive match of
+        /// `query` in a `<mark data-sarvfind>` (styled via an injected stylesheet).
+        private static func highlightJS(_ query: String) -> String {
+            """
+            (function(){
+              document.querySelectorAll('mark[data-sarvfind]').forEach(function(m){
+                var t=document.createTextNode(m.textContent); m.parentNode.replaceChild(t,m);
+              });
+              if(document.body){document.body.normalize();}
+              window.__sarvfindCur=-1;
+              var q=\(jsStringLiteral(query)); if(!q){return;}
+              if(!document.getElementById('sarvfind-style')){
+                var s=document.createElement('style'); s.id='sarvfind-style';
+                s.textContent='mark[data-sarvfind]{background:#ffd54a;color:#000;border-radius:2px;padding:0 1px;}mark[data-sarvfind].sarvfind-cur{background:#ff8f00;color:#000;outline:2px solid #ff6d00;}';
+                document.head.appendChild(s);
+              }
+              var needle=q.toLowerCase();
+              var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,{acceptNode:function(n){
+                if(!n.nodeValue||!n.nodeValue.trim()){return NodeFilter.FILTER_REJECT;}
+                var p=n.parentNode; if(!p){return NodeFilter.FILTER_REJECT;}
+                var tag=p.nodeName; if(tag==='SCRIPT'||tag==='STYLE'||tag==='MARK'){return NodeFilter.FILTER_REJECT;}
+                return NodeFilter.FILTER_ACCEPT;
+              }});
+              var nodes=[],node; while((node=walker.nextNode())){nodes.push(node);}
+              nodes.forEach(function(n){
+                var text=n.nodeValue, lower=text.toLowerCase(), idx=lower.indexOf(needle);
+                if(idx===-1){return;}
+                var frag=document.createDocumentFragment(), last=0;
+                while(idx!==-1){
+                  if(idx>last){frag.appendChild(document.createTextNode(text.slice(last,idx)));}
+                  var m=document.createElement('mark'); m.setAttribute('data-sarvfind','1');
+                  m.textContent=text.slice(idx,idx+needle.length); frag.appendChild(m);
+                  last=idx+needle.length; idx=lower.indexOf(needle,last);
+                }
+                if(last<text.length){frag.appendChild(document.createTextNode(text.slice(last)));}
+                n.parentNode.replaceChild(frag,n);
+              });
+            })();
+            """
+        }
+
+        /// Move the current-match marker forward/back (wrapping) and scroll it
+        /// into view. Returns `{total, current}`.
+        private static func navigateJS(forward: Bool) -> String {
+            """
+            (function(){
+              var marks=Array.prototype.slice.call(document.querySelectorAll('mark[data-sarvfind]'));
+              if(!marks.length){return {total:0,current:0};}
+              marks.forEach(function(m){m.classList.remove('sarvfind-cur');});
+              var cur=(typeof window.__sarvfindCur==='number')?window.__sarvfindCur:-1;
+              cur+=\(forward ? "1" : "-1");
+              if(cur>=marks.length){cur=0;} if(cur<0){cur=marks.length-1;}
+              window.__sarvfindCur=cur;
+              var m=marks[cur]; m.classList.add('sarvfind-cur');
+              m.scrollIntoView({block:'center'});
+              return {total:marks.length,current:cur+1};
+            })();
+            """
+        }
+
+        /// Remove all marks (used when the query is cleared or the bar closes).
+        private static let clearJS = """
+        (function(){
+          document.querySelectorAll('mark[data-sarvfind]').forEach(function(m){
+            var t=document.createTextNode(m.textContent); m.parentNode.replaceChild(t,m);
+          });
+          if(document.body){document.body.normalize();}
+          window.__sarvfindCur=-1;
+        })();
+        """
+
+        /// JSON-encode a string into a safe JS string literal (quotes included).
+        private static func jsStringLiteral(_ s: String) -> String {
+            guard let data = try? JSONSerialization.data(withJSONObject: [s]),
+                  let json = String(data: data, encoding: .utf8) else { return "\"\"" }
+            return String(json.dropFirst().dropLast())  // strip the surrounding [ ]
+        }
     }
 }

@@ -1604,6 +1604,47 @@ Behaviors to preserve: notifications carry `userInfo[sarvKind]` so the app-level
 
 ---
 
+## 22. In-app find (Cmd+F) in the file viewer
+
+### What it is
+
+The inbuilt file viewer/editor (§15) gained a Find bar (Cmd+F) that searches the open file in **both** display modes — the raw/code editor and the rendered-Markdown preview. It shows a match count, next/prev navigation with wrap, and highlighting that **survives clicks** and stays visible until the bar is closed. Stock Ghostty has nothing like this; it is Sarv-specific.
+
+Entry points: Cmd+F (or the `⋯` menu "Find…") opens/refocuses the bar; Return / Down = next, Up = previous; Esc closes.
+
+Source: `macos/Sources/Features/HostManager/Files/FileViewerView.swift` (`FileFindSession`, `FileFindTarget`, `FindBar`, plus the two content views' find implementations).
+
+### Key logic & data model
+
+- **Shared session object** `FileFindSession` (`ObservableObject`): `isActive`, `query`, `current`/`total` (1-based match position + count), `countKnown` (whether an exact count is available), `focusNonce` (bumped to refocus the field). It holds a `weak var target: (any FileFindTarget)?`.
+- **`FileFindTarget` protocol** — `find(query, forward, fromStart)` + `clearFind()`. The content view currently on screen registers itself as `target` on create/update, so the single bar drives whichever renderer is visible.
+- **Two independent search backends**, because the two views are different widgets:
+  - **Code/raw (`NSTextView`):** collect all case-insensitive match ranges via `NSString.range(of:options:.caseInsensitive)`; keep a current index; on navigate, select + `scrollRangeToVisible` + `showFindIndicator`; highlight every match with a **layout-manager temporary background attribute** (yellow; brighter for the current). Temporary attributes are non-persistent, undo-safe, and — critically — **survive clicks / selection changes**. Exact `total` is known.
+  - **Rendered Markdown (`WKWebView`):** DOM-based highlighting via injected JS — unwrap old marks, walk text nodes (`document.createTreeWalker`), wrap each case-insensitive match in `<mark data-sarvfind>` styled by an injected stylesheet (yellow `#ffd54a`/black; current = amber `#ff8f00` + outline). A navigate function moves the current mark and `scrollIntoView`, returning `{total,current}`. Because it is DOM state (not the selection), it **survives clicks** and yields a real count. A `WKNavigationDelegate.didFinish` re-applies the active search after each (re)render, covering the load race and Raw→Rendered switches.
+- On query change → search from the match at/after the caret (code) or from the top (web).
+
+### macOS → Linux/GTK equivalents
+
+| macOS piece | What it does | Linux / GTK4 equivalent |
+|---|---|---|
+| SwiftUI `FindBar` overlay + `@FocusState` | the floating find UI | `GtkSearchBar` + `GtkSearchEntry` revealed over the viewer. |
+| `NSTextView` + `addTemporaryAttribute(.backgroundColor …)` | persistent, click-proof match highlight in the code editor | Prefer `GtkSourceView`'s `GtkSourceSearchContext` / `GtkSourceSearchSettings` (native highlight + occurrence count + navigation). Otherwise `GtkTextBuffer` **tags** on match ranges (tags persist across cursor moves, unlike the selection). |
+| `NSString.range(of:options:.caseInsensitive)` loop | enumerate matches | Case-insensitive substring scan over the buffer, or `GtkSourceSearchContext` (case/regex options built in). |
+| `WKWebView` + injected `<mark>` JS | highlight in rendered Markdown, survive clicks, report count | `WebKitGTK` `WebKitFindController` (`webkit_find_controller_search` + `counted-matches`) for native find/highlight/count; else the same `createTreeWalker` + `<mark>` injection via `webkit_web_view_evaluate_javascript`. |
+| `WKNavigationDelegate.didFinish` re-apply | re-search after re-render | `WebKitGTK` `load-changed` (`WEBKIT_LOAD_FINISHED`). |
+| Cmd+F / Esc `keyboardShortcut` | open/close the bar | `GtkShortcutController` bound to `<Control>f` / `Escape`, scoped to the viewer. |
+
+Design point to preserve: hold the highlight in **buffer tags / search contexts / DOM marks**, never the primary selection — the macOS bug we fixed was exactly that the web `window.find` used the selection, which any click cleared.
+
+### How to verify on Linux
+
+1. Open a code/text file, open Find, type a term: all matches highlight yellow, current is brighter, count shows `n/m`.
+2. Cycle next/prev — wraps at both ends; the view scrolls to each match.
+3. **Click elsewhere in the document — highlights remain** until the bar closes.
+4. Open a Markdown file in Rendered mode and search: matches highlight (yellow / amber-current), scroll into view, count shows, clicking does not clear them.
+5. Toggle Rendered⇄Raw with the bar open and a query present — the search re-applies to the newly shown view.
+6. Esc closes the bar and clears all highlights.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
