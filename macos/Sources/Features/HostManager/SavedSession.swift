@@ -55,8 +55,17 @@ struct SavedSession: Codable, Identifiable {
         var hostID: UUID?
         /// Plain `ssh …` command fallback when there's no saved host.
         var command: String?
-        /// Sidebar display label captured at save time.
+        /// Sidebar display label captured at save time. Only ever a STABLE name
+        /// (an explicit user rename or an SSH host label) — never a transient
+        /// live title such as a running command — so restoring it can't pin a
+        /// stale "node"-style label onto a pane.
         var title: String?
+        /// Whether `title` came from an explicit user rename ("Change Terminal
+        /// Title"). Restore only re-pins a LOCAL pane's title when this is true;
+        /// otherwise the pane derives its title live (running process / cwd).
+        /// Optional for backward compatibility with sessions saved before this
+        /// flag existed (nil is treated as "not user-set").
+        var titleIsUserSet: Bool?
     }
 }
 

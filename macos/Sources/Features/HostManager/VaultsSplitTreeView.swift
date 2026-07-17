@@ -219,13 +219,10 @@ private struct VaultsSplitLeaf: View {
         }
     }
 
-    /// Header label: a sticky override (e.g. the name of a tab dragged into this
-    /// split, or a split-off pane's source name) wins over the surface's live
-    /// title — which for a freshly-split or SSH pane is the generic ghost default.
-    private var paneTitle: String {
-        if let override = tabs.paneTitleOverride(for: surfaceView.id) { return override }
-        return surfaceView.title.isEmpty ? "Terminal" : surfaceView.title
-    }
+    /// Header label. Delegated to the app-owned, shell-independent derivation so
+    /// every pane (and every user) reads the same way — running process when
+    /// busy, cwd folder when idle — instead of whatever OSC title the shell sent.
+    private var paneTitle: String { tabs.paneDisplayTitle(for: surfaceView) }
 
     /// Per-pane header (Termius-style), shown only when a tab has >1 pane.
     /// The icon+title region is a DRAG HANDLE (open/closed-hand cursor): drag

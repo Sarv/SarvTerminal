@@ -1,3 +1,4 @@
+import Darwin
 import GhosttyKit
 
 extension Ghostty {
@@ -98,6 +99,24 @@ extension Ghostty {
             let pid = ghostty_surface_foreground_pid(surface)
             guard pid != 0 else { return nil }
             return Int(exactly: pid)
+        }
+
+        /// The executable name of the foreground process (e.g. `node`, `ssh`,
+        /// `vim`), resolved from `foregroundPID` via libproc. This is a
+        /// shell-independent signal — unlike the OSC title, it doesn't depend on
+        /// the user's shell/theme emitting a title escape — so it can drive a
+        /// pane title that looks identical for every user. Returns the process's
+        /// `p_comm` (no leading login-shell `-`, no arguments), or nil if the pid
+        /// can't be read. When the pane is idle the foreground process is the
+        /// shell itself (e.g. `zsh`); callers decide whether to show that.
+        @MainActor
+        var foregroundProcessName: String? {
+            guard let pid = foregroundPID else { return nil }
+            var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            let length = proc_name(Int32(pid), &buffer, UInt32(buffer.count))
+            guard length > 0 else { return nil }
+            let name = String(cString: buffer)
+            return name.isEmpty ? nil : name
         }
 
         /// The PTY device name for this surface.

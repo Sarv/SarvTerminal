@@ -282,8 +282,13 @@ private struct FocusSidebarRow: View {
     @State private var hovering = false
 
     private var displayName: String {
-        if let overrideTitle, !overrideTitle.isEmpty { return overrideTitle }
-        return surfaceView.title.isEmpty ? "Terminal" : surfaceView.title
+        // Same app-owned derivation as the split-pane header; `overrideTitle` is
+        // the tab-level override already resolved by the parent.
+        VaultsTabsModel.paneDisplayTitle(
+            userTitle: surfaceView.isUserTitled ? surfaceView.title : nil,
+            override: overrideTitle,
+            process: surfaceView.surfaceModel?.foregroundProcessName,
+            pwd: surfaceView.pwd)
     }
 
     var body: some View {

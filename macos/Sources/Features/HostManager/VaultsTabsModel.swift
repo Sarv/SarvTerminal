@@ -1073,6 +1073,64 @@ final class VaultsTabsModel: ObservableObject {
         return nil
     }
 
+    /// THE single source of truth for a pane's on-screen title, shared by the
+    /// split-pane header and the focus-mode sidebar. It is deliberately
+    /// **shell-independent** so the title looks identical for every user
+    /// regardless of their shell or theme: we never trust the OSC title the
+    /// shell emits (oh-my-zsh, Powerlevel10k, a bare `sh`, etc. all format it
+    /// differently, or not at all). Instead the title is derived from signals
+    /// the app owns — the foreground process and the working directory.
+    @MainActor
+    func paneDisplayTitle(for surface: Ghostty.SurfaceView) -> String {
+        Self.paneDisplayTitle(
+            // A manual "Change Terminal Title" is the ONE case where the surface
+            // title is authoritative (the user set it via the app, not the shell).
+            userTitle: surface.isUserTitled ? surface.title : nil,
+            override: paneTitleOverride(for: surface.id),
+            process: surface.surfaceModel?.foregroundProcessName,
+            pwd: surface.pwd)
+    }
+
+    /// Pure title derivation — no shell OSC title involved — in strict priority:
+    ///   1. an explicit user rename ("Change Terminal Title"),
+    ///   2. a sticky override (SSH host label, dragged-in / split-off name),
+    ///   3. the foreground process name (`node`, `ssh`, `vim`…) when one is running,
+    ///   4. the working-directory folder (`~`, `SarvTerminal`…) when idle at the shell,
+    ///   5. `"Terminal"` as a last resort.
+    /// Kept static + pure so it's trivially unit-testable and can't drift between
+    /// the two call sites.
+    static func paneDisplayTitle(userTitle: String?, override: String?,
+                                 process: String?, pwd: String?) -> String {
+        if let userTitle, !userTitle.isEmpty { return userTitle }
+        if let override, !override.isEmpty { return override }
+        // A bare shell as the foreground process means "nothing is running" —
+        // prefer the cwd over showing "zsh".
+        if let process, !process.isEmpty, !isShellProcessName(process) { return process }
+        if let folder = cwdFolderName(pwd) { return folder }
+        return "Terminal"
+    }
+
+    /// Login shells that stand in for "idle" — their name is never shown; the cwd
+    /// is shown instead. Compared case-insensitively and tolerant of the leading
+    /// `-` a login shell carries in `argv[0]`.
+    private static let shellProcessNames: Set<String> =
+        ["zsh", "bash", "sh", "fish", "dash", "tcsh", "csh", "ksh", "login"]
+
+    private static func isShellProcessName(_ name: String) -> Bool {
+        let normalized = (name.hasPrefix("-") ? String(name.dropFirst()) : name).lowercased()
+        return shellProcessNames.contains(normalized)
+    }
+
+    /// The folder label for a working directory: `~` for home, `/` for root,
+    /// otherwise the last path component. nil when there's no usable cwd.
+    private static func cwdFolderName(_ pwd: String?) -> String? {
+        guard let pwd, !pwd.isEmpty else { return nil }
+        if pwd == FileManager.default.homeDirectoryForCurrentUser.path { return "~" }
+        if pwd == "/" { return "/" }
+        let folder = (pwd as NSString).lastPathComponent
+        return folder.isEmpty ? "/" : folder
+    }
+
     func injectTabIntoAwaiting(awaiting: Ghostty.SurfaceView, draggedTabID: UUID) {
         guard let destTab = tab(containing: awaiting),
               let awaitingNode = destTab.surfaceTree.root?.node(view: awaiting),
@@ -1139,12 +1197,14 @@ final class VaultsTabsModel: ObservableObject {
             return Ghostty.SurfaceView(app)
         }()
         let sourceAwaiting = awaitingChoice.contains(surface.id)
-        if !sourceAwaiting {
-            // Show the source pane's name in the sidebar immediately (the new
-            // shell's own title arrives later and can read as a bare "~").
-            let sourceName = tab.paneTitleOverrides[surface.id]
-                ?? (surface.title.isEmpty ? "Terminal" : surface.title)
-            tab.paneTitleOverrides[newView.id] = sourceName
+        if !sourceAwaiting, let sourceOverride = tab.paneTitleOverrides[surface.id],
+           !sourceOverride.isEmpty {
+            // Inherit only a STABLE override (an SSH host label, or a name carried
+            // in from a drag) so a meaningful name follows the split. We must NOT
+            // seed from the source's live title: its derived title (running
+            // process / cwd) is already correct the instant the new shell spawns,
+            // and pinning the live title would freeze e.g. "node" onto the pane.
+            tab.paneTitleOverrides[newView.id] = sourceOverride
         }
         guard let newTree = try? tab.surfaceTree.inserting(
             view: newView, at: surface, direction: direction) else { return }
@@ -2069,11 +2129,14 @@ extension VaultsTabsModel {
     }
 
     private func savedPane(for view: Ghostty.SurfaceView, tab: TerminalTab) -> SavedSession.Pane {
-        // A manual rename (Change Terminal Title) wins, matching the pane
-        // header; otherwise the sticky override, then the live title.
-        let title = view.isUserTitled && !view.title.isEmpty
-            ? view.title
-            : tab.paneTitleOverrides[view.id] ?? (view.title.isEmpty ? nil : view.title)
+        // Persist only a STABLE name: an explicit user rename (Change Terminal
+        // Title) wins, else the sticky override (SSH host label, dragged-in
+        // name). NEVER the live OSC title — it may be a transient running command
+        // ("node …") that would wrongly pin onto the pane when the session is
+        // restored. A plain local pane saves nil and re-derives its title
+        // (running process / cwd) on reopen.
+        let userSet = view.isUserTitled && !view.title.isEmpty
+        let title = userSet ? view.title : tab.paneTitleOverrides[view.id]
         // A pane with a live SSH connection is saved as SSH; everything else
         // (plain shells, unresolved choosers) is saved as a local shell.
         if let conn = connections[view.id] {
@@ -2084,7 +2147,8 @@ extension VaultsTabsModel {
                 command: conn.command,
                 // Fall back to the host label so an SSH pane keeps its name even
                 // if no explicit override was recorded (the live title is ghost).
-                title: title ?? conn.model.host?.displayLabel)
+                title: title ?? conn.model.host?.displayLabel,
+                titleIsUserSet: userSet ? true : nil)
         }
         // A single-pane tab launched as a quick-connect `ssh …` with no staged
         // connection registered — preserve it as SSH so it reconnects on restore
@@ -2097,14 +2161,16 @@ extension VaultsTabsModel {
                 workingDirectory: nil,
                 hostID: tab.connectHost?.id,
                 command: cmd,
-                title: title)
+                title: title,
+                titleIsUserSet: userSet ? true : nil)
         }
         return .init(
             kind: .local,
             workingDirectory: view.pwd,
             hostID: nil,
             command: nil,
-            title: title)
+            title: title,
+            titleIsUserSet: userSet ? true : nil)
     }
 
     // MARK: Restore (open)
@@ -2156,6 +2222,7 @@ extension VaultsTabsModel {
                 }
             }
         }
+        return tab
     }
 
     private func buildNode(
@@ -2181,7 +2248,14 @@ extension VaultsTabsModel {
                 surface = Ghostty.SurfaceView(app)
                 sshPanes.append((surface, pane))
             }
-            if let title = pane.title { titleOverrides[surface.id] = title }
+            // Re-pin a sticky title override ONLY when it's a known-stable name:
+            // an SSH pane (host label — the blank surface has no title of its
+            // own) or an explicit user rename. A local pane's title is left to
+            // derive live (running process / cwd), so an old session that
+            // captured a transient command ("node …") can't strand it here.
+            if let title = pane.title, pane.kind == .ssh || pane.titleIsUserSet == true {
+                titleOverrides[surface.id] = title
+            }
             return .leaf(view: surface)
 
         case .split(let split):
@@ -2191,6 +2265,5 @@ extension VaultsTabsModel {
             let right = buildNode(split.right, app: app, sshPanes: &sshPanes, titleOverrides: &titleOverrides)
             return .split(.init(direction: direction, ratio: split.ratio, left: left, right: right))
         }
-        return tab
     }
 }
