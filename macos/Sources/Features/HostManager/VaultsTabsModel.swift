@@ -1460,12 +1460,17 @@ final class VaultsTabsModel: ObservableObject {
         guard let tab = activeTerminal,
               let current = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf()
         else { return }
-        closePane(surface: current)
+        // ⌘W arrives on the main thread from the keybind handler; the confirm
+        // alert is main-actor work.
+        MainActor.assumeIsolated { requestClosePane(surface: current) }
     }
 
-    /// `close_tab:this` — close the whole active tab.
+    /// `close_tab:this` — close the whole active tab. Invoked from the ⌘⌥W
+    /// keybind handler on the main thread; the confirm alert is main-actor work.
     func closeActiveTab() {
-        if case let .terminal(id) = selection { closeTerminal(id) }
+        if case let .terminal(id) = selection {
+            MainActor.assumeIsolated { requestCloseTerminal(id) }
+        }
     }
 
     /// `resize_split` — grow the active pane by `amount` points in `direction`.
@@ -1496,11 +1501,98 @@ final class VaultsTabsModel: ObservableObject {
         Ghostty.moveFocus(to: surface)
     }
 
+    // MARK: Close confirmation
+    //
+    // Every USER-initiated close (tab ×, pane ×, ⌘W / ⌘⌥W, "Close Other/Right
+    // Tabs") routes through a `request…` wrapper that confirms first if any
+    // surface about to be freed still has a running process — closing kills it.
+    // The wrappers share `confirmCloseIfRunning` so the wording and the
+    // needs-confirm check never drift. Programmatic/internal closes (the last
+    // pane collapsing, a dropped SSH surface, reopening) call the bare
+    // `closeTerminal` / `closePane` and intentionally skip the prompt.
+
+    /// If any of `surfaces` has a live process, show the running-process
+    /// confirmation and run `perform` only on confirm; otherwise run `perform`
+    /// immediately. `needsConfirmQuit` is the same signal the quit / close-tab
+    /// warnings use, so an idle shell never prompts.
+    @MainActor
+    private func confirmCloseIfRunning(
+        _ surfaces: [Ghostty.SurfaceView],
+        title: String,
+        message: String,
+        perform: @escaping () -> Void
+    ) {
+        guard surfaces.contains(where: { $0.needsConfirmQuit }) else {
+            perform()
+            return
+        }
+        SarvAlert.present(
+            title: title,
+            message: message,
+            buttons: [
+                .init("Close", isDestructive: true),
+                .init("Cancel", isCancel: true),
+            ]
+        ) { result in
+            if result.buttonIndex == 0 { perform() }
+        }
+    }
+
+    /// User-initiated close of a whole tab (chip ×, ⌘⌥W, "Close Tab" menu).
+    @MainActor
+    func requestCloseTerminal(_ id: UUID) {
+        guard let tab = terminals.first(where: { $0.id == id }) else { return }
+        confirmCloseIfRunning(
+            tab.surfaceTree.root?.leaves() ?? [],
+            title: "Close Tab?",
+            message: "This tab still has a running process. If you close the tab the process will be killed."
+        ) { [weak self] in self?.closeTerminal(id) }
+    }
+
+    /// User-initiated close of a single pane (pane header ×, ⌘W).
+    @MainActor
+    func requestClosePane(surface: Ghostty.SurfaceView) {
+        confirmCloseIfRunning(
+            [surface],
+            title: "Close Terminal?",
+            message: "This terminal still has a running process. If you close it the process will be killed."
+        ) { [weak self] in self?.closePane(surface: surface) }
+    }
+
+    /// User-initiated "Close Other Tabs".
+    @MainActor
+    func requestCloseOtherTabs(keep id: UUID) {
+        let others = terminals
+            .filter { $0.id != id }
+            .flatMap { $0.surfaceTree.root?.leaves() ?? [] }
+        confirmCloseIfRunning(
+            others,
+            title: "Close Other Tabs?",
+            message: "One or more other tabs still have a running process. If you close them those processes will be killed."
+        ) { [weak self] in self?.closeOtherTabs(keep: id) }
+    }
+
+    /// User-initiated "Close Tabs to the Right".
+    @MainActor
+    func requestCloseTabsToRight(of id: UUID) {
+        guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        let toRight = terminals[(idx + 1)...].flatMap { $0.surfaceTree.root?.leaves() ?? [] }
+        confirmCloseIfRunning(
+            toRight,
+            title: "Close Tabs to the Right?",
+            message: "One or more tabs to the right still have a running process. If you close them those processes will be killed."
+        ) { [weak self] in self?.closeTabsToRight(of: id) }
+    }
+
     /// Close a terminal tab, selecting a sensible neighbor afterward.
     func closeTerminal(_ id: UUID) {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
         recordAndRelease(terminals[idx], at: idx)
         terminals.remove(at: idx)
+        // No tabs left → nothing to show in the all-tabs overview. Done here (not
+        // at the call site) so it holds no matter where the close came from, and
+        // after any close confirmation has already been answered.
+        if terminals.isEmpty { showAllTabs = false }
         guard case let .terminal(selected) = selection, selected == id else { return }
         if terminals.isEmpty {
             selection = .dashboard
@@ -1996,10 +2088,14 @@ final class VaultsTabsModel: ObservableObject {
     private func handleCloseTabNote(_ note: Notification, kind: CloseTabKind) {
         guard let surface = note.object as? Ghostty.SurfaceView,
               let t = tab(containing: surface) else { return }
-        switch kind {
-        case .this: closeTerminal(t.id)
-        case .other: closeOtherTabs(keep: t.id)
-        case .right: closeTabsToRight(of: t.id)
+        // The confirm alerts are main-actor work; these notes are delivered on
+        // the .main queue (see `observe`), so we're already on the main actor.
+        MainActor.assumeIsolated {
+            switch kind {
+            case .this: requestCloseTerminal(t.id)
+            case .other: requestCloseOtherTabs(keep: t.id)
+            case .right: requestCloseTabsToRight(of: t.id)
+            }
         }
     }
 
@@ -2040,15 +2136,35 @@ final class VaultsTabsModel: ObservableObject {
             conn.controller.handleProcessExited()
             return
         }
-        awaitingChoice.remove(surface.id)
-        let remaining = tab.surfaceTree.removing(node)
-        if remaining.isEmpty {
-            closeTerminal(tab.id)
-        } else {
-            tab.surfaceTree = remaining
-            if let next = remaining.root?.leftmostLeaf() {
-                Ghostty.moveFocus(to: next)
+        // Actually remove the pane (collapsing the split, or closing the tab if
+        // it was the last one).
+        let performClose = { [weak self] in
+            guard let self else { return }
+            self.awaitingChoice.remove(surface.id)
+            let remaining = tab.surfaceTree.removing(node)
+            if remaining.isEmpty {
+                self.closeTerminal(tab.id)
+            } else {
+                tab.surfaceTree = remaining
+                if let next = remaining.root?.leftmostLeaf() {
+                    Ghostty.moveFocus(to: next)
+                }
             }
+        }
+        // A process that exited on its own (`exit`, a crash) needs no prompt —
+        // there's nothing left to kill. An explicit `close_surface` while a
+        // process is still alive routes through the shared confirm, same as the
+        // pane × / ⌘W. Delivered on the .main queue, so we're on the main actor.
+        if processAlive {
+            MainActor.assumeIsolated {
+                confirmCloseIfRunning(
+                    [surface],
+                    title: "Close Terminal?",
+                    message: "This terminal still has a running process. If you close it the process will be killed.",
+                    perform: performClose)
+            }
+        } else {
+            performClose()
         }
     }
 

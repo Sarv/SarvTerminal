@@ -55,9 +55,9 @@ struct VaultsAllTabsView: View {
                     Text("⌘\(number)").font(.system(size: 10)).foregroundStyle(.tertiaryText)
                 }
                 Button {
-                    tabs.closeTerminal(tab.id)
-                    // Don't leave the user staring at an empty overview.
-                    if tabs.terminals.isEmpty { tabs.showAllTabs = false }
+                    // Confirms first if this tab has a running process; hiding
+                    // the overview when the last tab goes is handled in the model.
+                    tabs.requestCloseTerminal(tab.id)
                 } label: {
                     Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
                 }

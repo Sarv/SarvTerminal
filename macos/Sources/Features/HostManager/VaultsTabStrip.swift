@@ -489,9 +489,9 @@ private struct TabChip: View {
 
     private var menuItems: [TabChipMenuItem] {
         [
-            .init(title: "Close Tab", action: { tabs.closeTerminal(tab.id) }),
-            .init(title: "Close Other Tabs", action: { tabs.closeOtherTabs(keep: tab.id) }),
-            .init(title: "Close Tabs to the Right", action: { tabs.closeTabsToRight(of: tab.id) }),
+            .init(title: "Close Tab", action: { tabs.requestCloseTerminal(tab.id) }),
+            .init(title: "Close Other Tabs", action: { tabs.requestCloseOtherTabs(keep: tab.id) }),
+            .init(title: "Close Tabs to the Right", action: { tabs.requestCloseTabsToRight(of: tab.id) }),
             .init(title: "Show All Tabs", action: { tabs.showAllTabs = true }),
             .init(title: "Duplicate Tab", action: { tabs.duplicateTab(tab.id) }),
             .init(title: "Save Session…", action: onSaveSession),
@@ -548,7 +548,7 @@ private struct TabChip: View {
                 closeHitWidth: closeHitWidth,
                 closeHitLeadingInset: closeHitLeadingInset,
                 onActivate: { tabs.selectTerminal(tab.id) },
-                onClose: { tabs.closeTerminal(tab.id) },
+                onClose: { tabs.requestCloseTerminal(tab.id) },
                 onHoverChanged: { hovering = $0 },
                 onCloseHoverChanged: { hoveringClose = $0 },
                 menuItems: menuItems)

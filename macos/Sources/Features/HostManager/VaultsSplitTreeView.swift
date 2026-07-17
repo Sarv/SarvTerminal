@@ -263,7 +263,7 @@ private struct VaultsSplitLeaf: View {
                 VaultsTabsModel.shared.toggleFocusMode()
             }
             PaneCloseButton {
-                VaultsTabsModel.shared.closePane(surface: surfaceView)
+                VaultsTabsModel.shared.requestClosePane(surface: surfaceView)
             }
         }
         .layoutPriority(1)

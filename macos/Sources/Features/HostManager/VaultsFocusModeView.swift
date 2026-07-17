@@ -68,7 +68,7 @@ struct VaultsFocusModeView: View {
                             broadcasting: tab.broadcasting,
                             onSelect: { tabs.selectFocusModePane(pane) },
                             onDuplicate: { tabs.duplicatePane(surface: pane) },
-                            onClose: { tabs.closePane(surface: pane) }
+                            onClose: { tabs.requestClosePane(surface: pane) }
                         )
                     }
                 }
