@@ -227,13 +227,26 @@ final class VaultsTabsModel: ObservableObject {
     /// `VaultsRootView`.
     @Published var presentingSerialConnect = false
 
-    /// Recently closed tabs (oldest first), retained so they can be reopened
-    /// with full state — local shell, SSH session, or a pending chooser — via
-    /// the reopen-closed-tab shortcut (⌘⇧T). Retaining the `TerminalTab` keeps
-    /// its live surface tree (and child processes) alive until the tab is
-    /// reopened or evicted past `maxClosedTabs`.
-    private var closedTabs: [(tab: TerminalTab, index: Int)] = []
-    private let maxClosedTabs = 25
+    /// A recently-closed tab captured as a lightweight VALUE snapshot (its split
+    /// layout + per-pane cwd / SSH host) — NOT the live `TerminalTab`. Closing a
+    /// tab frees its surfaces immediately (joining the IO/render threads and
+    /// killing the child process), and ⌘⇧T recreates the tab from this snapshot.
+    /// Kept in memory only and briefly, so a handful of closes can never strand
+    /// live terminals in the background (the multi-GB / hundreds-of-threads leak).
+    private struct ClosedTab {
+        let session: SavedSession
+        /// Original position, so reopen lands where the tab was.
+        let index: Int
+        /// When the tab was closed — entries past `closedTabRetention` are dropped.
+        let closedAt: Date
+    }
+    private var closedTabs: [ClosedTab] = []
+    /// At most this many recent closes are reopenable (newest kept). Each entry
+    /// is only a lightweight value snapshot (a few KB), NOT a live surface, so
+    /// this is a UX choice with negligible memory cost — not a resource cap.
+    private let maxClosedTabs = 10
+    /// …and only within this window after closing; older ones are unrecoverable.
+    private let closedTabRetention: TimeInterval = 5 * 60
 
     private var observers: [NSObjectProtocol] = []
     /// Observers on the NSWorkspace center (sleep/wake) — removed in deinit.
@@ -1426,11 +1439,7 @@ final class VaultsTabsModel: ObservableObject {
     /// Close a terminal tab, selecting a sensible neighbor afterward.
     func closeTerminal(_ id: UUID) {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
-        // Tear down any SSH connection popups bound to this tab's panes.
-        for surface in terminals[idx].surfaceTree.root?.leaves() ?? [] {
-            teardownConnection(surfaceID: surface.id)
-        }
-        recordClosed(terminals[idx], at: idx)
+        recordAndRelease(terminals[idx], at: idx)
         terminals.remove(at: idx)
         guard case let .terminal(selected) = selection, selected == id else { return }
         if terminals.isEmpty {
@@ -1445,32 +1454,43 @@ final class VaultsTabsModel: ObservableObject {
         }
     }
 
-    /// Record a closed tab (retaining it) so it can be reopened later. Newest
-    /// entries are kept; the oldest are evicted past `maxClosedTabs`, which
-    /// releases their surface trees and terminates the child processes.
+    /// Snapshot a tab for ⌘⇧T, then RELEASE its live resources: stop its SSH
+    /// controllers/popups and drop the last strong reference so ARC frees the
+    /// surfaces — which joins the IO/render threads and terminates the child
+    /// process. The snapshot is taken BEFORE teardown so it can still read the
+    /// live SSH connection registry to capture each pane's reconnect info.
+    /// Shared by every close path (single tab, "close others", "close to right").
+    private func recordAndRelease(_ tab: TerminalTab, at index: Int) {
+        recordClosed(tab, at: index)
+        for surface in tab.surfaceTree.root?.leaves() ?? [] {
+            awaitingChoice.remove(surface.id)
+            teardownConnection(surfaceID: surface.id)
+        }
+        attentionTabs.remove(tab.id)
+    }
+
+    /// Capture a closed tab as a lightweight value snapshot so it can be
+    /// recreated by ⌘⇧T. Only the `maxClosedTabs` most-recent closes are kept.
     private func recordClosed(_ tab: TerminalTab, at index: Int) {
-        closedTabs.append((tab, index))
+        guard let session = makeSavedSession(from: tab, name: tab.displayName) else { return }
+        closedTabs.append(ClosedTab(session: session, index: index, closedAt: Date()))
         if closedTabs.count > maxClosedTabs {
             closedTabs.removeFirst(closedTabs.count - maxClosedTabs)
         }
     }
 
     /// Reopen the most recently closed tab at (close to) its original position,
-    /// restoring its exact session. Returns the reopened tab, or nil if there's
-    /// nothing to reopen. Backs the reopen-closed-tab shortcut and the
-    /// "Reopen Closed Tab" command-palette entry.
+    /// recreating it from its snapshot: local panes respawn at their saved cwd,
+    /// SSH panes reconnect. Entries older than `closedTabRetention` are dropped
+    /// first, so anything closed over 5 minutes ago is gone. Returns the
+    /// reopened tab, or nil if there's nothing (left) to reopen. Backs the
+    /// reopen-closed-tab shortcut and the "Reopen Closed Tab" palette entry.
     @discardableResult
     func reopenLastClosedTab() -> TerminalTab? {
+        let cutoff = Date().addingTimeInterval(-closedTabRetention)
+        closedTabs.removeAll { $0.closedAt < cutoff }
         guard let entry = closedTabs.popLast() else { return nil }
-        let tab = entry.tab
-        let insertIndex = min(max(0, entry.index), terminals.count)
-        terminals.insert(tab, at: insertIndex)
-        selection = .terminal(tab.id)
-        HostManagerController.shared.show()
-        if let surface = tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf() {
-            Ghostty.moveFocus(to: surface)
-        }
-        return tab
+        return openSavedSession(entry.session, at: min(max(0, entry.index), terminals.count))
     }
 
     /// Reset the Vaults window's first responder to its content view. Used when
@@ -1561,7 +1581,7 @@ final class VaultsTabsModel: ObservableObject {
     /// Close every terminal tab except `id` (right-click → Close Other Tabs).
     func closeOtherTabs(keep id: UUID) {
         guard terminals.contains(where: { $0.id == id }) else { return }
-        for (i, t) in terminals.enumerated() where t.id != id { recordClosed(t, at: i) }
+        for (i, t) in terminals.enumerated() where t.id != id { recordAndRelease(t, at: i) }
         terminals.removeAll { $0.id != id }
         selection = .terminal(id)
     }
@@ -1571,7 +1591,7 @@ final class VaultsTabsModel: ObservableObject {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
         let removed = Set(terminals[(idx + 1)...].map(\.id))
         guard !removed.isEmpty else { return }
-        for (i, t) in terminals.enumerated() where removed.contains(t.id) { recordClosed(t, at: i) }
+        for (i, t) in terminals.enumerated() where removed.contains(t.id) { recordAndRelease(t, at: i) }
         terminals.removeAll { removed.contains($0.id) }
         if case let .terminal(selected) = selection, removed.contains(selected) {
             selection = .terminal(id)
@@ -2091,8 +2111,11 @@ extension VaultsTabsModel {
 
     /// Reopen a saved session as a new tab, recreating its split layout: each
     /// local pane respawns at its saved cwd and each SSH pane auto-connects.
-    func openSavedSession(_ session: SavedSession) {
-        guard let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+    /// `index` places the new tab at a specific slot (used by ⌘⇧T to restore a
+    /// closed tab's position); nil appends at the end. Returns the new tab.
+    @discardableResult
+    func openSavedSession(_ session: SavedSession, at index: Int? = nil) -> TerminalTab? {
+        guard let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return nil }
 
         // Build the surface tree up front. Local panes spawn directly in their
         // saved cwd; SSH panes start as blank placeholders we connect once the
@@ -2108,7 +2131,11 @@ extension VaultsTabsModel {
         tab.sessionID = session.linkedSessionID ?? session.id
         tab.paneTitleOverrides = titleOverrides
         tab.color = session.colorID.flatMap { color(forOptionID: $0) }
-        terminals.append(tab)
+        if let index, index >= 0, index <= terminals.count {
+            terminals.insert(tab, at: index)
+        } else {
+            terminals.append(tab)
+        }
         selection = .terminal(tab.id)
         HostManagerController.shared.show()
         if let first = tab.surfaceTree.root?.leftmostLeaf() {
@@ -2164,5 +2191,6 @@ extension VaultsTabsModel {
             let right = buildNode(split.right, app: app, sshPanes: &sshPanes, titleOverrides: &titleOverrides)
             return .split(.init(direction: direction, ratio: split.ratio, left: left, right: right))
         }
+        return tab
     }
 }
