@@ -221,6 +221,34 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
         window?.close()
     }
 
+    // MARK: - File editor overlay
+
+    /// The in-window file viewer/editor overlay (covers the tab bar + content).
+    private var fileEditorOverlay: NSView?
+
+    /// Present the inbuilt file viewer/editor as a full-window overlay INSIDE
+    /// this window (not a separate window), so it moves/resizes with the window
+    /// and can never float over other apps or detach in Mission Control.
+    func presentFileEditor(model: FileViewerModel) {
+        dismissFileEditor()
+        guard let container = window?.contentView else { return }
+        let host = NSHostingView(rootView:
+            FileViewerView(model: model, onClose: { [weak self] in self?.dismissFileEditor() })
+        )
+        // Autoresizing (not Auto Layout) — see the note on the container above.
+        host.frame = container.bounds
+        host.autoresizingMask = [.width, .height]
+        container.addSubview(host, positioned: .above, relativeTo: nil)
+        fileEditorOverlay = host
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func dismissFileEditor() {
+        fileEditorOverlay?.removeFromSuperview()
+        fileEditorOverlay = nil
+    }
+
     /// ⌘T (and the New Tab menu item routed here) → new embedded terminal tab.
     @IBAction func newTab(_ sender: Any?) {
         VaultsTabsModel.shared.newTerminal()

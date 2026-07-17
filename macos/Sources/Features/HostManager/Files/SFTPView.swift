@@ -57,7 +57,6 @@ struct SFTPView: View {
     @State private var renameText = ""
     @State private var permTarget: (side: Side, item: FileItem)?
     @State private var conflict: ConflictRequest?
-    @State private var viewer: FileViewerModel?
     @State private var pendingDelete: (side: Side, item: FileItem)?
 
     struct ConflictRequest: Identifiable {
@@ -139,14 +138,6 @@ struct SFTPView: View {
         .overlay {
             if let t = session.transfer { progressOverlay(t) }
         }
-        .overlay {
-            if let v = viewer {
-                FileViewerView(model: v, onClose: { viewer = nil })
-                    .transition(.move(edge: .trailing))
-                    .zIndex(3)
-            }
-        }
-        .animation(.easeInOut(duration: 0.15), value: viewer == nil)
     }
 
     private func progressOverlay(_ t: TransferState) -> some View {
@@ -208,7 +199,7 @@ struct SFTPView: View {
         case .chooseHost: hostPickerSide = side
         case .open(let item):
             if item.isDirectory { m.open(item) }
-            else { viewer = FileViewerModel(item: item, backend: m.backend) }
+            else { FileEditorWindowController.shared.open(model: FileViewerModel(item: item, backend: m.backend)) }
         case .goUp: m.goUp()
         case .navigate(let p): Task { await m.load(p) }
         case .refresh: Task { await m.reload() }

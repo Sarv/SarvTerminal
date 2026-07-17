@@ -1645,6 +1645,43 @@ Design point to preserve: hold the highlight in **buffer tags / search contexts 
 5. Toggle Rendered⇄Raw with the bar open and a query present — the search re-applies to the newly shown view.
 6. Esc closes the bar and clears all highlights.
 
+## 23. File editor as an in-window full-cover overlay
+
+### What it is
+
+The inbuilt file viewer/editor (§15, §22) opens as a **full-window overlay hosted inside the single main window**, covering the tab strip and content — not as a separate/child window. Opening a file from the SFTP browser and the "edit config file" action both route through one presenter. Because it is a subview of the main window's content view, it moves and resizes with the window natively and can **never** float over other apps or detach in Mission Control / across displays.
+
+Source: `macos/Sources/Features/HostManager/HostManagerController.swift` (`presentFileEditor(model:)` / `dismissFileEditor()`), `macos/Sources/Features/HostManager/Files/FileEditorWindowController.swift` (thin façade kept so existing call sites don't change), `macos/Sources/Features/HostManager/Files/SFTPView.swift` (file-open routes to the presenter).
+
+### Key logic & data model
+
+- **Single-window app.** The whole UI lives in one window (`HostManagerController`, see §6) whose `contentView` is a plain `NSView` container holding a background image view + one `NSHostingView` of the root SwiftUI (tab strip + content).
+- **Presenter.** `presentFileEditor(model:)` builds an `NSHostingView(FileViewerView(model:onClose:))`, sizes it to `container.bounds` with `autoresizingMask = [.width,.height]`, and adds it as the **topmost** subview of the container (`positioned: .above`). `dismissFileEditor()` removes it; the viewer's own ✕ calls back into it.
+  - Autoresizing (not Auto Layout) is mandatory — pinning a hosting view with required constraints lets SwiftUI's intrinsic size force the window past the screen (documented on the container).
+  - The overlay covers the tab strip (which lives in the content, not the titlebar); the native titlebar/traffic-lights remain.
+- **Why not a separate window.** An earlier iteration used a borderless child `NSWindow` sized over the parent and re-covered on the parent's move/resize/screen-change notifications. Even as a child window it (a) floated above other apps when the app was deactivated, (b) detached / left a sliver when dragged between displays of different size/scale, and (c) appeared separately in Mission Control. An in-window subview eliminates all three by construction — there is no second window.
+- The viewer's `.background(.regularMaterial)` blurs the dashboard behind it so it reads as an opaque cover.
+
+### macOS → Linux/GTK equivalents
+
+| macOS piece | What it does | Linux / GTK4 equivalent |
+|---|---|---|
+| single main window (`HostManagerController`) + `NSView` container + `NSHostingView` | the one window everything lives in | Already the §6 model — one `GtkApplicationWindow` whose child is an overlay-capable container. |
+| `container.addSubview(host, positioned: .above)` | full-cover overlay on top of everything in-window | `GtkOverlay`: add the editor as an overlay child over the main content; or a top page of a `GtkStack`. Either keeps it inside the one window. |
+| `autoresizingMask = [.width,.height]` | fill + follow the window, no min-size pressure | overlay children fill by default (`hexpand`/`vexpand`); no constraint-driven min-size issue. |
+| viewer `onClose` → `removeFromSuperview` | dismiss the overlay | remove the overlay child / pop the stack page. |
+| `.background(.regularMaterial)` | opaque blur cover over the dashboard | solid/semi-opaque background on the overlay child (GTK has no cheap blur; a solid theme background is fine). |
+
+Explicitly **do not** port this as a second `GtkWindow` layered over the main one — that reintroduces the float-over-other-apps / detach-on-move / separate-in-overview bugs. Keep it a single in-window overlay.
+
+### How to verify on Linux
+
+1. Open a file from the SFTP browser: the editor covers the whole window including the tab strip; the window's own titlebar controls remain.
+2. Drag the window between two monitors of different size/scale — the editor stays perfectly covering, no sliver, no lag.
+3. With the editor open, click another application — the whole window (editor included) goes behind it; the editor never floats on top on its own.
+4. In the window overview / expose equivalent, the editor is part of the one window, not a separate tile.
+5. Close via ✕ returns to the dashboard underneath.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
