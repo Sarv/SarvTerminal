@@ -36,8 +36,8 @@ struct TeamsSectionView: View {
                     }
                 }
             } else {
-                VaultsEmptyState(icon: "person.crop.circle.badge.questionmark", title: "Not signed in",
-                                 subtitle: "Use the account button in the top-right to sign in to your Sarv team vaults.")
+                VaultsEmptyState(icon: "clock", title: "Team Vaults — coming soon",
+                                 subtitle: "Shared team vaults aren't available yet. This feature is coming soon.")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

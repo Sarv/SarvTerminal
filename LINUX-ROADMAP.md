@@ -1714,6 +1714,16 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **macOS→Linux.** GTK tooltips have their own timing; expose one delay constant if a custom tooltip layer is used.
 
+## 25. Team Vaults gated as "coming soon"
+
+**What it is.** The Team Vault sign-in and Teams surfaces aren't production-ready, so both now show a **"coming soon"** state instead of a functional sign-in: the account-button popover (`AccountMenuButton.signInPanel`) replaces the public Login/token UI with a "Team Vaults — coming soon" notice, and the Teams section's signed-out empty state (`TeamsSectionView`) says the same. The account button's tooltip reads "Team Vaults (coming soon)".
+
+**Logic.** The **dev-only** sign-in path (gated by `VaultConfig.devLoginEnabled`) is preserved so the team can keep developing the vault; only the public entry points are gated. No backend behavior changes — purely which UI is shown when signed out.
+
+**macOS→Linux.** Mirror the gate in the GTK port: show the coming-soon notice for the public sign-in / Teams empty state, keep any dev-login behind the same flag. Revert both when Team Vaults ships.
+
+**Verify on Linux.** Signed out, the account/sign-in surface and the Teams section both read "coming soon"; a dev build with the dev-login flag can still sign in and see the real Teams UI.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

@@ -21,7 +21,7 @@ struct AccountMenuButton: View {
                 .frame(width: 28, height: 24)
         }
         .buttonStyle(.plain)
-        .hoverTip(store.activeEmail.map { "Signed in: \($0)" } ?? "Sign in to Team Vaults")
+        .hoverTip(store.activeEmail.map { "Signed in: \($0)" } ?? "Team Vaults (coming soon)")
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             if store.isAuthenticated {
                 signedInPanel
@@ -34,35 +34,20 @@ struct AccountMenuButton: View {
     // MARK: Signed out
 
     @State private var email = "vault-owner@sarv.com"
-    @State private var manualToken = ""
 
     private var signInPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Sign in to Sarv Vault", systemImage: "lock.shield").font(.headline)
+            Label("Team Vaults", systemImage: "lock.shield").font(.headline)
 
-            Button {
-                NSWorkspace.shared.open(VaultConfig.loginURL)
-            } label: {
-                HStack { Image(systemName: "globe"); Text("Login") }
-                    .frame(maxWidth: .infinity)
+            HStack(spacing: 6) {
+                Image(systemName: "clock")
+                Text("Coming soon")
             }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
-            Text("Opens the Sarv login in your browser. After signing in, paste the auth token below (automatic sign-in coming soon).")
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.orange)
+
+            Text("Signing in to your Sarv team vaults isn't available yet — this feature is coming soon.")
                 .font(.caption).foregroundStyle(.secondaryText)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Paste auth token").font(.caption.weight(.semibold))
-                HStack {
-                    TextField("token…", text: $manualToken)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { store.loginWithToken(manualToken) }
-                    Button("Submit") { store.loginWithToken(manualToken) }
-                        .disabled(store.isBusy || manualToken.isEmpty)
-                }
-            }
 
             if VaultConfig.devLoginEnabled {
                 Divider()
