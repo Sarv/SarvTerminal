@@ -153,6 +153,11 @@ final class RemoteFileBackend: FileBackend {
         if !host.identityFile.isEmpty {
             args += ["-i", (host.identityFile as NSString).expandingTildeInPath, "-o", "IdentitiesOnly=yes"]
         }
+        // Honor a jump/bastion host so SFTP reaches hosts that are only
+        // reachable through it (e.g. Ansible-mirrored hosts routed through the
+        // control node). `-J` works for both ssh and sftp.
+        if !host.proxyJump.isEmpty { args += ["-J", host.proxyJump] }
+        if host.forwardAgent { args.append("-A") }
         return args
     }
 

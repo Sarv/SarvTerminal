@@ -1682,6 +1682,20 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 4. In the window overview / expose equivalent, the editor is part of the one window, not a separate tile.
 5. Close via ✕ returns to the dashboard underneath.
 
+## 24. File browser & tooltip refinements
+
+### 24.1 SFTP honors ProxyJump
+
+**Symptom.** A saved host that is only reachable through a jump/bastion host (its `proxyJump` set) opens fine in a terminal (the terminal `sshCommand` adds `-J`), but the **file browser** (SFTP) failed to connect to it.
+
+**Root cause.** The SFTP backend's shared `sshOptions()` (used by both the `ssh` runner and the `sftp` batch calls) built its option list from a subset of the host's fields and **omitted `proxyJump`** (and `forwardAgent`). So SFTP tried to reach the target directly, which fails for a private host behind a bastion.
+
+**Fix / logic.** Append `-J <proxyJump>` (and `-A` when `forwardAgent`) to `sshOptions()`. `-J` is accepted by both `ssh` and `sftp`, so the one helper covers list/mkdir/rename/chmod (ssh) and file get/put (sftp). Source: `macos/Sources/Features/HostManager/Files/FileBackend.swift` `RemoteFileBackend.sshOptions()`.
+
+**macOS→Linux.** No platform specifics — the GTK port's remote file backend must build the same `-J`/`-A` options from the saved host. Keep one shared options builder so ssh and sftp can't drift.
+
+**Verify on Linux.** Save a host with a jump host; open it in the file browser; listing + open/save a file must succeed by tunneling through the jump host. A directly-reachable host is unaffected.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
