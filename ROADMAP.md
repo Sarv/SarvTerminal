@@ -34,7 +34,9 @@ and SSH/connection managers.
   git-backed **settings sync** across machines.
 - **App / workflow:** Command Palette, Quick Terminal (dropdown), global keybinds,
   macOS Shortcuts / AppleScript automation, notifications, custom app icon,
-  Sparkle auto-update, secure keyboard entry.
+  Sparkle auto-update, secure keyboard entry, **broadcast input to all panes**,
+  **focus mode**, **in-app Markdown/file viewer + editor** (Rendered/Raw, in-file
+  find, syntax highlighting, full-window overlay).
 
 ### Known constraint
 - **macOS-only.** Upstream Ghostty is Linux + macOS; Windows is not near-term
@@ -104,7 +106,7 @@ Strategic judgement, ordered by leverage. Revisit as the market moves.
 | **P2** | **Live session sharing** | Completes the team story — share the *secret* **and** the *session*; differentiates the vault. | Med-High |
 | **P3** | **Cross-platform — Linux first, then Windows** | Neutralizes Termius's structural win. Linux is comparatively cheap (Ghostty already has a GTK apprt); Windows is the hard, long-horizon lift (blocked on `libghostty`). | Linux: Low-Med / Windows: High |
 | **P4** | **tmux / multiplexer integration** | Table-stakes vs WezTerm / iTerm2 for power users; persistent/detachable sessions. | Medium |
-| **P5** | **Ansible-native connection sync** | Meets Infra-as-Code teams where they live; unique angle vs Warp (no SSH manager) / Termius (no IaC). Read-only import of Ansible inventory → hosts + groups, plus group-driven theming. See §5. | Low-Med (phased) |
+| ~~**P5**~~ ✅ | **Ansible-native connection sync** — **DONE** | Meets Infra-as-Code teams where they live; unique angle vs Warp (no SSH manager) / Termius (no IaC). Read-only import of Ansible inventory → hosts + groups, plus group-driven theming. Built on **`feat/ansible`** (in DevOps testing). See §5. | Delivered |
 
 ### The wedge (recommended focus) 🧭
 Our most **defensible** play is **P1 + P2 fused**: an **AI agent that operates
@@ -116,7 +118,11 @@ unique to our positioning.
 
 ## 5. DevOps / Ansible integration — meet IaC teams where they live 🧭
 
-assessed here against our architecture.
+> **Status: ✅ Implemented** on the **`feat/ansible`** branch (in DevOps testing before merge).
+> Ships the inventory **mirror** (local file/dir/script **and** remote control node over
+> SSH), **live auto-sync** (watch + reconcile), **group-driven theming**, read-only
+> managed-host UX, and ProxyJump routing. Porting notes: `LINUX-ROADMAP.md` §24.
+
 **Strategic thesis:** teams that have fully adopted Ansible treat their **inventory as
 the single source of truth**; a manual visual connection manager feels like a step
 backward. The pitch flips ownership: *"don't manage connections in SarvTerminal —
@@ -126,7 +132,7 @@ Termius (no IaC integration) covers** — confirmed against the 2026-07-15 scan.
 
 Three ideas, ordered by leverage / feasibility:
 
-### 5.1 Ansible Dynamic Vault — auto-sync inventory → host list ⭐
+### 5.1 Ansible Dynamic Vault — auto-sync inventory → host list ⭐ ✅ **Done**
 - **Idea (Ankur):** parse the team's Ansible inventory (static `hosts.yml`/INI, or a
   **dynamic inventory** script / AWS/GCP plugin) and auto-populate the host list,
   preserving Ansible groups (`[webservers]`, `[databases]`) as our host groups. Watch
@@ -144,7 +150,7 @@ Three ideas, ordered by leverage / feasibility:
   - Prefer Ansible's own tooling (`ansible-inventory`) over hand-rolling INI/YAML edge
     cases — matches our "use a maintained parser for solved problems" standard.
 
-### 5.2 Context-aware per-host theming driven by Ansible groups/vars ⭐
+### 5.2 Context-aware per-host theming driven by Ansible groups/vars ⭐ ✅ **Done**
 - **Idea (Ankur):** map themes to **Ansible groups / vars** rather than to specific IPs.
   On SSH into a host in `[prod]` (or with `env: production` in `group_vars`), the window
   tints red — a visual safety net against acting on production by mistake.
@@ -152,7 +158,7 @@ Three ideas, ordered by leverage / feasibility:
   generalizes the key from host→theme to group/var→theme, fed by the 5.1 importer. The
   "prod = red" guardrail is a cheap, memorable win that pairs naturally with 5.1.
 
-### 5.3 Playbook-failure debugging + bastion/proxy-jump mapping
+### 5.3 Playbook-failure debugging + bastion/proxy-jump mapping — 🟡 **partial**
 - **Idea (Ankur):** (a) right-click a host in the parsed inventory to instantly open an
   SSH session or **SFTP** tab to check logs (`/var/log/...`) — one-click post-failure
   debugging; (b) parse `ansible_ssh_common_args` **ProxyJump/bastion** args and visually
@@ -164,24 +170,21 @@ Three ideas, ordered by leverage / feasibility:
   slice is parse-and-connect (honor the proxy jump when opening a session); defer the
   visualization to a later phase.
 
-**Recommended slice 🧭:** ship **5.1 (read-only importer) + 5.2 (group-driven theming)**
-first — together they deliver the whole pitch with the least new surface, reusing host
-import, groups, and per-host themes. 5.3(a) rides along nearly for free; defer 5.3(b).
+**Delivered:** **5.1 (mirror + live sync) + 5.2 (group-driven theming)** are done, plus
+**5.3(a)** (connect + SFTP to inventory hosts — the file browser now honors ProxyJump).
+**Still open:** **5.3(b)** live tunnel/bastion *visualization* (parse-and-connect is done;
+the visual map is deferred).
 
 ---
 
 ## 6. Backlog / smaller ideas
 Unranked; promote into the table above when scoped.
-- **In-app Markdown viewer/editor** (Warp-style) — Cmd+Click a `.md` path opens an
-  in-app viewer with **Rendered** (WKWebView) + **Source** (editable) modes and
-  Save. Rendering is shared C in the core via **md4c** (already vendored at
-  `pkg/md4c/`, GFM tables + task lists, SAFE/`NOHTML` mode); each platform builds
-  only the viewer UI. Hook point: `Ghostty.App.swift` `openURL` (intercept local
-  `.md`/text before `NSWorkspace`). Precedent: `HostManager/Files/FileViewerView`.
 - Sixel image protocol (alongside existing Kitty graphics). 🔸
-- Broadcast input to all panes/hosts.
 - Command blocks / notebooks (Warp-style structured output), even without AI.
 - Shareable "workflows" (parameterized command templates) beyond snippets.
+
+> **Shipped** (moved to *Already have*): In-app Markdown viewer/editor; Broadcast
+> input to all panes.
 
 ---
 
