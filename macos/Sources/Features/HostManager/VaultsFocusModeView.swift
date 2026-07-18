@@ -179,6 +179,9 @@ extension View {
 }
 
 private struct HoverTip: ViewModifier {
+    /// Shared appear delay for every `hoverTip` — the one knob for tooltip speed.
+    static let appearDelay: TimeInterval = 0.2
+
     let text: String
     @State private var id = UUID()
     @State private var frame: CGRect = .zero
@@ -202,7 +205,7 @@ private struct HoverTip: ViewModifier {
                         TooltipPresenter.shared.show(text, anchor: frame, id: id)
                     }
                     pending = work
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + HoverTip.appearDelay, execute: work)
                 } else {
                     TooltipPresenter.shared.hide(id: id)
                 }

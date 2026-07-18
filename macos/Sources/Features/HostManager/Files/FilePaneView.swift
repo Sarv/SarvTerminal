@@ -113,6 +113,7 @@ struct FilePaneView: View {
                     .onChange(of: model.path) { _ in scrollToLast(proxy) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .hoverTip("Double-click to type a path")
             }
 
             // Toggles between breadcrumb and path-entry; the icon reflects what a
@@ -122,11 +123,16 @@ struct FilePaneView: View {
                     .font(.system(size: 11))
             }
             .buttonStyle(.plain)
-            .hoverTip(pathEditing ? "Show breadcrumb (Esc)" : "Type a path")
+            .hoverTip(pathEditing ? "Show breadcrumb (Esc)" : "Type a path — or double-click the bar")
         }
         .padding(.horizontal, 7).padding(.vertical, 3)
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: 5).fill(Color.secondary.opacity(pathEditing ? 0.18 : 0.08)))
+        // Double-click anywhere in the bar's empty space to type a path — the
+        // crumb buttons handle their own single clicks, so this only fires on the
+        // blank area after the last folder.
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { if !pathEditing { beginPathEdit() } }
         .onChange(of: model.path) { pathEdit = $0 }
         .onChange(of: pathFocused) { if !$0 { pathEditing = false } }
     }
@@ -142,10 +148,11 @@ struct FilePaneView: View {
                 Image(systemName: "folder.fill").font(.system(size: 10)).foregroundStyle(Color.accentColor.opacity(0.8))
                 Text(name).font(.system(size: 12)).lineLimit(1).fixedSize()
             }
-            .padding(.horizontal, 4).padding(.vertical, 2)
+            .padding(.horizontal, 7).padding(.vertical, 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .hoverCursor(.pointingHand)
     }
 
     private var crumbSeparator: some View {

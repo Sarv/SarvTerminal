@@ -1696,6 +1696,24 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** Save a host with a jump host; open it in the file browser; listing + open/save a file must succeed by tunneling through the jump host. A directly-reachable host is unaffected.
 
+### 24.2 Editable-path breadcrumb (double-click to type a path)
+
+**What it is.** The file browser's path bar shows clickable folder crumbs plus an i-beam button that toggles a text field to type a path. Added: **double-click the empty area** of the bar to switch straight into the path input, larger crumb hit areas, a pointer cursor on crumbs, and a hover tooltip ("Double-click to type a path").
+
+**Logic.** A `count: 2` tap gesture on the bar container (over `.contentShape(Rectangle())`) calls the same `beginPathEdit()` the toggle button uses; the crumb buttons still handle their own single clicks, so the double-click only fires on blank space. Source: `macos/Sources/Features/HostManager/Files/FilePaneView.swift` `breadcrumbBar` / `crumbButton`.
+
+**macOS→Linux.** A `GtkGestureClick` with `n-press == 2` on the breadcrumb container, revealing a `GtkEntry` in place of the crumb row; crumbs are `GtkButton`s that consume single clicks.
+
+**Verify on Linux.** Double-click the blank part of the path bar → it becomes an editable path field (Esc/blur returns to crumbs); the i-beam toggle still works; single-clicking a crumb still navigates.
+
+### 24.3 Faster, single-knob hover tooltips
+
+**What it is.** The custom `hoverTip` tooltip now appears in **0.2s** (was 0.35s), behind one shared constant `HoverTip.appearDelay` so tooltip speed is tuned in one place.
+
+**Note.** This only speeds the **custom** `hoverTip` (rendered via `TooltipPresenter`/`TooltipOverlay`, mounted in the Vaults window). Native SwiftUI `.help()` tooltips remain OS-timed. Full unification (one tooltip function everywhere) would require making the presenter window-agnostic — a separate change. Source: `macos/Sources/Features/HostManager/VaultsFocusModeView.swift` `HoverTip`.
+
+**macOS→Linux.** GTK tooltips have their own timing; expose one delay constant if a custom tooltip layer is used.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
