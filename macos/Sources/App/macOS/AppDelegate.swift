@@ -684,6 +684,11 @@ class AppDelegate: NSObject,
                 Task { @MainActor in
                     VaultsTabsModel.shared.promptSaveSession(for: tab)
                 }
+            case .toggleScratchpad:
+                // Scratchpad targets the focused pane; let the key fall through
+                // when no terminal tab is active.
+                guard VaultsTabsModel.shared.activeTerminal != nil else { return event }
+                VaultsTabsModel.shared.toggleScratchpad()
             }
             return nil
         }
@@ -710,7 +715,17 @@ class AppDelegate: NSObject,
             case ([.command, .option], 125): model.focusSplit(.down); return nil    // ⌘⌥↓
             case ([.command, .option], 126): model.focusSplit(.up); return nil      // ⌘⌥↑
             case ([.command, .shift], 36): model.toggleZoomActive(); return nil     // ⌘⇧⏎  toggle_split_zoom
-            case ([.command], 36): NSApp.keyWindow?.toggleFullScreen(nil); return nil // ⌘⏎ toggle_fullscreen
+            case ([.command], 36):                                                  // ⌘⏎
+                // Context-sensitive: run the scratchpad when its editor is focused
+                // (the intuitive "send this"), otherwise Ghostty's toggle_fullscreen.
+                if VaultsTabsModel.shared.scratchpadVisible,
+                   (NSApp.keyWindow?.firstResponder as? NSTextView)?.identifier?.rawValue == "scratchpad-editor" {
+                    // Local key monitors run on the main thread.
+                    MainActor.assumeIsolated { VaultsTabsModel.shared.runScratchpad() }
+                } else {
+                    NSApp.keyWindow?.toggleFullScreen(nil)
+                }
+                return nil
             case ([.command, .control], 123): model.resizeSplit(.left, amount: 10); return nil  // ⌘⌃←
             case ([.command, .control], 124): model.resizeSplit(.right, amount: 10); return nil // ⌘⌃→
             case ([.command, .control], 125): model.resizeSplit(.down, amount: 10); return nil  // ⌘⌃↓

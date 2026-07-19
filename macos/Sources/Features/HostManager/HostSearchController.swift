@@ -235,6 +235,8 @@ final class HostSearchController: NSWindowController, NSWindowDelegate {
             // Show the Vaults dashboard and open the serial connect sheet there.
             VaultsTabsModel.shared.selectDashboard(section: .vaults)
             VaultsTabsModel.shared.presentingSerialConnect = true
+        case .toggleScratchpad:
+            VaultsTabsModel.shared.toggleScratchpad()
         }
     }
 }

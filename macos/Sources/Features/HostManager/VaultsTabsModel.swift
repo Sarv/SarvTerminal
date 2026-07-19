@@ -218,6 +218,9 @@ final class VaultsTabsModel: ObservableObject {
     @Published var focusModeSurfaceID: UUID?
     /// Show the "all tabs" overview grid.
     @Published var showAllTabs: Bool = false
+    /// Left-edge scratchpad panel visibility (toggled by the top-bar button,
+    /// ⌘⇧E, or the command palette). Lives here so a global shortcut can flip it.
+    @Published var scratchpadVisible: Bool = false
     /// When set, the host editor is shown as a side panel over the current
     /// screen (driven by the SSH popup's "Edit host" — keeps the popup visible).
     @Published var editingHost: SavedHost?
@@ -979,8 +982,8 @@ final class VaultsTabsModel: ObservableObject {
     /// Resolve a pending split pane's chooser selection.
     func resolveChoice(surface: Ghostty.SurfaceView, action: PaletteAction) {
         switch action {
-        case .serial:
-            // Not supported in a split; leave the chooser up.
+        case .serial, .toggleScratchpad:
+            // Not meaningful in a split chooser; leave the chooser up.
             return
         case .localTerminal:
             dismissChoice(surface: surface)
@@ -1497,6 +1500,22 @@ final class VaultsTabsModel: ObservableObject {
     }
 
     /// Toggle focus mode (⌘⇧M) for the active terminal tab.
+    /// Toggle the scratchpad panel — only meaningful on a terminal tab (its
+    /// Send/Run target the focused pane).
+    func toggleScratchpad() {
+        guard activeTerminal != nil else { return }
+        withAnimation(.easeInOut(duration: 0.18)) { scratchpadVisible.toggle() }
+    }
+
+    /// Run the scratchpad's current text in the active terminal (⌘⏎ from the
+    /// scratchpad editor routes here — see AppDelegate's key monitor).
+    @MainActor @discardableResult
+    func runScratchpad() -> Bool {
+        let text = ScratchpadStore.shared.text
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return runInTargetTerminal(text)
+    }
+
     func toggleFocusMode() {
         guard let tab = activeTerminal else { return }
         withAnimation(.smooth(duration: 0.2)) {

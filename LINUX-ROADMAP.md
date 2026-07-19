@@ -1734,6 +1734,22 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** With zsh `extended_history` (or bash `HISTTIMEFORMAT`) on, open the History tab: commands appear under dated sections with relative times, searchable; a shell without timestamps groups everything under "Earlier".
 
+## 27. Scratchpad side panel
+
+**What it is.** A collapsible left-edge editor (full mouse/cursor, syntax highlighting) to stage/edit multi-line commands before firing them into the active terminal — bridging "text editor" and "shell". **Send** pastes into the focused pane; **Run** (or **⌘⏎**) pastes + Enter. Reachable three ways: the top-bar icon, **⌘⇧E** (rebindable), and the **command palette** ("Toggle Scratchpad"). Content persists, encrypted at rest.
+
+**Logic.**
+- **Editor reuse:** the file viewer's `CodeEditorView` (NSTextView + syntax highlighting) was made internal and given an optional `editorIdentifier`; the scratchpad reuses it verbatim.
+- **Persistence:** `ScratchpadStore` (one shared buffer) via the shared `EncryptedStore` envelope (may hold secrets), debounced save.
+- **Send path:** reuses `VaultsTabsModel.pasteToTargetTerminal` / `runInTargetTerminal` (bracketed-paste, honors broadcast/focused pane). Visibility (`scratchpadVisible`) lives in `VaultsTabsModel` so a global shortcut/palette can flip it.
+- **⌘⏎ conflict (important):** `⌘⏎` is Ghostty's `toggle_fullscreen`, handled in AppDelegate's key monitor *before* SwiftUI. Rather than shadow it, the handler is **context-sensitive**: run the scratchpad when its editor is the focused responder (the NSTextView is tagged `identifier == "scratchpad-editor"`), otherwise fullscreen. The monitor is nonisolated so the call is wrapped in `MainActor.assumeIsolated` (local monitors run on the main thread).
+- **Rebindable shortcut:** new `AppShortcutAction.toggleScratchpad` (default `cmd+shift+e`) — appears in Settings → Keybinds; the store auto-seeds the default for existing installs.
+- **Palette:** a `PaletteAction.toggleScratchpad` row (shown only on a terminal tab, or when the query matches "scratchpad").
+
+**macOS→Linux.** A `GtkPaned`/overlay panel with a `GtkSourceView` editor; send by writing bytes to the pane's PTY (bracketed paste + newline). The ⌘⏎ conflict resolution is the key porting note: gate the fullscreen accelerator on the focused widget, or bind the run action only when the scratchpad has focus. Persist via the §16 `EncryptedStore` equivalent. The rebindable action mirrors the app-keybind store.
+
+**Verify on Linux.** Open a terminal, toggle the scratchpad (button / shortcut / palette), type a multi-line command, Run (or the run shortcut) → it executes in the focused pane; the run shortcut does NOT toggle fullscreen while the scratchpad editor is focused, but still does when the terminal is focused. Content survives a relaunch and the file on disk is ciphertext.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

@@ -18,6 +18,7 @@ enum AppShortcutAction: String, CaseIterable {
     case showVaults = "app:show_vaults"
     case showSFTP = "app:show_sftp"
     case saveSession = "app:save_session"
+    case toggleScratchpad = "app:toggle_scratchpad"
 
     var label: String {
         switch self {
@@ -29,6 +30,7 @@ enum AppShortcutAction: String, CaseIterable {
         case .showVaults: return "Show Vaults"
         case .showSFTP: return "Show SFTP"
         case .saveSession: return "Save Session (active tab)"
+        case .toggleScratchpad: return "Toggle Scratchpad"
         }
     }
 
@@ -45,6 +47,7 @@ enum AppShortcutAction: String, CaseIterable {
         case .showVaults: return ["cmd+shift+v"]
         case .showSFTP: return ["cmd+shift+s"]
         case .saveSession: return ["cmd+s"]
+        case .toggleScratchpad: return ["cmd+shift+e"]
         }
     }
 }

@@ -14,6 +14,8 @@ enum PaletteAction: Equatable {
     case localTerminal
     /// Serial console — not wired up yet.
     case serial
+    /// Toggle the scratchpad panel (only offered on a terminal tab).
+    case toggleScratchpad
 }
 
 /// One rendered row in the palette. Rows are grouped under a `section`
@@ -112,6 +114,21 @@ final class HostSearchModel: ObservableObject {
             trailingText: nil,
             section: .quickConnect
         ))
+        // Scratchpad toggle — only on a terminal tab (it targets the focused
+        // pane), and only when empty query or a "scratchpad" search so it
+        // doesn't clutter the connect flow.
+        if VaultsTabsModel.shared.activeTerminal != nil,
+           q.isEmpty || "scratchpad".localizedCaseInsensitiveContains(q) {
+            result.append(PaletteRow(
+                id: "toggle-scratchpad",
+                action: .toggleScratchpad,
+                title: "Toggle Scratchpad",
+                subtitle: "Stage & send commands",
+                systemImage: "square.and.pencil",
+                trailingText: "⌘⇧E",
+                section: .quickConnect
+            ))
+        }
 
         // The user's own saved hosts first — they're the curated Vaults list.
         for host in filteredSavedHosts {

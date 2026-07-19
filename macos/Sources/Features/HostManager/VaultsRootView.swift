@@ -38,6 +38,15 @@ struct VaultsRootView: View {
             Divider()
                 .zIndex(1)
             HStack(spacing: 0) {
+                // Left-edge scratchpad — only alongside a terminal (its Send/Run
+                // target the focused pane).
+                if tabs.scratchpadVisible, inTerminal {
+                    ScratchpadPanel(onClose: {
+                        withAnimation(.easeInOut(duration: 0.18)) { tabs.scratchpadVisible = false }
+                    })
+                    .transition(.move(edge: .leading))
+                    Divider()
+                }
                 Group {
                     if let ghostty {
                         content(ghostty).environmentObject(ghostty)
@@ -105,6 +114,23 @@ struct VaultsRootView: View {
             // No gear icon — Settings follows the macOS convention (app menu
             // "Sarv Terminal → Settings…", ⌘,) instead of a chrome button.
             VaultsBellView()
+            // Scratchpad toggle (left panel). Like the command sidebar, its
+            // Send/Run target the focused terminal, so it's terminal-only.
+            Button {
+                tabs.toggleScratchpad()
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(!inTerminal ? Color.secondary.opacity(0.35)
+                                     : tabs.scratchpadVisible ? Color.accentColor : .secondary)
+                    .frame(width: 28, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!inTerminal)
+            .hoverTip(inTerminal
+                      ? "Scratchpad — stage & send commands (⌘⇧E)"
+                      : "Scratchpad — available in terminal tabs")
             // Focus mode (the pane sidebar) is opened with ⌘⇧M — no top-bar
             // button. The sidebar carries its own "Split view" button to return.
             // Disabled (not hidden) outside terminal tabs so the trailing
@@ -114,17 +140,17 @@ struct VaultsRootView: View {
                 withAnimation(.easeInOut(duration: 0.18)) { sidebarVisible.toggle() }
             } label: {
                 Image(systemName: "sidebar.right")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 14, weight: .regular))
                     .foregroundStyle(!inTerminal ? Color.secondary.opacity(0.35)
                                      : sidebarVisible ? Color.accentColor : .secondary)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 28, height: 24)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(!inTerminal)
-            .help(inTerminal
-                  ? "Command sidebar (snippets, history, themes, search)"
-                  : "Command sidebar — available in terminal tabs")
+            .hoverTip(inTerminal
+                      ? "Command sidebar (snippets, history, themes, search)"
+                      : "Command sidebar — available in terminal tabs")
             AccountMenuButton()
                 .padding(.trailing, 6)
         }

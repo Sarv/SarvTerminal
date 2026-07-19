@@ -350,13 +350,18 @@ private struct FindBar: View {
 
 // MARK: - Editable code editor (NSTextView: line numbers + highlighting)
 
-private struct CodeEditorView: NSViewRepresentable {
+/// Internal (not private) so other features — e.g. the Scratchpad panel — can
+/// reuse this NSTextView-backed editor (syntax highlighting, gutter, find).
+struct CodeEditorView: NSViewRepresentable {
     @Binding var text: String
     var isEditable: Bool
     var wordWrap: Bool
     var language: String
     var indentWidth: Int
     let findSession: FileFindSession
+    /// Optional AppKit identifier on the underlying NSTextView, so the app's key
+    /// monitor can recognize a specific editor (e.g. "scratchpad-editor" for ⌘⏎).
+    var editorIdentifier: String? = nil
     let onEdit: () -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -367,6 +372,7 @@ private struct CodeEditorView: NSViewRepresentable {
         guard let tv = scroll.documentView as? NSTextView else { return scroll }
         tv.delegate = context.coordinator
         context.coordinator.textView = tv
+        if let editorIdentifier { tv.identifier = NSUserInterfaceItemIdentifier(editorIdentifier) }
         findSession.target = context.coordinator
         tv.isEditable = isEditable
         tv.isRichText = false
