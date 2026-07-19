@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// One discovered SSH host that can be searched / connected to.
 struct DiscoveredHost: Identifiable, Hashable {
@@ -7,6 +8,10 @@ struct DiscoveredHost: Identifiable, Hashable {
     let hostname: String?      // resolved HostName, or nil if same as label
     let user: String?
     let port: Int?
+    /// IdentityFile from the ssh_config block (nil = none) — carried into import.
+    var identityFile: String? = nil
+    /// ProxyJump / bastion from the ssh_config block (nil = none).
+    var proxyJump: String? = nil
     let source: Source
 
     enum Source: Hashable {
@@ -51,12 +56,16 @@ struct DiscoveredHost: Identifiable, Hashable {
 /// skipped — they're patterns, not addressable hosts.
 enum SSHConfigDiscovery {
     static func loadAll() -> [DiscoveredHost] {
-        let url = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent(".ssh/config")
+        let base = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".ssh")
+        let url = base.appendingPathComponent("config")
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
             return []
         }
-        return parse(content)
+        // Follow `Include` directives (common: `Include config.d/*`) so split
+        // configs import fully.
+        var seen: Set<String> = [url.path]
+        let expanded = expandIncludes(content, baseDir: base.path, depth: 0, seen: &seen)
+        return parse(expanded)
     }
 
     /// Public for testing.
@@ -66,6 +75,8 @@ enum SSHConfigDiscovery {
         var currentHostName: String?
         var currentUser: String?
         var currentPort: Int?
+        var currentIdentity: String?
+        var currentProxyJump: String?
 
         func flush() {
             guard let label = currentLabel,
@@ -81,6 +92,8 @@ enum SSHConfigDiscovery {
                 hostname: currentHostName,
                 user: currentUser,
                 port: currentPort,
+                identityFile: currentIdentity,
+                proxyJump: currentProxyJump,
                 source: .sshConfig
             ))
         }
@@ -93,7 +106,7 @@ enum SSHConfigDiscovery {
             let parts = line.split(maxSplits: 1, whereSeparator: { $0 == " " || $0 == "\t" || $0 == "=" })
             guard parts.count == 2 else { continue }
             let key = String(parts[0]).lowercased()
-            let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
+            let value = String(parts[1]).trimmingCharacters(in: CharacterSet(charactersIn: " \t\""))
 
             switch key {
             case "host":
@@ -107,12 +120,13 @@ enum SSHConfigDiscovery {
                 currentHostName = nil
                 currentUser = nil
                 currentPort = nil
-            case "hostname":
-                currentHostName = value
-            case "user":
-                currentUser = value
-            case "port":
-                currentPort = Int(value)
+                currentIdentity = nil
+                currentProxyJump = nil
+            case "hostname":     currentHostName = value
+            case "user":         currentUser = value
+            case "port":         currentPort = Int(value)
+            case "identityfile": currentIdentity = value
+            case "proxyjump":    currentProxyJump = value
             default:
                 continue
             }
@@ -122,5 +136,49 @@ enum SSHConfigDiscovery {
         return hosts.sorted {
             $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
         }
+    }
+
+    /// Inline `Include` directives into one string (recursively, glob-expanded,
+    /// cycle-guarded). Relative includes resolve against `baseDir` (`~/.ssh`).
+    private static func expandIncludes(_ content: String, baseDir: String,
+                                       depth: Int, seen: inout Set<String>) -> String {
+        guard depth < 16 else { return content }
+        var out = ""
+        for raw in content.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            let lower = line.lowercased()
+            guard lower.hasPrefix("include ") || lower.hasPrefix("include=") else {
+                out += raw + "\n"
+                continue
+            }
+            let spec = String(line.dropFirst("include".count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: " =\t"))
+            for token in spec.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init) {
+                let pattern: String
+                if token.hasPrefix("/") || token.hasPrefix("~") { pattern = token }
+                else { pattern = (baseDir as NSString).appendingPathComponent(token) }
+                for path in globPaths(pattern).sorted() where !seen.contains(path) {
+                    seen.insert(path)
+                    guard let sub = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+                    out += expandIncludes(sub, baseDir: (path as NSString).deletingLastPathComponent,
+                                          depth: depth + 1, seen: &seen) + "\n"
+                }
+            }
+        }
+        return out
+    }
+
+    /// Expand a shell-style glob (with `~` and `{a,b}`) to matching file paths.
+    private static func globPaths(_ pattern: String) -> [String] {
+        var g = glob_t()
+        defer { globfree(&g) }
+        guard glob(pattern, GLOB_TILDE | GLOB_BRACE, nil, &g) == 0 else { return [] }
+        var result: [String] = []
+        if let pathv = g.gl_pathv {
+            for i in 0..<Int(g.gl_pathc) where pathv[i] != nil {
+                result.append(String(cString: pathv[i]!))
+            }
+        }
+        return result
     }
 }

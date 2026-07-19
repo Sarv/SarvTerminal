@@ -1750,6 +1750,19 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** Open a terminal, toggle the scratchpad (button / shortcut / palette), type a multi-line command, Run (or the run shortcut) → it executes in the focused pane; the run shortcut does NOT toggle fullscreen while the scratchpad editor is focused, but still does when the terminal is focused. Content survives a relaunch and the file on disk is ciphertext.
 
+## 28. Import enrichment: ssh-config Includes + iTerm2
+
+**What it is.** The host importer now (a) follows `Include` directives in `~/.ssh/config` and carries **IdentityFile** and **ProxyJump** into the saved host, and (b) adds an **iTerm2** source that reads iTerm2's profiles and imports the ones whose command is an `ssh …` invocation.
+
+**Logic.**
+- **ssh-config Includes:** `SSHConfigDiscovery.loadAll` inlines `Include` targets before parsing — relative paths resolve against `~/.ssh`, globs expand via libc `glob(3)` with `GLOB_TILDE | GLOB_BRACE`, recursion is depth-capped (16) and cycle-guarded by a `seen` set of absolute paths. The block parser gained `identityfile` and `proxyjump` keys; `DiscoveredHost`/`ParsedHost` carry `identityFile` + `proxyJump`, and a config block with an identity is imported as public-key auth.
+- **iTerm2:** `HostImporter.parseiTerm2()` reads `New Bookmarks` from `com.googlecode.iterm2` preferences (plus Dynamic Profiles) via `CFPreferencesCopyAppValue`, keeps profiles whose `Custom Command == "Yes"` and whose command starts with `ssh`, and parses that command with a shared `parseSSHCommand(_:label:)` (handles `-p/-i/-J/-l/-o` and `user@host`).
+- **UI:** the format grid is a `LazyVGrid` (adaptive 100–120 pt cells) with an iTerm2 card alongside ssh-config / CSV / PuTTY / MobaXterm / SecureCRT.
+
+**macOS→Linux.** The ssh-config Include follower + `parseSSHCommand` are pure string/`glob` logic — port directly (GLib `g_pattern`/`glob`, same recursion guard). iTerm2 is macOS-only (skip the card on Linux). The parsed-host model and preview/commit pipeline are platform-agnostic.
+
+**Verify on Linux.** A split `~/.ssh/config` with `Include config.d/*` imports every host from the included files, with identity/proxy-jump populated; wildcard `Host *` blocks are still skipped.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

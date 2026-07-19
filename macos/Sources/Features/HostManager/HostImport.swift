@@ -12,6 +12,7 @@ struct ParsedHost: Identifiable {
     var auth: SavedHost.AuthMethod = .agent
     var identityFile: String = ""
     var password: String = ""
+    var proxyJump: String = ""
     var groupPath: String = ""
     var tags: [String] = []
     var note: String = ""
@@ -31,6 +32,7 @@ struct ParsedHost: Identifiable {
         h.authMethod = auth
         h.identityFile = identityFile
         h.password = password
+        h.proxyJump = proxyJump
         h.tags = tags
         h.note = note
         return h
@@ -66,12 +68,106 @@ enum HostImporter {
     // MARK: - Parse (no side effects)
 
     static func parseSSHConfig() -> [ParsedHost] {
-        SSHConfigDiscovery.loadAll().map {
-            ParsedHost(label: $0.label,
-                       hostname: $0.hostname ?? $0.label,
-                       port: $0.port ?? 22,
-                       username: $0.user ?? "")
+        SSHConfigDiscovery.loadAll().map { h in
+            let identity = h.identityFile ?? ""
+            return ParsedHost(
+                label: h.label,
+                hostname: h.hostname ?? h.label,
+                port: h.port ?? 22,
+                username: h.user ?? "",
+                auth: identity.isEmpty ? .agent : .publicKey,
+                identityFile: identity,
+                proxyJump: h.proxyJump ?? "")
         }
+    }
+
+    // MARK: - iTerm2 (profiles with a custom `ssh …` command)
+
+    static func parseiTerm2() -> (hosts: [ParsedHost], error: String?) {
+        var profiles: [[String: Any]] = []
+
+        // Main preferences (live values, robust to defaults caching).
+        if let bookmarks = CFPreferencesCopyAppValue(
+            "New Bookmarks" as CFString, "com.googlecode.iterm2" as CFString) as? [[String: Any]] {
+            profiles += bookmarks
+        }
+        // Dynamic profiles (JSON or plist) under Application Support.
+        let dynDir = "\(NSHomeDirectory())/Library/Application Support/iTerm2/DynamicProfiles"
+        if let files = try? FileManager.default.contentsOfDirectory(atPath: dynDir) {
+            for file in files {
+                let path = "\(dynDir)/\(file)"
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let arr = obj["Profiles"] as? [[String: Any]] {
+                    profiles += arr
+                } else if let dict = NSDictionary(contentsOfFile: path) as? [String: Any],
+                          let arr = dict["Profiles"] as? [[String: Any]] {
+                    profiles += arr
+                }
+            }
+        }
+
+        var hosts: [ParsedHost] = []
+        for profile in profiles {
+            let name = (profile["Name"] as? String) ?? ""
+            let custom = (profile["Custom Command"] as? String) ?? "No"
+            let command = (profile["Command"] as? String) ?? ""
+            guard custom == "Yes", command.range(of: #"\bssh\b"#, options: .regularExpression) != nil,
+                  let host = parseSSHCommand(command, label: name) else { continue }
+            hosts.append(host)
+        }
+        return hosts.isEmpty
+            ? ([], "No SSH profiles found in iTerm2 (profiles with a custom `ssh …` command).")
+            : (hosts, nil)
+    }
+
+    /// Parse a raw `ssh …` command line into a host (used by iTerm2 import and
+    /// any source that stores connections as commands).
+    static func parseSSHCommand(_ command: String, label: String) -> ParsedHost? {
+        let tokens = command.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        guard let sshIdx = tokens.firstIndex(where: { $0 == "ssh" || $0.hasSuffix("/ssh") }) else { return nil }
+
+        var port = 22, user = "", host = "", identity = "", proxyJump = ""
+        var i = sshIdx + 1
+        while i < tokens.count {
+            let t = tokens[i]
+            switch t {
+            case "-p": i += 1; if i < tokens.count { port = Int(tokens[i]) ?? 22 }
+            case "-i": i += 1; if i < tokens.count { identity = tokens[i] }
+            case "-J": i += 1; if i < tokens.count { proxyJump = tokens[i] }
+            case "-l": i += 1; if i < tokens.count { user = tokens[i] }
+            case "-o":
+                i += 1
+                if i < tokens.count {
+                    let kv = tokens[i].split(separator: "=", maxSplits: 1).map(String.init)
+                    if kv.count == 2 {
+                        switch kv[0].lowercased() {
+                        case "user":         if user.isEmpty { user = kv[1] }
+                        case "port":         port = Int(kv[1]) ?? port
+                        case "identityfile": if identity.isEmpty { identity = kv[1] }
+                        case "proxyjump":    if proxyJump.isEmpty { proxyJump = kv[1] }
+                        default: break
+                        }
+                    }
+                }
+            default:
+                if t.hasPrefix("-") { break }  // unknown flag (no arg we track)
+                if host.isEmpty {
+                    if let at = t.firstIndex(of: "@") {
+                        user = String(t[..<at]); host = String(t[t.index(after: at)...])
+                    } else {
+                        host = t
+                    }
+                }
+            }
+            i += 1
+        }
+        guard !host.isEmpty else { return nil }
+        return ParsedHost(
+            label: label.isEmpty ? host : label,
+            hostname: host, port: port, username: user,
+            auth: identity.isEmpty ? .agent : .publicKey,
+            identityFile: identity, proxyJump: proxyJump)
     }
 
     /// Returns the parsed hosts, or an error note describing why parsing failed.

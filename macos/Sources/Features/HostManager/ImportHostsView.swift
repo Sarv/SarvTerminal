@@ -59,13 +59,15 @@ struct ImportHostsView: View {
             Text("Transfer your saved connections, groups, and tags. Select a source to start.")
                 .font(.callout).foregroundStyle(.secondaryText)
                 .multilineTextAlignment(.center).frame(maxWidth: 460)
-            HStack(alignment: .top, spacing: 14) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100, maximum: 120), spacing: 14)], spacing: 16) {
                 formatCard("~/.ssh/config", "terminal", enabled: true) { startSSH() }
+                formatCard("iTerm2", "macwindow.on.rectangle", enabled: true) { startiTerm2() }
                 formatCard("CSV", "tablecells", enabled: true) { title = "Import from CSV"; note = nil; screen = .csvIntro }
                 formatCard("PuTTY", "pc", enabled: true) { startPuTTY() }
                 formatCard("MobaXterm", "macwindow", enabled: true) { startMobaXterm() }
                 formatCard("SecureCRT", "lock.laptopcomputer", enabled: true) { startSecureCRT() }
             }
+            .frame(maxWidth: 480)
             if let note { noteLabel(note) }
             Spacer()
         }
@@ -241,6 +243,12 @@ struct ImportHostsView: View {
         let hosts = HostImporter.parseSSHConfig()
         if hosts.isEmpty { note = "No hosts found in ~/.ssh/config."; return }
         showPreview(hosts, title: "Import from ~/.ssh/config")
+    }
+
+    private func startiTerm2() {
+        let (hosts, error) = HostImporter.parseiTerm2()
+        if let error { note = error; return }
+        showPreview(hosts, title: "Review \(hosts.count) iTerm2 profile\(hosts.count == 1 ? "" : "s")")
     }
 
     private func startPuTTY() {
