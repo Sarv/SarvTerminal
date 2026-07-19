@@ -4,13 +4,29 @@ import AppKit
 /// Reads the user's shell command history (zsh / bash / fish) for the Snippets
 /// "Shell History" panel — most-recent-first and de-duplicated, so any past
 /// command can be saved as a snippet in one click.
+/// One history command plus, when the shell records it, WHEN it was run.
+struct ShellHistoryEntry: Identifiable, Hashable {
+    let id = UUID()
+    let command: String
+    /// nil when the shell's history format carries no timestamp (e.g. bash
+    /// without `HISTTIMEFORMAT`, or zsh without `extended_history`).
+    let date: Date?
+}
+
 enum ShellHistory {
-    /// Up to `limit` recent unique commands, newest first.
+    /// Up to `limit` recent unique commands, newest first (text only).
     static func recent(limit: Int = 400) -> [String] {
+        recentEntries(limit: limit).map(\.command)
+    }
+
+    /// Up to `limit` recent unique commands, newest first, each with its run
+    /// time when the shell records one (zsh `extended_history`, bash
+    /// `HISTTIMEFORMAT`, fish). The newest occurrence (and its date) wins.
+    static func recentEntries(limit: Int = 400) -> [ShellHistoryEntry] {
         guard let url = historyFile(),
               let data = try? Data(contentsOf: url) else { return [] }
         // History files can hold non-UTF8 bytes — decode leniently.
-        return parse(String(decoding: data, as: UTF8.self), limit: limit)
+        return parseEntries(String(decoding: data, as: UTF8.self), limit: limit)
     }
 
     /// The shell history file to read: `$HISTFILE` if set, else the usual
@@ -30,29 +46,68 @@ enum ShellHistory {
         return candidates.first { fm.fileExists(atPath: $0) }.map { URL(fileURLWithPath: $0) }
     }
 
-    /// Normalize a raw history file into a clean, newest-first, de-duplicated list.
-    private static func parse(_ raw: String, limit: Int) -> [String] {
-        var commands: [String] = []
-        for rawLine in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-            var line = String(rawLine)
-            // zsh extended history: ": 1700000000:0;the command"
-            if line.hasPrefix(":"), let semi = line.firstIndex(of: ";") {
-                line = String(line[line.index(after: semi)...])
-            }
-            // fish history is YAML-ish: "- cmd: the command" (+ "  when:" metadata)
+    /// Normalize a raw history file (zsh / bash / fish) into newest-first,
+    /// de-duplicated entries, parsing timestamps where the format carries them.
+    private static func parseEntries(_ raw: String, limit: Int) -> [ShellHistoryEntry] {
+        var parsed: [(cmd: String, date: Date?)] = []
+        var pendingBashDate: Date?     // a bash "#<epoch>" line applies to the next command
+        var fishCmd: String?           // fish "- cmd:" awaiting its "when:"
+        var fishDate: Date?
+
+        func flushFish() {
+            if let c = fishCmd { parsed.append((c, fishDate)); fishCmd = nil; fishDate = nil }
+        }
+        func epoch(_ s: Substring) -> Date? {
+            Double(s.trimmingCharacters(in: .whitespaces)).map { Date(timeIntervalSince1970: $0) }
+        }
+
+        for rawLine in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+
+            // fish: "- cmd: <command>" then "  when: <epoch>" (+ "  paths:" metadata).
             if line.hasPrefix("- cmd: ") {
-                line = String(line.dropFirst("- cmd: ".count))
-            } else if line.hasPrefix("  when:") || line.hasPrefix("- when:") {
+                flushFish()
+                fishCmd = String(line.dropFirst("- cmd: ".count))
+                    .replacingOccurrences(of: "\\n", with: "\n")
+                    .replacingOccurrences(of: "\\\\", with: "\\")
                 continue
             }
+            if line.hasPrefix("  when:") { fishDate = epoch(line[line.index(after: line.firstIndex(of: ":")!)...]); continue }
+            if line.hasPrefix("  paths:") || line.hasPrefix("    - ") { continue }
+            if fishCmd != nil { flushFish() }
+
+            // bash with HISTTIMEFORMAT: a bare "#<epoch>" precedes its command.
+            if line.hasPrefix("#"), line.count > 1,
+               let e = Double(line.dropFirst()), e > 100_000_000 {
+                pendingBashDate = Date(timeIntervalSince1970: e)
+                continue
+            }
+
+            // zsh extended_history: ": <epoch>:<elapsed>;<command>"
+            if line.hasPrefix(":") {
+                let rest = line.dropFirst().drop(while: { $0 == " " })
+                if let semi = rest.firstIndex(of: ";") {
+                    let date = rest[..<semi].split(separator: ":").first.flatMap(epoch)
+                    let cmd = rest[rest.index(after: semi)...].trimmingCharacters(in: .whitespaces)
+                    if !cmd.isEmpty { parsed.append((cmd, date)) }
+                    continue
+                }
+            }
+
+            // Plain command (bash w/o timestamps, or zsh non-extended).
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if !trimmed.isEmpty { commands.append(trimmed) }
+            if !trimmed.isEmpty {
+                parsed.append((trimmed, pendingBashDate))
+                pendingBashDate = nil
+            }
         }
-        // Newest first, keeping the most-recent occurrence of each command.
+        flushFish()
+
+        // Newest first, keeping the most-recent occurrence (and its date).
         var seen = Set<String>()
-        var result: [String] = []
-        for cmd in commands.reversed() where seen.insert(cmd).inserted {
-            result.append(cmd)
+        var result: [ShellHistoryEntry] = []
+        for e in parsed.reversed() where seen.insert(e.cmd).inserted {
+            result.append(ShellHistoryEntry(command: e.cmd, date: e.date))
             if result.count >= limit { break }
         }
         return result

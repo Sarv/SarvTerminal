@@ -1724,6 +1724,16 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** Signed out, the account/sign-in surface and the Teams section both read "coming soon"; a dev build with the dev-login flag can still sign in and see the real Teams UI.
 
+## 26. Command-history timeline
+
+**What it is.** The command sidebar's History tab is a **searchable, day-grouped timeline**: shell-history commands under sticky section headers (Today / Yesterday / weekday / date), each row showing a relative run time, with Run/Paste/Pin/Add-to-snippet. Answers "what did I run 3 days ago?".
+
+**Logic.** `ShellHistory.recentEntries()` parses timestamps from the shell's own durable history — zsh `extended_history` (`: <epoch>:<elapsed>;cmd`), bash `HISTTIMEFORMAT` (`#<epoch>` preceding a command), and fish (`- cmd:` + `  when: <epoch>`) — newest-first, de-duplicated (newest occurrence + its date wins). The UI groups consecutive entries by calendar day (`HistoryTime.section`) and shows a relative label (`HistoryTime.relative`). `CommandRow` gained an optional `trailing` (the time, hidden on hover so the action buttons take that space). No app-owned capture, no per-command cwd/host (not in shell history files) — that would need a core change to carry the command text on the OSC 133 command-finished event.
+
+**macOS→Linux.** Read the same history files (`$HISTFILE` → `~/.zsh_history`/`~/.bash_history`/fish); the parser is pure and portable. Render with a `GtkListView`/`GtkListBox` using sticky section headers; `GDateTime` for the relative labels.
+
+**Verify on Linux.** With zsh `extended_history` (or bash `HISTTIMEFORMAT`) on, open the History tab: commands appear under dated sections with relative times, searchable; a shell without timestamps groups everything under "Earlier".
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

@@ -87,6 +87,9 @@ private struct CommandRow: View {
     var onTogglePin: (() -> Void)? = nil
     /// History only — opens the "name this snippet" prompt.
     var onAddToSnippet: (() -> Void)? = nil
+    /// Small right-aligned label (e.g. a relative timestamp), hidden on hover so
+    /// the Run/Paste actions can take the trailing space.
+    var trailing: String? = nil
 
     @ObservedObject private var tabs = VaultsTabsModel.shared
     @State private var hovering = false
@@ -119,6 +122,12 @@ private struct CommandRow: View {
                 }
             }
             Spacer(minLength: 0)
+            if let trailing {
+                Text(trailing)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiaryText)
+                    .opacity(hovering ? 0 : 1)   // actions overlay takes over on hover
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, secondary == nil ? 7 : 8)
@@ -323,7 +332,7 @@ private struct SnippetsTab: View {
 private struct HistoryTab: View {
     @ObservedObject private var pins = PinnedHistoryStore.shared
     @State private var query = ""
-    @State private var recent: [String] = []
+    @State private var recent: [ShellHistoryEntry] = []
     /// Command currently being named for "Add to snippet"; nil = list mode.
     @State private var naming: String?
 
@@ -336,13 +345,25 @@ private struct HistoryTab: View {
         return pins.pinned.filter { SearchMatcher.matches(q, in: [$0]) }
     }
 
-    private var recentRows: [String] {
+    private var recentRows: [ShellHistoryEntry] {
         let q = query.trimmingCharacters(in: .whitespaces)
         // Pinned commands are exempt from the cap; the rest fill up to `cap`.
-        let nonPinned = recent.filter { !pins.isPinned($0) }
+        let nonPinned = recent.filter { !pins.isPinned($0.command) }
         let capped = Array(nonPinned.prefix(max(0, cap - pins.pinned.count)))
         guard !q.isEmpty else { return capped }
-        return capped.filter { SearchMatcher.matches(q, in: [$0]) }
+        return capped.filter { SearchMatcher.matches(q, in: [$0.command]) }
+    }
+
+    /// Recent commands grouped into day sections (Today / Yesterday / weekday /
+    /// date), preserving newest-first order — the "time travel" timeline.
+    private var recentSections: [(title: String, items: [ShellHistoryEntry])] {
+        var out: [(String, [ShellHistoryEntry])] = []
+        for entry in recentRows {
+            let title = HistoryTime.section(for: entry.date)
+            if let last = out.last, last.0 == title { out[out.count - 1].1.append(entry) }
+            else { out.append((title, [entry])) }
+        }
+        return out
     }
 
     var body: some View {
@@ -355,29 +376,70 @@ private struct HistoryTab: View {
                     emptyState(recent.isEmpty ? "No shell history found." : "No matching commands.")
                 } else {
                     ScrollView {
-                        LazyVStack(spacing: 2) {
-                            // Distinct identities for pinned vs recent so toggling
-                            // a pin rebuilds the row (and its pin icon) cleanly
-                            // instead of reusing the moved instance.
-                            ForEach(pinnedRows, id: \.self) { cmd in row(cmd).id("pin-\(cmd)") }
-                            ForEach(recentRows, id: \.self) { cmd in row(cmd).id("rec-\(cmd)") }
+                        LazyVStack(spacing: 2, pinnedViews: [.sectionHeaders]) {
+                            if !pinnedRows.isEmpty {
+                                Section {
+                                    ForEach(pinnedRows, id: \.self) { cmd in row(cmd).id("pin-\(cmd)") }
+                                } header: { header("Pinned") }
+                            }
+                            ForEach(recentSections, id: \.title) { section in
+                                Section {
+                                    ForEach(section.items) { entry in
+                                        row(entry.command, date: entry.date).id("rec-\(entry.id)")
+                                    }
+                                } header: { header(section.title) }
+                            }
                         }
                         .padding(.horizontal, 8).padding(.vertical, 8)
                     }
                 }
             }
-            .onAppear { recent = ShellHistory.recent() }
+            .onAppear { recent = ShellHistory.recentEntries() }
         }
     }
 
-    private func row(_ cmd: String) -> some View {
+    private func header(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.tertiaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 3)
+            .background(.regularMaterial)
+    }
+
+    private func row(_ cmd: String, date: Date? = nil) -> some View {
         CommandRow(
             primary: cmd,
             monoPrimary: true,
             command: cmd,
             isPinned: pins.isPinned(cmd),
             onTogglePin: { pins.toggle(cmd) },
-            onAddToSnippet: { naming = cmd })
+            onAddToSnippet: { naming = cmd },
+            trailing: HistoryTime.relative(date))
+    }
+}
+
+/// Human-friendly grouping + relative labels for the history timeline.
+enum HistoryTime {
+    static func section(for date: Date?) -> String {
+        guard let date else { return "Earlier" }
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "Today" }
+        if cal.isDateInYesterday(date) { return "Yesterday" }
+        let days = cal.dateComponents([.day], from: cal.startOfDay(for: date),
+                                      to: cal.startOfDay(for: Date())).day ?? 0
+        if days < 7 { return date.formatted(.dateTime.weekday(.wide)) }
+        return date.formatted(.dateTime.month().day().year())
+    }
+
+    static func relative(_ date: Date?) -> String? {
+        guard let date else { return nil }
+        if Calendar.current.isDateInToday(date) {
+            return date.formatted(.dateTime.hour().minute())
+        }
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f.localizedString(for: date, relativeTo: Date())
     }
 }
 
