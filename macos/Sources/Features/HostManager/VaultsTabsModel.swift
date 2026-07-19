@@ -695,6 +695,27 @@ final class VaultsTabsModel: ObservableObject {
         return tab
     }
 
+    /// Spawn a tab whose shell process IS `command` (run directly, like Serial),
+    /// not typed into a login shell afterwards — so there's no prompt race and no
+    /// double-echo. The container attacher passes an ABSOLUTE binary path (docker
+    /// isn't on ghostty's minimal spawn PATH), so the process is found and runs
+    /// straight into the container. When it exits, the tab shows the process
+    /// ending (Ghostty's normal behavior).
+    @discardableResult
+    func newCommandTerminal(command: String, name: String) -> TerminalTab? {
+        guard let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return nil }
+        var cfg = Ghostty.SurfaceConfiguration()
+        cfg.command = command
+        let surface = Ghostty.SurfaceView(app, baseConfig: cfg)
+        let tab = TerminalTab(surface: surface, name: uniqueTabName(base: name))
+        tab.launchCommand = command
+        terminals.append(tab)
+        selection = .terminal(tab.id)
+        HostManagerController.shared.show()
+        Ghostty.moveFocus(to: surface)
+        return tab
+    }
+
     // MARK: - Staged SSH connection
 
     /// Whether the connection popup should collect a password in a field. Only

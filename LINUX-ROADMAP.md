@@ -1788,6 +1788,20 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** Settings → AI: enable, pick a provider, paste a key (or point Ollama at localhost), the model dropdown fills, "test request" says Working. Run a failing command (`cat /nope`): a banner offers Explain; clicking returns an explanation + a fix you can paste. The `ai.json` on disk is ciphertext.
 
+## 31. Docker / Kubernetes attach panel
+
+**What it is.** An **Attach** tab in the command sidebar (alongside Snippets / History / Themes) that lists running **Docker containers** (`docker ps`) and **Kubernetes pods** (`kubectl get pods -A`). Each row's terminal-icon menu opens an interactive `exec` shell **in a new tab** or **in the current tab**. Multi-container pods offer a per-container submenu. Lives in the existing sidebar so it adds no new top-bar chrome.
+
+**Logic.**
+- **Shell-out (`ContainerAttach.swift`):** commands run through the user's **login shell** (`$SHELL -lc`) so `docker`/`kubectl` resolve on the same PATH as a normal terminal (they live in Homebrew / `/usr/local/bin`, not the app's PATH). Listing parses `docker ps --format '{{json .}}'` and `kubectl … -o json`. Errors are collapsed to friendly text ("Not reachable — is it running?", "kubectl isn't available.").
+- **Attach command:** `<binary> exec -it <name> sh` — a plain single-word `sh`, **no `sh -c '…'` wrapper**. Ghostty's `command` splits on whitespace and does NOT honor a quoted argument containing spaces, so a wrapper gets shredded; `sh` alone parses cleanly and exists in every image (incl. Alpine). Kubernetes: `<binary> exec -it -n <ns> <pod> [-c <container>] -- sh`.
+- **New tab (`VaultsTabsModel.newCommandTerminal`):** spawns a surface whose process **IS** the command (`cfg.command`, like Serial) — no typing, so no prompt race / double-echo. It uses the **absolute** binary path (resolved once via `command -v` in a login shell and cached), because a directly-spawned process doesn't inherit the login PATH. **Current tab** types the command (relative `docker`/`kubectl`) into the focused shell via `runInTargetTerminal` (that shell already has the PATH).
+- **Rows:** only the terminal icon is interactive (a menu) — a stray row click never spawns a tab.
+
+**macOS→Linux.** Straight port: run `docker`/`kubectl` via `$SHELL -lc` (`GSubprocess`), parse the same JSON, and spawn a pane whose command is `<abs-path> exec -it <name> sh` — the same "run as the process, absolute path, no quoted-arg wrapper" rules apply to any libghostty apprt. Sidebar tab is a `GtkStack` page; row menu is a `GMenu`.
+
+**Verify on Linux.** With Docker running, the Attach tab lists containers; the terminal-icon menu → "Open in new tab" drops you into `sh` inside the container (single spawn, no echoed command). "Run in current tab" types+runs it in the focused terminal. `kubectl` pods behave the same; a missing daemon/cluster shows a friendly note, not a raw error dump.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

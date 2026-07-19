@@ -7,20 +7,22 @@ import AppKit
 /// Run/Paste into the active terminal via VaultsTabsModel. No new business logic.
 struct VaultsCommandSidebar: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case snippets, history, theme
+        case snippets, history, containers, theme
         var id: String { rawValue }
         var icon: String {
             switch self {
-            case .snippets: return "curlybraces"
-            case .history:  return "clock"
-            case .theme:    return "paintpalette"
+            case .snippets:   return "curlybraces"
+            case .history:    return "clock"
+            case .containers: return "shippingbox"
+            case .theme:      return "paintpalette"
             }
         }
         var title: String {
             switch self {
-            case .snippets: return "Snippets"
-            case .history:  return "Shell history"
-            case .theme:    return "Themes & font"
+            case .snippets:   return "Snippets"
+            case .history:    return "Shell history"
+            case .containers: return "Attach (Docker / K8s)"
+            case .theme:      return "Themes & font"
             }
         }
     }
@@ -33,9 +35,10 @@ struct VaultsCommandSidebar: View {
             Divider()
             Group {
                 switch tab {
-                case .snippets: SnippetsTab()
-                case .history:  HistoryTab()
-                case .theme:    ThemeTab()
+                case .snippets:   SnippetsTab()
+                case .history:    HistoryTab()
+                case .containers: ContainersTab()
+                case .theme:      ThemeTab()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -61,7 +64,7 @@ struct VaultsCommandSidebar: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(t.title)
+                .hoverTip(t.title)
             }
             Spacer()
         }
