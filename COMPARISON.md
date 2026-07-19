@@ -6,9 +6,9 @@ plugins, no separate SSH manager, no config-file spelunking.
 
 ## Everything you get
 
-- **Import — switch in minutes.** Bring hosts in from `~/.ssh/config`, CSV, PuTTY, MobaXterm and
-  SecureCRT, and pull your appearance & keybindings from Ghostty, Alacritty, Kitty, iTerm2 and
-  WezTerm.
+- **Import — switch in minutes.** Bring hosts in from `~/.ssh/config` (including `Include`d files),
+  iTerm2, CSV, PuTTY, MobaXterm and SecureCRT, and pull your appearance & keybindings from Ghostty,
+  Alacritty, Kitty, iTerm2 and WezTerm.
 - **Saved-host vault.** Every server with its full SSH profile — user, port, identity file, agent
   forwarding, proxy jump, host-key policy, startup command — in workspace → project folders with
   tags and per-host color themes.
@@ -20,6 +20,11 @@ plugins, no separate SSH manager, no config-file spelunking.
   tunnels over any saved host, with start/stop and live status.
 - **Zero-knowledge sync.** Move your whole setup between Macs under encryption only you can open —
   AES-256-GCM, master password in the Keychain behind Touch ID, your own GitHub repo or synced folder.
+- **AI command assist.** When a command fails, get a one-click explanation and a suggested fix you
+  can paste straight in — bring your own key, using Claude, OpenAI or a local Ollama model. Your key
+  is stored encrypted on your Mac and never synced.
+- **Docker & Kubernetes attach.** List your running containers and pods and open a shell inside any
+  of them in a click — no `docker exec` / `kubectl exec` to remember.
 - **Snippets & shell history.** A library of your most-used commands; browse recent shell history
   and save any command as a snippet in a click.
 - **Serial console.** Connect to routers, switches, a Raspberry Pi or a microcontroller over
@@ -49,6 +54,8 @@ manager, or tunnel UI.
 | Port-forward / tunnel manager (GUI) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | Import hosts & settings from other apps | ✅ | ⬜ | 🟡 | ⬜ | ⬜ | 🟡 |
 | End-to-end-encrypted settings sync | ✅ | ⬜ | 🟡 | 🟡 | ⬜ | ⬜ |
+| AI explain/fix for failed commands (bring-your-own-key, local option) | ✅ | ⬜ | ⬜ | 🟡 | ⬜ | ⬜ |
+| One-click Docker / Kubernetes container attach | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | Serial console (USB-serial) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ✅ |
 | Known-hosts manager | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | GPU-accelerated rendering | ✅ | ✅ | ✅ | ✅ | ⬜ | ✅ |

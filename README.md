@@ -37,7 +37,8 @@ the Sarv Terminal layer.** Each section below shows the feature in action.
 - **Per-host themes** — each server can open with its own color theme so you always know where you are.
 - **Guided connect popup** with **auto-reconnect** on network drops / wake-from-sleep, and clean
   inline error handling.
-- **Import** hosts from a CSV or from your existing `~/.ssh/config`.
+- **Import** hosts from your existing `~/.ssh/config` (following `Include`s), **iTerm2**, CSV, PuTTY,
+  MobaXterm, or SecureCRT.
 - **Command palette / quick-connect** to jump to any host or action.
 
 ![Vaults — saved hosts, groups and tags](assets/screenshots/hosts.png)
@@ -77,6 +78,18 @@ the Sarv Terminal layer.** Each section below shows the feature in action.
   across panes, tab colors & renaming, an **all-tabs overview**, and **reopen-closed-tab**.
 
 ![Terminal — tabs, split panes and background image](assets/screenshots/terminal-splits.png)
+
+### 🤖 AI Command Assist
+- When a command **fails**, a one-click banner offers to **explain the failure and suggest a fix** —
+  the suggested fix pastes straight into your terminal.
+- **Bring your own key**, your choice of provider: **Claude**, **OpenAI**, or a **local model via
+  Ollama** (fully offline). Your key is **stored encrypted on your Mac and never synced** — nothing is
+  sent anywhere except the provider you choose.
+
+### 🐳 Docker & Kubernetes Attach
+- An **Attach** panel lists your running **Docker containers** and **Kubernetes pods**.
+- Click to open an interactive shell **inside** a container/pod — in a new tab or the current one —
+  without hand-typing `docker exec -it …` / `kubectl exec -it …`.
 
 ### 🔌 Serial Console
 - Connect to a device over a **USB-serial adapter** (console cables for routers/switches, Raspberry
@@ -122,6 +135,8 @@ built on the Ghostty engine, with a local-first SSH client layered on top. Other
 | Port-forward / tunnel manager (GUI) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | Import hosts & settings from other apps | ✅ | ⬜ | 🟡 | ⬜ | ⬜ | 🟡 |
 | End-to-end-encrypted settings sync | ✅ | ⬜ | 🟡 | 🟡 | ⬜ | ⬜ |
+| AI explain/fix for failed commands (bring-your-own-key, local option) | ✅ | ⬜ | ⬜ | 🟡 | ⬜ | ⬜ |
+| One-click Docker / Kubernetes container attach | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | GPU-accelerated rendering | ✅ | ✅ | ✅ | ✅ | ⬜ | ✅ |
 | Local-first · no account · no telemetry | ✅ | ✅ | ✅ | 🟡 | ✅ | ✅ |
 
