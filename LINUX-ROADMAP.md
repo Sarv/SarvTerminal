@@ -1773,6 +1773,21 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** The Hosts toolbar shows an Import button that opens the import flow directly (no dropdown needed).
 
+## 30. AI command assist (explain / fix failed commands)
+
+**What it is.** When a command exits non-zero, a banner floats up over the terminal offering **"Explain with AI"**; on click, the configured model explains the failure and suggests a fix, with **Paste fix** (into the terminal) and **Copy**. Bring-your-own-key, multi-provider (**Claude / OpenAI / local Ollama**), key stored **encrypted at rest and never synced**. Configured in Settings → AI.
+
+**Logic.**
+- **Providers (`AIProvider.swift`):** a provider-agnostic `URLSession` client (no Swift SDK exists for these). Anthropic Messages API (`/v1/messages`, `x-api-key` + `anthropic-version`, model `claude-opus-4-8`), OpenAI Chat Completions (`/v1/chat/completions`, `Authorization: Bearer`), Ollama (`/api/chat`, local, no key). Non-streaming for a snappy popover. Also lists models per provider (`/v1/models`, Ollama `/api/tags`) so Settings offers a dropdown.
+- **Config (`AIConfigStore.swift`):** `AIConfig` (enabled, provider, per-provider model/baseURL/apiKey) persisted via the shared `EncryptedStore` AES-GCM envelope (`ai.json`) — the file is opaque at rest and never enters sync. `currentSettings` is nil (feature disabled) until a cloud provider has a key.
+- **Capture (`Ghostty.App.swift` command-finished hook):** on `exit_code > 0` — placed BEFORE the desktop-notification gating so it's independent of that setting — it snapshots `surfaceView.liveScreenText()` + `pwd` (only when the feature is enabled + configured) and hands them to `AIAssistModel.recordFailure`. The OSC 133 command-finished event carries exit code + duration but NOT the command text, so the scrollback snapshot is the source of the failed command + output.
+- **Model + UI (`AIAssist.swift`):** `AIAssistModel` (phases idle→offer→loading→result/error) builds a prompt from the tail of the scrollback + pwd + exit code, extracts the first fenced code block as the runnable "fix". `AIAssistBanner` renders the offer/result over the terminal content (`VaultsRootView` overlay, terminal tabs only). Fix runs via `pasteToTargetTerminal`.
+- **Settings (`AISectionView.swift` + `SettingsSection.ai`):** provider picker, encrypted BYOK key ("saved — type to replace" idiom), a model dropdown fetched from the provider (Ollama loads immediately; cloud loads after the key is saved), endpoint, and a "Send a test request" check.
+
+**macOS→Linux.** The provider layer is portable HTTP/JSON — reimplement with libsoup/`GInputStream` (or a Rust/Zig HTTP client) and the same request/response shapes; keys via the §16 `EncryptedStore` equivalent. Capture hook: on the GTK apprt's command-finished action, read the surface's full text (the libghostty text-read API `liveScreenText` wraps) + pwd. Banner is a `GtkRevealer` overlaying the terminal; Settings is one more page in the prefs window with a provider combo, secure entry, and a model dropdown.
+
+**Verify on Linux.** Settings → AI: enable, pick a provider, paste a key (or point Ollama at localhost), the model dropdown fills, "test request" says Working. Run a failing command (`cat /nope`): a banner offers Explain; clicking returns an explanation + a fix you can paste. The `ai.json` on disk is ciphertext.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

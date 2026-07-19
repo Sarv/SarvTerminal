@@ -65,6 +65,11 @@ struct VaultsRootView: View {
                 // Confine the content (and any overlay it hosts, e.g. the SSH
                 // connection popup) so it can't bleed up over the tab strip.
                 .clipped()
+                // AI command-assist banner — floats over the terminal when a
+                // command fails (offer → explanation → fix). Terminal-only.
+                .overlay(alignment: .bottom) {
+                    if inTerminal { AIAssistBanner() }
+                }
 
                 // The command sidebar targets the focused TERMINAL (run/paste
                 // snippets, history), so it only renders on terminal tabs.

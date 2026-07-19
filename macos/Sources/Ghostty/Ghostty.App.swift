@@ -1620,6 +1620,25 @@ extension Ghostty {
                 guard let surface = target.target.surface else { return }
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
 
+                // AI command-assist: on a non-zero exit, snapshot the scrollback
+                // so the assistant can explain/fix the failure. This is
+                // independent of the desktop-notification gating below (it must
+                // work even when command-finish notifications are off), so it
+                // runs here, before that gating. Guarded on the feature being
+                // enabled + configured so we don't read scrollback needlessly.
+                if v.exit_code > 0 {
+                    let code = Int(v.exit_code)
+                    DispatchQueue.main.async {
+                        guard AIConfigStore.shared.enabled,
+                              AIConfigStore.shared.currentSettings != nil else { return }
+                        AIAssistModel.shared.recordFailure(
+                            exitCode: code,
+                            capturedText: surfaceView.liveScreenText(),
+                            pwd: surfaceView.pwd
+                        )
+                    }
+                }
+
                 // Determine if we even care about command finish notifications
                 guard let config = (NSApplication.shared.delegate as? AppDelegate)?.ghostty.config else { return }
                 switch config.notifyOnCommandFinish {

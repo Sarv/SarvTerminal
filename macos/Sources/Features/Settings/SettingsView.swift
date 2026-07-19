@@ -165,7 +165,7 @@ final class SettingsViewModel: ObservableObject {
     /// Keybinds and Advanced manage their own editing surfaces.
     func supportsFooterActions(_ section: SettingsSection) -> Bool {
         switch section {
-        case .keybinds, .advanced, .sync, .notifications, .importSettings: return false
+        case .keybinds, .advanced, .sync, .ai, .notifications, .importSettings: return false
         default: return true
         }
     }
@@ -181,7 +181,7 @@ final class SettingsViewModel: ObservableObject {
         case .tabs: return tabs != savedTabs
         case .shellIntegration: return shellIntegration != savedShellIntegration
         case .sftp: return SFTPSettings.shared.isDirty
-        case .keybinds, .advanced, .sync, .notifications, .importSettings: return false
+        case .keybinds, .advanced, .sync, .ai, .notifications, .importSettings: return false
         }
     }
 
@@ -237,7 +237,7 @@ final class SettingsViewModel: ObservableObject {
         case .tabs: tabs = savedTabs
         case .shellIntegration: shellIntegration = savedShellIntegration
         case .sftp: SFTPSettings.shared.revertToBaseline()
-        case .keybinds, .advanced, .sync, .notifications, .importSettings: break
+        case .keybinds, .advanced, .sync, .ai, .notifications, .importSettings: break
         }
         lastSaveError = nil
     }
@@ -254,7 +254,7 @@ final class SettingsViewModel: ObservableObject {
         case .tabs: tabs = TabsForm(loadedFrom: nil)
         case .shellIntegration: shellIntegration = ShellIntegrationForm(loadedFrom: nil)
         case .sftp: SFTPSettings.shared.resetToDefaults()
-        case .keybinds, .advanced, .sync, .notifications, .importSettings: break
+        case .keybinds, .advanced, .sync, .ai, .notifications, .importSettings: break
         }
         lastSaveError = nil
     }
@@ -1335,6 +1335,8 @@ struct DetailView: View {
             SFTPSectionView(viewModel: viewModel)
         case .sync:
             SyncSectionView()
+        case .ai:
+            AISectionView()
         case .notifications:
             NotificationsSettingsView()
         case .advanced:
@@ -1445,6 +1447,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case shellIntegration
     case sftp
     case sync
+    case ai
     case notifications
     case advanced
 
@@ -1470,6 +1473,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .shellIntegration: return "Shell Integration"
         case .sftp: return "SFTP"
         case .sync: return "Sync"
+        case .ai: return "AI"
         case .notifications: return "Notifications"
         case .advanced: return "Advanced"
         }
@@ -1488,6 +1492,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .shellIntegration: return "Auto-cd, prompts, SSH features."
         case .sftp: return "File transfer: save behavior, deletes, hidden files."
         case .sync: return "Encrypted backup of your settings, keybinds, and hosts."
+        case .ai: return "Explain and fix failed commands with your own AI key."
         case .notifications: return "Which events notify you, and the alert sound."
         case .advanced: return "Raw config editor and power-user options."
         }
@@ -1506,6 +1511,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .shellIntegration: return "terminal"
         case .sftp: return "folder"
         case .sync: return "icloud"
+        case .ai: return "sparkles"
         case .notifications: return "bell"
         case .advanced: return "wrench.and.screwdriver"
         }
@@ -1540,6 +1546,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
                             "auto-save", "delete", "hidden", "editor"]
         case .sync: return ["sync", "cloud", "backup", "encrypt", "github", "folder",
                             "pull", "push", "master password", "icloud"]
+        case .ai: return ["ai", "assist", "claude", "anthropic", "openai", "gpt",
+                          "ollama", "llm", "explain", "fix", "api key", "model"]
         case .notifications: return ["notification", "alert", "sound", "bell", "notify",
                                      "banner", "claude", "prompt"]
         case .advanced: return ["config", "include", "raw", "editor", "power"]
