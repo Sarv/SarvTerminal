@@ -1763,6 +1763,16 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** A split `~/.ssh/config` with `Include config.d/*` imports every host from the included files, with identity/proxy-jump populated; wildcard `Host *` blocks are still skipped.
 
+## 29. Import as a top-level toolbar button
+
+**What it is.** Host import was buried in the "New host" split-button dropdown. It's now a first-class **Import** pill in the Hosts toolbar, beside New host / Terminal / Serial. The dropdown keeps New Group + the coming-soon cloud items.
+
+**Logic.** A plain `actionPill(label:"Import", systemImage:"square.and.arrow.down")` that flips `showImporter`; the duplicate "Import hosts…" menu entry was removed so there's a single entry point.
+
+**macOS→Linux.** A `GtkButton` in the hosts action bar; opens the same import dialog (§28). Trivial, purely presentational.
+
+**Verify on Linux.** The Hosts toolbar shows an Import button that opens the import flow directly (no dropdown needed).
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

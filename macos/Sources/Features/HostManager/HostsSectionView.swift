@@ -285,6 +285,9 @@ struct HostsSectionView: View {
     private var actionRow: some View {
         HStack(spacing: 12) {
             newHostSplitButton
+            actionPill(label: "Import", systemImage: "square.and.arrow.down") {
+                showImporter = true
+            }
             actionPill(label: "Terminal", systemImage: "terminal") {
                 VaultsTabsModel.shared.newTerminal(command: nil, name: "Terminal")
             }
@@ -316,9 +319,6 @@ struct HostsSectionView: View {
             Menu {
                 Button("New Group", systemImage: "folder.badge.plus") {
                     startNewGroup(parentID: focusedGroupID)
-                }
-                Button("Import hosts…", systemImage: "square.and.arrow.down") {
-                    showImporter = true
                 }
                 Divider()
                 Section("Cloud (coming soon)") {
