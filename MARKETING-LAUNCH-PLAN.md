@@ -69,7 +69,7 @@ Create a 20–30 second, silent captioned demo:
 2. Connect through a saved profile or proxy jump.
 3. Transfer a file in SFTP.
 4. start a tunnel or attach to a container.
-5. End on: **"Your terminal and your servers. One open-source Mac app."**
+5. End on: **"We bring the terminal and server workspace together. Open source on Mac."**
 
 ### Assets
 
@@ -140,7 +140,7 @@ Megathread PCP-format draft (post only after the account is eligible):
 
 > **[OS] Sarv Terminal: a native Mac terminal for people who manage servers**
 >
-> **Problem:** I work on Sarv Terminal. We built it for Mac users who want a fast terminal but also
+> **Problem:** We work on Sarv Terminal. We built it for Mac users who want a fast terminal but also
 > need to manage saved SSH hosts, move files, and create tunnels without switching between several
 > tools. It includes tabs and splits, saved SSH profiles, SSH key management, SFTP and SCP, local,
 > remote and SOCKS tunnels, Docker and Kubernetes attach, and optional encrypted settings sync. No
@@ -155,8 +155,7 @@ Megathread PCP-format draft (post only after the account is eligible):
 > **Pricing:** Free and open source. Download or install with Homebrew:
 > https://github.com/Sarv/SarvTerminal
 >
-> I would value feedback on SSH compatibility, SFTP workflows, and what would stop you from using it
-> as your daily terminal.
+> We would value feedback on SSH compatibility, SFTP workflows, and any blockers to daily use.
 
 Suggested title:
 
@@ -164,14 +163,14 @@ Suggested title:
 
 Suggested body:
 
-> Disclosure: I work on Sarv Terminal. It is a free MIT-licensed macOS terminal built on Ghostty for
+> Disclosure: We work on Sarv Terminal. It is a free MIT-licensed macOS terminal built on Ghostty for
 > people who manage multiple servers. Alongside tabs and splits, it includes saved SSH profiles,
 > SSH-key management, SFTP/SCP, local/remote/SOCKS tunnels, Docker/Kubernetes attach, and optional
 > encrypted settings sync. No account is required.
 >
 > The project is still Mac-only, and saved-host passwords have not yet moved to Keychain, so SSH
-> keys are recommended. I would especially value feedback on SSH compatibility, SFTP workflows, and
-> what would keep you from using it as a daily terminal.
+> keys are recommended. We would especially value feedback on SSH compatibility, SFTP workflows,
+> and any blockers to daily use.
 >
 > GitHub and downloads: https://github.com/Sarv/SarvTerminal
 

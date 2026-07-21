@@ -8,7 +8,7 @@
 Fast GPU-accelerated terminal, saved connections, SFTP/SCP, SSH keys, tunnels, container attach,
 and encrypted settings sync — in one native app.
 
-[Website](https://sarv.com) · [Features](#features) · [How it compares](#how-it-compares) · [Security & Privacy](#security--privacy) · [Install](#install) · [Build](#build-from-source) · [FAQ](FAQ.md) · [Launch plan](MARKETING-LAUNCH-PLAN.md) · [Contributing](#contributing) · [Credits](#credits--license)
+[Website](https://sarv.com) · [Features](#features) · [Where we fit](#where-sarv-terminal-fits) · [Security & Privacy](#security--privacy) · [Install](#install) · [Build](#build-from-source) · [FAQ](FAQ.md) · [Launch plan](MARKETING-LAUNCH-PLAN.md) · [Contributing](#contributing) · [Credits](#credits--license)
 
 ![Platform: macOS](https://img.shields.io/badge/platform-macOS-black)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
@@ -21,23 +21,24 @@ and encrypted settings sync — in one native app.
 Traditional terminal emulators and dedicated SSH managers solve different parts of remote work.
 Sarv Terminal brings them together: a native macOS terminal where saved servers, SSH keys, tunnels,
 file transfers, container shells, and terminal sessions live in one workspace. Optional encrypted
-sync uses a private GitHub repository or folder you choose.
+sync uses a selected private GitHub repository or folder.
 
 It is built for developers and operators who live in the terminal and manage more than one server.
 
 ## Features
 
-Everything Ghostty gives you — fast GPU rendering, ligatures, true color, native macOS feel — **plus
-the Sarv Terminal layer.** Each section below shows the feature in action.
+We retain Ghostty's fast GPU rendering, ligatures, true color, and native macOS feel, then add the
+**Sarv Terminal layer.** Each section below shows the feature in action.
 
 ### 🗄️ Connection Manager (Vaults)
 - **Saved hosts** with a full SSH profile: user, port, identity file, agent forwarding, compression,
   keep-alives, proxy jump, host-key policy, and a startup command.
 - **Groups & tags** — organize servers into a workspace → project folder tree.
-- **Per-host themes** — each server can open with its own color theme so you always know where you are.
+- **Per-host themes** — each server can open with its own color theme so the active server context
+  remains visible.
 - **Guided connect popup** with **auto-reconnect** on network drops / wake-from-sleep, and clean
   inline error handling.
-- **Import** hosts from your existing `~/.ssh/config` (following `Include`s), **iTerm2**, CSV, PuTTY,
+- **Import** hosts from an existing `~/.ssh/config` (following `Include`s), **iTerm2**, CSV, PuTTY,
   MobaXterm, or SecureCRT.
 - **Command palette / quick-connect** to jump to any host or action.
 
@@ -53,14 +54,14 @@ the Sarv Terminal layer.** Each section below shows the feature in action.
 
 ### ↔️ Port Forwarding
 - Save **Local (`-L`)**, **Remote (`-R`)**, and **Dynamic / SOCKS (`-D`)** tunnels.
-- Each tunnel runs over one of your saved hosts; **start/stop** with a live status indicator and
+- Each tunnel runs over a saved host; **start/stop** with a live status indicator and
   inline error reporting (e.g. "port already in use").
 
 ![Port Forwarding — local, remote and SOCKS tunnels](assets/screenshots/port-forwarding.png)
 
 ### 🧩 Snippets
-- A library of your most-used commands; run them straight into the focused terminal or copy them.
-- **Shell History** — browse your recent shell commands (zsh / bash / fish) in a side panel and
+- A library of frequently used commands; run them straight into the focused terminal or copy them.
+- **Shell History** — browse recent shell commands (zsh / bash / fish) in a side panel and
   **save any of them as a snippet** in one click.
 
 ![Snippets — one-click command library](assets/screenshots/snippets.png)
@@ -81,13 +82,13 @@ the Sarv Terminal layer.** Each section below shows the feature in action.
 
 ### 🤖 AI Command Assist
 - When a command **fails**, a one-click banner offers to **explain the failure and suggest a fix** —
-  the suggested fix pastes straight into your terminal.
-- **Bring your own key**, your choice of provider: **Claude**, **OpenAI**, or a **local model via
-  Ollama** (fully offline). Your key is **stored encrypted on your Mac and never synced** — nothing is
-  sent anywhere except the provider you choose.
+  the suggested fix pastes straight into the focused terminal.
+- We support **user-supplied API keys** for **Claude** and **OpenAI**, or a **local model via Ollama**
+  (fully offline). Provider keys are **stored encrypted on the Mac and never synced**. Requests go
+  only to the configured provider.
 
 ### 🐳 Docker & Kubernetes Attach
-- An **Attach** panel lists your running **Docker containers** and **Kubernetes pods**.
+- An **Attach** panel lists running **Docker containers** and **Kubernetes pods**.
 - Click to open an interactive shell **inside** a container/pod — in a new tab or the current one —
   without hand-typing `docker exec -it …` / `kubectl exec -it …`.
 
@@ -97,14 +98,14 @@ the Sarv Terminal layer.** Each section below shows the feature in action.
 - Pick a detected `/dev/cu.*` device and a baud rate; opens a session in a terminal tab (8-N-1, via
   the built-in `screen`).
 - A built-in **"report an issue"** helper opens a pre-filled GitHub issue — serial behavior is
-  hardware-specific, so this makes it easy to tell us your adapter/chipset when something's off.
+  hardware-specific, so adapter and chipset details are easy to include when something is off.
 
 ### 📁 SFTP / SCP Dual-Pane File Manager
 - Transfers run over **both SFTP and SCP** — SFTP for local ⇄ remote browsing/transfer, and **SCP for
   direct server-to-server (server ⇄ server) transfers**.
 - Browse **local ⇄ remote** side by side and transfer between them.
 - **Direct server-to-server transfers** — copy a file from one server straight to another (via SCP)
-  without it passing through your Mac, with an automatic **relay-through-this-Mac fallback** when the
+  without it passing through the Mac, with an automatic **relay-through-this-Mac fallback** when the
   two servers can't reach each other directly.
 - **Live transfer progress** (file name, size, speed, %, bytes) with a **Cancel** button, and a clear
   *Server → Server* vs *Via this Mac* indicator.
@@ -139,22 +140,22 @@ We position Sarv Terminal between modern terminal emulators and dedicated SSH ma
 
 Sarv Terminal is **local-first**, requires no account, and does not bundle product telemetry. Hosts,
 snippets, tunnel rules, and local settings remain under `~/.config/sarvterminal/`. Optional sync
-writes encrypted data to the private GitHub repository or folder you select. AI assistance contacts
-only the provider you configure, or stays local when you use Ollama.
+writes encrypted data to the selected private GitHub repository or folder. AI assistance contacts
+only the configured provider, or stays local with Ollama.
 
 ### 🔐 End-to-end-encrypted settings sync
-Move your entire setup between machines under encryption only *you* can open:
+We encrypt synchronized configuration so only the holder of the master password can open it:
 - **AES-256-GCM** encryption with a key derived via **PBKDF2-HMAC-SHA256** from a master password.
 - The **master password is stored only in the macOS Keychain**, unlocked with **Touch ID**, marked
-  *this-device-only* so it can never leave your Mac (not even via iCloud Keychain) — **it is never
+  *this-device-only* so it cannot leave the Mac (not even via iCloud Keychain) — **it is never
   synced**.
-- Choose your own backend: a **private GitHub repository** (public repos are rejected) **or** a
+- Supported backends are a **private GitHub repository** (public repos are rejected) or a
   **local / cloud folder** (iCloud Drive, Dropbox, Google Drive — any synced directory).
-- Syncs your terminal config, app settings, keybinds, and saved hosts. **Blank/default values are
+- Sync covers terminal config, app settings, keybinds, and saved hosts. **Blank/default values are
   never synced** and never overwrite a populated value on pull, so sync can't silently wipe data.
 - A small **plaintext manifest** carries only version + timestamp so status can be shown without
-  decrypting anything. Encryption is **one-way**: if you forget the master password, the synced data
-  is unrecoverable (this is surfaced clearly in the UI).
+  decrypting anything. Encryption is **one-way**: losing the master password makes the synced data
+  unrecoverable, and we surface that clearly in the UI.
 
 ![Encrypted Sync — end-to-end-encrypted backup of settings, keybinds and hosts](assets/screenshots/sync.png)
 
@@ -185,7 +186,7 @@ notarized build. Upgrade later with `brew upgrade --cask sarv-terminal` (the app
 [Releases page](https://github.com/Sarv/SarvTerminal/releases/latest), open it, and drag the app to
 Applications.
 
-Prefer to build it yourself? See [build from source](#build-from-source).
+For a local build, see [build from source](#build-from-source).
 
 ## Build from source
 
@@ -211,7 +212,7 @@ For deeper build details and the core engine internals, see [HACKING.md](HACKING
 - 🐧 **Linux UI — the big open item.** The terminal *engine* (from Ghostty) is cross-platform, but
   the Sarv Terminal experience (Vaults, SFTP, Keychain, Port Forwarding, Sync) is currently built in
   **SwiftUI for macOS only**. **A Linux UI is not yet built, and this is where we'd love help most.**
-  If you know GTK/Qt (or have ideas for a shared cross-platform UI), please jump in — see
+  We especially welcome GTK/Qt experience and ideas for a shared cross-platform UI; see
   [Contributing](#contributing).
 - ✅ Signed & notarized releases on GitHub + Homebrew (`brew install --cask sarv/tap/sarv-terminal`).
 - 🔜 Move saved-host passwords into the Keychain; more sync providers. Until then, prefer SSH keys
@@ -219,12 +220,12 @@ For deeper build details and the core engine internals, see [HACKING.md](HACKING
 
 ## Contributing
 
-**Everyone is welcome — let's make this a wonderful, full-fledged open-source terminal together.** 🎉
+**We welcome everyone who wants to help build a wonderful open-source terminal.** 🎉
 
-Whether you're fixing a bug, polishing the UI, improving docs, or taking on a big feature, your help
-matters. A few especially valuable areas:
+We value bug fixes, UI polish, documentation improvements, and larger features. A few especially
+valuable areas:
 
-- **🐧 A Linux UI** — the single biggest opportunity. If you're a GTK/Qt developer, we'd love your help.
+- **🐧 A Linux UI** — the single biggest opportunity, especially for GTK/Qt contributors.
 - **🔒 Security hardening** — moving host passwords into the Keychain, audits, and threat-model review.
 - **🚀 Releases & packaging** — CI, signed/notarized builds, Homebrew.
 - **📸 Docs & screenshots** — including the gallery above (see [`assets/screenshots/`](assets/screenshots)).
@@ -263,5 +264,4 @@ Ghostty:       Copyright (c) Mitchell Hashimoto, Ghostty contributors
 Sarv Terminal: Copyright (c) Sarv Terminal contributors
 ```
 
-If you find Sarv Terminal useful, please ⭐ the repo, contribute, and consider supporting upstream
-Ghostty as well.
+We welcome stars and contributions, and we encourage support for upstream Ghostty as well.
