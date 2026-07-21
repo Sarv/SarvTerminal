@@ -8,15 +8,15 @@ That places Sarv Terminal between two established categories. Terminal emulators
 command-line experience. Dedicated SSH managers optimize fleets of remote connections. Sarv Terminal
 is for Mac users who want both in one open-source app.
 
-## Which category fits you?
+## Where we fit
 
-| Choose | Best when | Main trade-off |
+| Product | Positioning | Main trade-off |
 |---|---|---|
-| **Sarv Terminal** | You use macOS, manage multiple servers, and want terminal + SSH operations in one local-first open-source app. | macOS-only today; saved-host passwords are not yet stored in Keychain. |
-| **Ghostty / iTerm2 / WezTerm** | You primarily want an excellent terminal and prefer assembling remote workflows from `ssh`, `scp`, `tmux`, and other tools. | No full built-in server-operations workspace. |
-| **Termius / SecureCRT** | Cross-platform coverage, mature enterprise SSH administration, or mobile access matters most. | Proprietary/commercial products rather than an open-source Mac-native stack. |
-| **Warp** | Agentic coding and an editor-like command workflow are the main priority. | Different focus from a saved-host, SFTP, key, and tunnel manager. |
-| **Tabby** | You want a cross-platform open-source terminal with SSH, Telnet, and serial support. | Electron-based and less focused on a native macOS server workspace. |
+| **Sarv Terminal** | We combine a native macOS terminal with visual SSH operations for people who manage multiple servers. | macOS-only today; saved-host passwords are not yet stored in Keychain. |
+| **Ghostty / iTerm2 / WezTerm** | Excellent terminal experiences with remote workflows assembled from `ssh`, `scp`, `tmux`, and other tools. | No full built-in server-operations workspace. |
+| **Termius / SecureCRT** | Cross-platform coverage, mature enterprise SSH administration, and mobile access. | Proprietary/commercial products rather than an open-source Mac-native stack. |
+| **Warp** | Agentic coding and an editor-like command workflow. | Different focus from a saved-host, SFTP, key, and tunnel manager. |
+| **Tabby** | Cross-platform open-source terminal access with SSH, Telnet, and serial support. | Electron-based and less focused on a native macOS server workspace. |
 
 ## Compared with terminal emulators
 
@@ -60,17 +60,17 @@ SecureCRT are mature connection managers, while Ghostty, iTerm2, Warp, WezTerm, 
 terminal products.
 
 The differentiator is the combination: **a native macOS terminal built on Ghostty, plus a visual
-server-operations workspace, released under MIT and usable without a mandatory account.** Choose a
-cross-platform SSH manager when mixed-device support is more important; choose Sarv Terminal when a
-Mac-first, open-source and local-first workflow is the priority.
+server-operations workspace, released under MIT and usable without a mandatory account.** We focus
+on a Mac-first, open-source and local-first workflow. Cross-platform SSH managers remain the stronger
+fit when mixed-device and mobile support are the priority.
 
 ## Security and privacy scope
 
 Sarv Terminal does not require an account and does not bundle product telemetry. Local data stays on
-the Mac unless you enable an optional feature that communicates externally:
+the Mac unless an optional feature that communicates externally is enabled:
 
-- encrypted sync writes to the private GitHub repository or synced folder you select;
-- AI assistance sends the relevant request to the provider you configure, or stays local with
+- encrypted sync writes to the selected private GitHub repository or synced folder;
+- AI assistance sends the relevant request to the configured provider, or stays local with
   Ollama;
 - saved-host passwords currently remain in local `hosts.json`; SSH keys are recommended until the
   planned Keychain migration lands.

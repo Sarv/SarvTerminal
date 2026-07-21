@@ -121,17 +121,17 @@ the Sarv Terminal layer.** Each section below shows the feature in action.
 
 ![Appearance — themes, opacity, blur and background image](assets/screenshots/appearance.png)
 
-## How it compares
+## Where Sarv Terminal fits
 
-Sarv Terminal sits between modern terminal emulators and dedicated SSH managers:
+We position Sarv Terminal between modern terminal emulators and dedicated SSH managers:
 
-| Choose | When it fits best |
+| Product | Best fit |
 |---|---|
-| **Sarv Terminal** | You use macOS and want terminal + visual server operations in one local-first, open-source app. |
-| **Ghostty / iTerm2 / WezTerm** | The terminal experience is the priority and you prefer assembling remote workflows from CLI tools. |
-| **Termius / SecureCRT** | Cross-platform, mobile, or mature enterprise connection management matters more than open source. |
+| **Sarv Terminal** | We combine a native macOS terminal with visual server operations in one local-first, open-source app. |
+| **Ghostty / iTerm2 / WezTerm** | Strong terminal experiences with remote workflows assembled from CLI tools. |
+| **Termius / SecureCRT** | Cross-platform, mobile, and mature enterprise connection management. |
 | **Warp** | Agentic coding and an editor-like command workflow are the main job. |
-| **Tabby** | You want a cross-platform open-source terminal with SSH, Telnet, and serial support. |
+| **Tabby** | Cross-platform open-source terminal access with SSH, Telnet, and serial support. |
 
 **[See the sourced capability comparison and trade-offs →](COMPARISON.md)**
 
