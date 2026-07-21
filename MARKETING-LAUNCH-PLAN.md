@@ -131,6 +131,33 @@ For `r/macapps`, use the main feed only after satisfying the community's current
 karma, the required promotion template/approval path, relationship disclosure, and no more than one
 developer promotion in 30 days. Otherwise use the monthly promotion megathread.
 
+Current account check (2026-07-21): `u/NetworkDue5038` has no recorded `r/macapps` local karma.
+The eligible route is the pinned July 2026 **App Pile** megathread, but its moderator warning says a
+first linked comment is likely to be auto-removed until the account has earned 10 local karma without
+promotional comments or links. Participate genuinely before submitting; do not manufacture engagement.
+
+Megathread PCP-format draft (post only after the account is eligible):
+
+> **[OS] Sarv Terminal: a native Mac terminal for people who manage servers**
+>
+> **Problem:** I work on Sarv Terminal. We built it for Mac users who want a fast terminal but also
+> need to manage saved SSH hosts, move files, and create tunnels without switching between several
+> tools. It includes tabs and splits, saved SSH profiles, SSH key management, SFTP and SCP, local,
+> remote and SOCKS tunnels, Docker and Kubernetes attach, and optional encrypted settings sync. No
+> account is required.
+>
+> **Comparison:** Ghostty and iTerm2 are excellent terminal emulators, but server management is not
+> their main workflow. Termius and SecureCRT offer stronger connection management, but they are
+> proprietary products. Sarv Terminal combines a Ghostty-based terminal with built-in server tools
+> and is free under the MIT license. It is currently Mac-only. Saved-host passwords have not yet
+> moved to Keychain, so we recommend SSH keys.
+>
+> **Pricing:** Free and open source. Download or install with Homebrew:
+> https://github.com/Sarv/SarvTerminal
+>
+> I would value feedback on SSH compatibility, SFTP workflows, and what would stop you from using it
+> as your daily terminal.
+
 Suggested title:
 
 > [OS] Sarv Terminal — a native Mac terminal with saved SSH hosts, SFTP and tunnels
@@ -218,6 +245,15 @@ The following actions require a maintainer or account owner:
 3. Founder-written Hacker News submission.
 4. Final confirmation immediately before publishing any external post or sending outreach.
 5. Account login, CAPTCHA, verification code, payment, or legal/trademark decision.
+
+## Distribution audit (2026-07-21)
+
+- Latest release: `v1.9.4`, published 2026-07-17 with a 35 MB DMG, SHA-256 digest, source archives,
+  and a GitHub release attestation.
+- Homebrew cask: `sarv/tap/sarv-terminal` points to `v1.9.4` and its SHA-256 exactly matches the
+  GitHub release asset.
+- The Homebrew cask requires macOS Ventura or newer and declares Sparkle-managed auto-updates.
+- Launch-page copy should state the macOS version requirement next to the install call to action.
 
 ## Current platform references
 
