@@ -61,8 +61,40 @@ enum ShellHistory {
             Double(s.trimmingCharacters(in: .whitespaces)).map { Date(timeIntervalSince1970: $0) }
         }
 
-        for rawLine in raw.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(rawLine)
+        // A command with embedded newlines is written by zsh/bash as a trailing
+        // backslash on each physical line, continuing on the next. Rejoin those
+        // into one logical command (real newlines) — otherwise every
+        // continuation line becomes a separate, timestamp-less "Earlier"
+        // fragment, which scatters the day-grouped timeline and duplicates
+        // section titles.
+        let lines = raw.split(separator: "\n", omittingEmptySubsequences: false)
+        // A trailing newline is escaped only when preceded by an ODD number of
+        // backslashes (an even count is literal escaped backslashes).
+        func endsWithOddBackslash(_ s: String) -> Bool {
+            var count = 0
+            var idx = s.endIndex
+            while idx > s.startIndex {
+                idx = s.index(before: idx)
+                if s[idx] == "\\" { count += 1 } else { break }
+            }
+            return count % 2 == 1
+        }
+        // Swallow continuation lines, turning each escaping backslash + newline
+        // back into a real newline. Advances `i` past every line it consumes.
+        func joinContinuations(_ first: String, _ i: inout Int) -> String {
+            var cmd = first
+            while endsWithOddBackslash(cmd), i + 1 < lines.count {
+                cmd.removeLast()               // drop the escaping backslash
+                i += 1
+                cmd += "\n" + String(lines[i])
+            }
+            return cmd
+        }
+
+        var i = 0
+        while i < lines.count {
+            defer { i += 1 }
+            let line = String(lines[i])
 
             // fish: "- cmd: <command>" then "  when: <epoch>" (+ "  paths:" metadata).
             if line.hasPrefix("- cmd: ") {
@@ -88,16 +120,17 @@ enum ShellHistory {
                 let rest = line.dropFirst().drop(while: { $0 == " " })
                 if let semi = rest.firstIndex(of: ";") {
                     let date = rest[..<semi].split(separator: ":").first.flatMap(epoch)
-                    let cmd = rest[rest.index(after: semi)...].trimmingCharacters(in: .whitespaces)
+                    let cmd = joinContinuations(String(rest[rest.index(after: semi)...]), &i)
+                        .trimmingCharacters(in: .whitespaces)
                     if !cmd.isEmpty { parsed.append((cmd, date)) }
                     continue
                 }
             }
 
             // Plain command (bash w/o timestamps, or zsh non-extended).
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if !trimmed.isEmpty {
-                parsed.append((trimmed, pendingBashDate))
+            let cmd = joinContinuations(line, &i).trimmingCharacters(in: .whitespaces)
+            if !cmd.isEmpty {
+                parsed.append((cmd, pendingBashDate))
                 pendingBashDate = nil
             }
         }
