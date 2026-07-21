@@ -385,7 +385,11 @@ private struct HistoryTab: View {
                                     ForEach(pinnedRows, id: \.self) { cmd in row(cmd).id("pin-\(cmd)") }
                                 } header: { header("Pinned") }
                             }
-                            ForEach(recentSections, id: \.title) { section in
+                            // Index-based id: a day title can legitimately recur
+                            // (e.g. undated "Earlier" rows between dated ones), and
+                            // duplicate ForEach ids corrupt LazyVStack layout
+                            // (blank gaps). Position is always unique.
+                            ForEach(Array(recentSections.enumerated()), id: \.offset) { _, section in
                                 Section {
                                     ForEach(section.items) { entry in
                                         row(entry.command, date: entry.date).id("rec-\(entry.id)")
