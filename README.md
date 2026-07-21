@@ -4,11 +4,11 @@
 
 <h1 align="center">Sarv Terminal</h1>
 
-**An open-source, full-fledged terminal _and_ SSH connection manager for macOS.**
-Fast GPU-accelerated terminal, a built-in host vault, SFTP/SCP file manager, SSH key & tunnel
-manager, and end-to-end-encrypted settings sync — in one native app.
+**The open-source Mac terminal for people who manage servers.**
+Fast GPU-accelerated terminal, saved connections, SFTP/SCP, SSH keys, tunnels, container attach,
+and encrypted settings sync — in one native app.
 
-[Website](https://sarv.com) · [Features](#features) · [How it compares](#how-it-compares) · [Security & Privacy](#security--privacy) · [Install](#install) · [Build](#build-from-source) · [FAQ](FAQ.md) · [Contributing](#contributing) · [Credits](#credits--license)
+[Website](https://sarv.com) · [Features](#features) · [How it compares](#how-it-compares) · [Security & Privacy](#security--privacy) · [Install](#install) · [Build](#build-from-source) · [FAQ](FAQ.md) · [Launch plan](MARKETING-LAUNCH-PLAN.md) · [Contributing](#contributing) · [Credits](#credits--license)
 
 ![Platform: macOS](https://img.shields.io/badge/platform-macOS-black)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
@@ -18,10 +18,10 @@ manager, and end-to-end-encrypted settings sync — in one native app.
 
 ## About
 
-Most terminals make you choose: a *fast native terminal* **or** a *connection manager* (like the
-commercial SSH clients). Sarv Terminal aims to be both — a single, native macOS app where your
-terminal, your saved servers, your SSH keys, your tunnels, and your file transfers all live together,
-with your whole setup optionally synced between machines under your own end-to-end encryption.
+Traditional terminal emulators and dedicated SSH managers solve different parts of remote work.
+Sarv Terminal brings them together: a native macOS terminal where saved servers, SSH keys, tunnels,
+file transfers, container shells, and terminal sessions live in one workspace. Optional encrypted
+sync uses a private GitHub repository or folder you choose.
 
 It is built for developers and operators who live in the terminal and manage more than one server.
 
@@ -43,13 +43,13 @@ the Sarv Terminal layer.** Each section below shows the feature in action.
 
 ![Vaults — saved hosts, groups and tags](assets/screenshots/hosts.png)
 
-### 🔑 SSH Keychain
+### 🔑 SSH Key Manager
 - See every key in `~/.ssh` with its type, size, fingerprint, and comment.
 - **Generate** new keys (Ed25519 / ECDSA / RSA-4096) with an optional passphrase and comment.
 - **Copy the public key** in one click (to paste into a server's `authorized_keys` or GitHub),
   copy the path, reveal in Finder, or delete safely.
 
-![SSH Keychain — generate and manage keys](assets/screenshots/keychain.png)
+![SSH Key Manager — generate and manage keys](assets/screenshots/keychain.png)
 
 ### ↔️ Port Forwarding
 - Save **Local (`-L`)**, **Remote (`-R`)**, and **Dynamic / SOCKS (`-D`)** tunnels.
@@ -123,30 +123,24 @@ the Sarv Terminal layer.** Each section below shows the feature in action.
 
 ## How it compares
 
-Most terminals are *either* a fast terminal *or* a connection manager. Sarv Terminal is both —
-built on the Ghostty engine, with a local-first SSH client layered on top. Other terminals can run
-`ssh`, but the connection-manager layer that makes servers easy to live with isn't built in:
+Sarv Terminal sits between modern terminal emulators and dedicated SSH managers:
 
-| | **Sarv Terminal** | Ghostty | iTerm2 | Warp | Terminal.app | WezTerm |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| Saved-host vault (groups, per-host SSH profile) | ✅ | ⬜ | 🟡 | ⬜ | 🟡 | 🟡 |
-| SSH key manager | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| SFTP/SCP dual-pane file manager | ✅ | ⬜ | 🟡 | ⬜ | ⬜ | ⬜ |
-| Port-forward / tunnel manager (GUI) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| Import hosts & settings from other apps | ✅ | ⬜ | 🟡 | ⬜ | ⬜ | 🟡 |
-| End-to-end-encrypted settings sync | ✅ | ⬜ | 🟡 | 🟡 | ⬜ | ⬜ |
-| AI explain/fix for failed commands (bring-your-own-key, local option) | ✅ | ⬜ | ⬜ | 🟡 | ⬜ | ⬜ |
-| One-click Docker / Kubernetes container attach | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| GPU-accelerated rendering | ✅ | ✅ | ✅ | ✅ | ⬜ | ✅ |
-| Local-first · no account · no telemetry | ✅ | ✅ | ✅ | 🟡 | ✅ | ✅ |
+| Choose | When it fits best |
+|---|---|
+| **Sarv Terminal** | You use macOS and want terminal + visual server operations in one local-first, open-source app. |
+| **Ghostty / iTerm2 / WezTerm** | The terminal experience is the priority and you prefer assembling remote workflows from CLI tools. |
+| **Termius / SecureCRT** | Cross-platform, mobile, or mature enterprise connection management matters more than open source. |
+| **Warp** | Agentic coding and an editor-like command workflow are the main job. |
+| **Tabby** | You want a cross-platform open-source terminal with SSH, Telnet, and serial support. |
 
-✅ built-in · 🟡 partial (runs `ssh`, but no GUI to manage it) · ⬜ not offered.
-**[See the full comparison →](COMPARISON.md)**
+**[See the sourced capability comparison and trade-offs →](COMPARISON.md)**
 
 ## Security & Privacy
 
-Sarv Terminal is **local-first**. Your hosts, keys, snippets, and tunnel rules are stored on your
-machine under `~/.config/sarvterminal/`; nothing is sent anywhere unless you explicitly enable sync.
+Sarv Terminal is **local-first**, requires no account, and does not bundle product telemetry. Hosts,
+snippets, tunnel rules, and local settings remain under `~/.config/sarvterminal/`. Optional sync
+writes encrypted data to the private GitHub repository or folder you select. AI assistance contacts
+only the provider you configure, or stays local when you use Ollama.
 
 ### 🔐 End-to-end-encrypted settings sync
 Move your entire setup between machines under encryption only *you* can open:
@@ -169,7 +163,8 @@ Move your entire setup between machines under encryption only *you* can open:
   never echoed into the terminal or shell history.
 - **Pre-flight host-key verification** (out-of-band `ssh-keyscan`) so trust prompts are explicit and
   can't be hijacked by the password helper.
-- Sensitive material lives in the **macOS Keychain** with *this-device-only* accessibility.
+- The sync master password and AI provider keys live in the **macOS Keychain** with
+  *this-device-only* accessibility.
 
 > **Note:** saved-host passwords are currently stored in the local `hosts.json`. Prefer SSH keys, and
 > see the [roadmap](#roadmap--status) — moving host passwords into the Keychain is a tracked
@@ -219,7 +214,8 @@ For deeper build details and the core engine internals, see [HACKING.md](HACKING
   If you know GTK/Qt (or have ideas for a shared cross-platform UI), please jump in — see
   [Contributing](#contributing).
 - ✅ Signed & notarized releases on GitHub + Homebrew (`brew install --cask sarv/tap/sarv-terminal`).
-- 🔜 Move saved-host passwords into the Keychain; more sync providers.
+- 🔜 Move saved-host passwords into the Keychain; more sync providers. Until then, prefer SSH keys
+  and treat local `hosts.json` as sensitive.
 
 ## Contributing
 
@@ -229,7 +225,7 @@ Whether you're fixing a bug, polishing the UI, improving docs, or taking on a bi
 matters. A few especially valuable areas:
 
 - **🐧 A Linux UI** — the single biggest opportunity. If you're a GTK/Qt developer, we'd love your help.
-- **🔒 Security hardening** — moving host passwords into the Keychain, audits, threat-model review.
+- **🔒 Security hardening** — moving host passwords into the Keychain, audits, and threat-model review.
 - **🚀 Releases & packaging** — CI, signed/notarized builds, Homebrew.
 - **📸 Docs & screenshots** — including the gallery above (see [`assets/screenshots/`](assets/screenshots)).
 
