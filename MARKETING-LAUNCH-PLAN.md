@@ -99,7 +99,7 @@ time remote work caused friction, and what would stop them from switching. Do no
 
 ### Distribution
 
-- Recruit 30–50 Mac-based developers/operators from existing relationships and relevant communities.
+- Find 30–50 Mac-based developers/operators from existing relationships and relevant communities.
 - Use GitHub Discussions for support and product feedback so answers stay searchable.
 - Label several genuinely small, well-scoped contributor tasks.
 - Publish weekly development notes and acknowledge every external contribution.
