@@ -270,6 +270,8 @@ Why a custom window and not `BaseTerminalController`: the embedded terminals are
 
 **Content selection.** `VaultsTabsModel.shared.selection` is an enum `Selection { case dashboard; case terminal(UUID) }`. `VaultsRootView` renders `HostManagerView()` for `.dashboard` and a `VaultsTerminalPane(tab:)` for `.terminal(id)`, `.id(tab.id)` so switching tabs rebuilds and re-focuses. Terminal tabs are **live objects** kept in `terminals: [TerminalTab]` — switching away does not tear the session down; only the dashboard view is rebuilt. `selection`'s `didSet` records `lastTerminalID` (snippet/target routing) and clears the tab's attention dot.
 
+**Duplicate tab** (`duplicateTab`, tab context menu). A duplicate must be a faithful clone of its source: same name, working directory (the focused pane's live `pwd`, spawned as the new shell's cwd — never a typed `cd`), host, and **accent color**. An SSH tab (`launchCommand` starts with `ssh `) re-runs through the staged connection flow rather than cloning the live session. The new tab is created (which appends it at the end of `terminals`) and then **moved to `sourceIndex + 1`** so it lands immediately to the right of the tab it came from, not at the far end of the strip. A GTK port must mirror both: copy every visible attribute incl. color, and insert next to the source, not append.
+
 **Layout tree (`VaultsRootView`):**
 - `topBar` (fixed 42pt): `VaultsTabStrip` (owns the `+`/new-tab action) · notification bell (`VaultsBellView`) · command-sidebar toggle (disabled, not hidden, off terminal tabs) · `AccountMenuButton`.
 - content `HStack`: main content (`maxWidth/.infinity`) + optional `VaultsCommandSidebar` (only when `sidebarVisible && inTerminal`, slide-in from trailing edge).

@@ -1712,19 +1712,33 @@ final class VaultsTabsModel: ObservableObject {
     /// re-runs its launch command; a local tab opens a fresh shell at the
     /// focused pane's current directory.
     func duplicateTab(_ id: UUID) {
-        guard let tab = terminals.first(where: { $0.id == id }) else { return }
+        guard let sourceIndex = terminals.firstIndex(where: { $0.id == id }) else { return }
+        let tab = terminals[sourceIndex]
+        let newTab: TerminalTab?
         if let command = tab.launchCommand {
             // An SSH tab is a fresh connection, so run it through the staged
             // connection popup just like connecting from the hosts list — it's
             // not a local shell we can clone in place.
             let staged = command.hasPrefix("ssh ")
-            newTerminal(command: command, name: tab.displayName, host: tab.connectHost, staged: staged)
-            return
+            newTab = newTerminal(command: command, name: tab.displayName, host: tab.connectHost, staged: staged)
+        } else {
+            // Local shell: reopen in the focused pane's cwd (set at spawn, not via
+            // a typed `cd` that the shell's login startup can swallow).
+            let cwd = (tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf())?.pwd
+            newTab = newTerminal(command: nil, name: tab.displayName, workingDirectory: cwd)
         }
-        // Local shell: reopen in the focused pane's cwd (set at spawn, not via
-        // a typed `cd` that the shell's login startup can swallow).
-        let cwd = (tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf())?.pwd
-        newTerminal(command: nil, name: tab.displayName, workingDirectory: cwd)
+        guard let newTab else { return }
+        // A duplicate should look like its original: carry over the accent color
+        // too, matching how it already clones name / path / host.
+        newTab.color = tab.color
+        // Place the duplicate immediately to the right of the tab it came from
+        // (newTerminal appended it at the very end).
+        if let from = terminals.firstIndex(where: { $0.id == newTab.id }), from != sourceIndex + 1 {
+            withAnimation(.smooth(duration: 0.2)) {
+                let moved = terminals.remove(at: from)
+                terminals.insert(moved, at: min(sourceIndex + 1, terminals.count))
+            }
+        }
     }
 
     /// Rename a tab (right-click → Rename Tab…). Empty clears the override.
