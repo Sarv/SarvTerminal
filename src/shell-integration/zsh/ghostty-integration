@@ -101,6 +101,11 @@ _ghostty_deferred_init() {
         # Don't write OSC 133 D when our precmd handler is invoked from zle.
         # Some plugins do that to update prompt on cd.
         if ! builtin zle; then
+            # SarvTerminal: a program killed without restoring terminal state
+            # can leave application cursor-keys mode (DECCKM) on, so arrow keys
+            # emit literal "^[OA" instead of navigating history. Reset to normal
+            # cursor keys at each real prompt so the shell self-heals.
+            builtin print -nu $_ghostty_fd '\e[?1l'
             # This code works incorrectly in the presence of a precmd or chpwd
             # hook that prints. For example, sindresorhus/pure prints an empty
             # line on precmd and marlonrichert/zsh-snap prints $PWD on chpwd.
