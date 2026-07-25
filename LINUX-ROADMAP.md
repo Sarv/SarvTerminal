@@ -1806,6 +1806,20 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** With Docker running, the Attach tab lists containers; the terminal-icon menu → "Open in new tab" drops you into `sh` inside the container (single spawn, no echoed command). "Run in current tab" types+runs it in the focused terminal. `kubectl` pods behave the same; a missing daemon/cluster shows a friendly note, not a raw error dump.
 
+## 32. Terminal-state recovery: Reset Terminal + cursor-key auto-heal
+
+**What it is.** Recovery from a terminal left in a broken input/display mode by a program killed without cleanup (Ctrl+C'ing a raw-mode dev server, a crashed TUI): stuck application cursor-keys mode (arrow keys emit literal `^[OA` instead of navigating history), mouse reporting, alternate screen, colors, scroll region. Two mechanisms:
+- **Reset Terminal** — a **View menu** item (added programmatically at launch, not via the nib) plus a rebindable **"Reset terminal"** keybind, both firing libghostty's existing `reset` binding action (emulator RIS / `fullReset`). Emulator-level only, like Terminal.app's Shell > Reset; it does **not** reset the TTY termios (the raw-mode case is prevented at source / recovered with the `reset` command).
+- **Cursor-key auto-heal** — the zsh shell-integration resets application cursor-keys mode (`\e[?1l`) at each real prompt, so arrow keys self-heal with no user action.
+
+**Logic.**
+- The `reset` action, `Ghostty.App.resetTerminal(surface:)`, and the `@objc resetTerminal(_:)` responder handlers on `SurfaceView_AppKit` / `BaseTerminalController` already existed in libghostty — only the **menu item** and the **keybind-registry entry** (`Keybind.swift`) were missing. The menu item targets the **First Responder** so it routes to the focused surface's handler and auto-disables when no terminal is focused.
+- The auto-heal writes the DECCKM-off sequence to the ghostty fd inside `_ghostty_precmd`'s `! builtin zle` guard (real prompts only, not zle-triggered precmd) — a one-line divergence from upstream Ghostty's zsh integration script.
+
+**macOS→Linux.** The `reset` action is shared libghostty core, already present on GTK — the GTK apprt just needs the same **surfacing**: a menu/action entry (`GMenu` / `GtkApplication` action) and a rebindable keybind row, both dispatching `reset` to the focused surface. The zsh-integration one-liner is shell-side and platform-agnostic (same `shell-integration/zsh/ghostty-integration` ships on Linux); bash/fish equivalents are TODO.
+
+**Verify on Linux.** Put the terminal in a broken mode (`printf '\e[?1h'` then arrows show `^[OA`, or kill a raw-mode TUI); the menu "Reset Terminal" (or the bound key) restores normal input. Then open a fresh shell, break DECCKM from a killed program, and confirm the next prompt's arrow keys work without a manual reset.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

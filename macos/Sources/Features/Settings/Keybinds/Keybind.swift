@@ -230,6 +230,7 @@ let kKeybindActions: [KeybindAction] = [
     // System
     .init(name: "quit", label: "Quit", category: "System"),
     .init(name: "clear_screen", label: "Clear screen", category: "System"),
+    .init(name: "reset", label: "Reset terminal", category: "System"),
 ]
 
 // MARK: - Fixed (non-rebindable) shortcuts

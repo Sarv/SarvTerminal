@@ -369,6 +369,7 @@ class AppDelegate: NSObject,
 
         // Setup our menu
         setupMenuImages()
+        setupResetTerminalMenuItem()
 
         // Setup signal handlers
         setupSignals()
@@ -1217,6 +1218,26 @@ class AppDelegate: NSObject,
     @IBAction func newLocalTerminal(_ sender: Any?) {
         VaultsTabsModel.shared.newTerminal(
             workingDirectory: VaultsTabsModel.newTabWorkingDirectory)
+    }
+
+    /// Insert "Reset Terminal" into the View menu at runtime (avoids editing the
+    /// MainMenu nib). The discoverable one-click recovery when a crashed/killed
+    /// program leaves the terminal in a broken mode (stuck application cursor
+    /// keys, mouse reporting, alternate screen, colors). Emulator-level reset,
+    /// like Terminal.app's Shell > Reset.
+    ///
+    /// Targets the First Responder so it routes to the existing
+    /// `resetTerminal(_:)` handler on the focused surface (SurfaceView_AppKit /
+    /// BaseTerminalController) — which also auto-disables the item when no
+    /// terminal is focused.
+    private func setupResetTerminalMenuItem() {
+        let action = Selector(("resetTerminal:"))
+        guard let viewMenu = NSApp.mainMenu?.item(withTitle: "View")?.submenu,
+              !viewMenu.items.contains(where: { $0.action == action })
+        else { return }
+        let item = NSMenuItem(title: "Reset Terminal", action: action, keyEquivalent: "")
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(item)
     }
 
     @IBAction func closeAllWindows(_ sender: Any?) {
