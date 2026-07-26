@@ -3942,18 +3942,27 @@ pub fn default(alloc_gpa: Allocator) Allocator.Error!Config {
     try result.@"command-palette-entry".init(alloc);
 
     // Default links. URLs highlight only while a mod is held (classic terminal
-    // behavior). File paths highlight on PLAIN hover so they're discoverable
-    // (underline + pointer + "⌘ click to open" banner) but still only OPEN on
-    // mod-click — see Highlight.hover_activate_mods.
+    // behavior). File paths are split by confidence: file-LIKE paths (with an
+    // extension, or a bare `README.md`) highlight on PLAIN hover so they're
+    // discoverable (underline + pointer + "⌘ click to open" banner), while
+    // DIRECTORY-like / extensionless paths — which are broad enough to also
+    // match a `/word/` fragment inside prose — highlight only on mod-hold to
+    // avoid false positives during normal reading. All still OPEN only on
+    // mod-click (see Highlight.hover_activate_mods / hover_mods).
     try result.link.links.append(alloc, .{
         .regex = url.url_regex,
         .action = .{ .open = {} },
         .highlight = .{ .hover_mods = inputpkg.ctrlOrSuper(.{}) },
     });
     try result.link.links.append(alloc, .{
-        .regex = url.path_regex,
+        .regex = url.path_regex_hover,
         .action = .{ .open = {} },
         .highlight = .{ .hover_activate_mods = inputpkg.ctrlOrSuper(.{}) },
+    });
+    try result.link.links.append(alloc, .{
+        .regex = url.path_regex_modhold,
+        .action = .{ .open = {} },
+        .highlight = .{ .hover_mods = inputpkg.ctrlOrSuper(.{}) },
     });
 
     return result;

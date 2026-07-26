@@ -82,24 +82,30 @@ const rooted_or_relative_path_prefix =
     \\(?:\.\.\/|\.\/|(?<!\w)~\/|(?:[\w][\w\-.]*\/)*(?<!\w)\$[A-Za-z_]\w*\/|\.[\w][\w\-.]*\/|(?<![\w~\/])\/(?!\/))
 ;
 
-// Branch 2: Absolute paths and dot-relative paths (/, ./, ../).
-// A dotted segment is treated as file-like, while the undotted case stays
-// broad to capture directory-like paths with spaces.
-const rooted_or_relative_path_branch =
+// Branch 2: Absolute paths and dot-relative paths (/, ./, ../). Split into two
+// confidence tiers so they can be highlighted differently (see path_regex_hover
+// vs path_regex_modhold):
+//
+// 2a (file-like, high confidence): the path contains a dot (an extension).
+// 2b (directory-like, low confidence): no dot. This case stays broad to capture
+//    directory paths with spaces (`/tmp/my folder`), but that same breadth also
+//    matches a `/word/` fragment inside prose and greedily swallows the trailing
+//    words — so it is surfaced on mod-hold only, never on plain hover.
+const rooted_or_relative_dotted_branch =
     rooted_or_relative_path_prefix ++
-    "(?:" ++
     dotted_path_lookahead ++
     path_chars ++ "+" ++
     dotted_path_space_segments ++
     no_trailing_colon ++
-    trailing_spaces_at_eol ++
-    "|" ++
+    trailing_spaces_at_eol;
+
+const rooted_or_relative_undotted_branch =
+    rooted_or_relative_path_prefix ++
     non_dotted_path_lookahead ++
     path_chars ++ "+" ++
     any_path_space_segments ++
     no_trailing_colon ++
-    trailing_spaces_at_eol ++
-    ")";
+    trailing_spaces_at_eol;
 
 // Branch 3: Bare relative paths such as src/config/url.zig.
 const bare_relative_path_prefix =
@@ -127,15 +133,30 @@ const bare_openable_file_branch =
 /// highlights only while a mod is held (classic terminal behavior).
 pub const url_regex = scheme_url_branch;
 
-/// File paths (rooted/`./`/`~/`, slashed relative, and bare openable filenames).
-/// Registered as a default link that highlights on PLAIN hover for
-/// discoverability but only opens on mod-click (see `Highlight.hover_activate_mods`).
-pub const path_regex =
-    rooted_or_relative_path_branch ++
+/// File-LIKE paths: a path with an extension (dotted), or a bare openable
+/// filename (`README.md`). High confidence, so this is registered to highlight
+/// on PLAIN hover for discoverability (still opens only on mod-click).
+pub const path_regex_hover =
+    rooted_or_relative_dotted_branch ++
     "|" ++
     bare_relative_path_branch ++
     "|" ++
     bare_openable_file_branch;
+
+/// DIRECTORY-like / extensionless paths (`/usr/local/bin`, `~/projects/x`, and
+/// paths with spaces). Broad enough to also match a `/word/` fragment inside
+/// prose, so this is registered to highlight only while a mod is held (like
+/// URLs) — no false positives during normal reading.
+pub const path_regex_modhold =
+    rooted_or_relative_undotted_branch;
+
+/// All file paths (file-like + directory-like). Kept for callers/tests that want
+/// a single matcher (e.g. word selection); runtime linking uses the two split
+/// matchers above so they can highlight at different confidence tiers.
+pub const path_regex =
+    path_regex_hover ++
+    "|" ++
+    path_regex_modhold;
 
 /// Combined URL + path matcher (kept for tests / callers that want everything).
 pub const regex =
@@ -551,5 +572,54 @@ test "url regex" {
             reg.deinit();
             return error.TestUnexpectedResult;
         } else |_| {}
+    }
+}
+
+test "path confidence tiers" {
+    try oni.testing.ensureInit();
+
+    var hover = try oni.Regex.init(
+        path_regex_hover,
+        .{},
+        oni.Encoding.utf8,
+        oni.Syntax.default,
+        null,
+    );
+    defer hover.deinit();
+    var modhold = try oni.Regex.init(
+        path_regex_modhold,
+        .{},
+        oni.Encoding.utf8,
+        oni.Syntax.default,
+        null,
+    );
+    defer modhold.deinit();
+
+    // File-LIKE paths (extension / bare openable filename) must plain-highlight.
+    const hover_cases = [_][]const u8{
+        "~/Documents/notes.md",
+        "src/config/url.zig",
+        "/tmp/foo.txt",
+        "README.md",
+    };
+    for (hover_cases) |input| {
+        var r = try hover.search(input, .{});
+        r.deinit();
+    }
+
+    // Directory-like / extensionless paths — and prose that trips them via a
+    // `/word/` fragment — must NOT plain-highlight; only the mod-hold matcher.
+    const modhold_cases = [_][]const u8{
+        "/usr/local/bin",
+        "/outlook/ thuderbird like client which people can use as a daily driver",
+    };
+    for (modhold_cases) |input| {
+        var maybe_hover = hover.search(input, .{});
+        if (maybe_hover) |*r| {
+            r.deinit();
+            return error.HoverMatchedDirLikePath;
+        } else |_| {}
+        var r = try modhold.search(input, .{});
+        r.deinit();
     }
 }
