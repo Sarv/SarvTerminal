@@ -598,6 +598,12 @@ pub fn clearScreen(self: *Termio, td: *ThreadData, history: bool) !void {
     try self.queueWrite(td, &[_]u8{0x0C}, false);
 }
 
+/// Restore the child pty to sane termios (recover a tty a program left in raw
+/// mode). Backs the tty half of the terminal `reset` action.
+pub fn resetTty(self: *Termio) void {
+    self.backend.resetPtyMode();
+}
+
 /// Scroll the viewport
 pub fn scrollViewport(
     self: *Termio,

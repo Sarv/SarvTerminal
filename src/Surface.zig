@@ -4918,9 +4918,16 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
         },
 
         .reset => {
-            self.renderer_state.mutex.lock();
-            defer self.renderer_state.mutex.unlock();
-            self.renderer_state.terminal.fullReset();
+            {
+                self.renderer_state.mutex.lock();
+                defer self.renderer_state.mutex.unlock();
+                self.renderer_state.terminal.fullReset();
+            }
+            // Also restore the child pty to sane mode so a program that left
+            // the tty in raw mode (arrow keys -> ^[OA, Cmd+K -> ^L) is fully
+            // recovered, not just the emulator state. Mirrors the `reset`
+            // command's `stty sane` half.
+            self.queueIo(.{ .reset_tty = {} }, .unlocked);
         },
 
         .start_search => {

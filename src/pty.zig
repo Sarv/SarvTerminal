@@ -82,6 +82,10 @@ const NullPty = struct {
         return .{};
     }
 
+    pub fn resetMode(self: Pty) void {
+        _ = self;
+    }
+
     pub const SetSizeError = error{};
 
     pub fn setSize(self: *Pty, size: winsize) SetSizeError!void {
@@ -127,6 +131,11 @@ const PosixPty = struct {
     /// may not be available. Should not be accessed directly, but through
     /// `self.getProcessInfo(.tty_name)`
     tty_name: ?[:0]const u8 = null,
+
+    /// The pristine termios captured right after openpty. `resetMode` restores
+    /// this to recover a tty that a program left in raw mode without cleanup
+    /// (the terminal-side equivalent of `stty sane`).
+    sane_termios: c.termios = undefined,
 
     pub const OpenError = error{OpenptyFailed};
 
@@ -182,6 +191,9 @@ const PosixPty = struct {
             .slave = slave_fd,
             .tty_name_buf = undefined,
             .tty_name = null,
+            // Snapshot the pristine post-openpty termios so `resetMode` can
+            // restore a tty a program left in raw mode (like `stty sane`).
+            .sane_termios = attrs,
         };
     }
 
@@ -201,6 +213,16 @@ const PosixPty = struct {
             .canonical = (attrs.c_lflag & c.ICANON) != 0,
             .echo = (attrs.c_lflag & c.ECHO) != 0,
         };
+    }
+
+    /// Restore the tty to the pristine mode captured at open (canonical input,
+    /// echo, sane control chars). Recovers a tty a program left in raw mode
+    /// without cleanup — the terminal-side equivalent of `stty sane`.
+    pub fn resetMode(self: Pty) void {
+        var attrs = self.sane_termios;
+        if (c.tcsetattr(self.master, c.TCSANOW, &attrs) != 0) {
+            log.warn("failed to reset pty tty mode", .{});
+        }
     }
 
     pub const GetSizeError = error{IoctlFailed};
@@ -467,6 +489,10 @@ const WindowsPty = struct {
 
         if (result != windows.S_OK) return error.ResizeFailed;
         self.size = size;
+    }
+
+    pub fn resetMode(self: Pty) void {
+        _ = self;
     }
 
     /// Get information about the process(es) attached to the PTY. Returns

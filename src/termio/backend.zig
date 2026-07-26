@@ -110,6 +110,13 @@ pub const Backend = union(Kind) {
             .exec => |*exec| exec.getProcessInfo(info),
         };
     }
+
+    /// Restore the child pty to sane mode (see Exec.resetPtyMode).
+    pub fn resetPtyMode(self: *Backend) void {
+        switch (self.*) {
+            .exec => |*exec| exec.resetPtyMode(),
+        }
+    }
 };
 
 /// Termio thread data. See termio.ThreadData for docs.

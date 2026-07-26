@@ -1243,6 +1243,11 @@ const Subprocess = struct {
         const pty = &(self.pty orelse return null);
         return pty.getProcessInfo(info);
     }
+
+    /// Restore the child pty to sane mode (see Pty.resetMode).
+    pub fn resetPtyMode(self: *Subprocess) void {
+        if (self.pty) |*pty| pty.resetMode();
+    }
 };
 
 /// The read thread works with a companion gather thread to form a two-stage
@@ -2012,6 +2017,11 @@ fn execCommand(
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Exec, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.subprocess.getProcessInfo(info);
+}
+
+/// Restore the child pty to sane mode (see Pty.resetMode).
+pub fn resetPtyMode(self: *Exec) void {
+    self.subprocess.resetPtyMode();
 }
 
 test "execCommand darwin: shell command" {

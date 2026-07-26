@@ -50,6 +50,10 @@ pub const Message = union(enum) {
         history: bool,
     },
 
+    /// Restore the child pty to sane termios — recover a tty a program left in
+    /// raw mode without cleanup. Part of the terminal `reset` action.
+    reset_tty: void,
+
     /// Scroll the viewport
     scroll_viewport: terminal.Terminal.ScrollViewport,
 
