@@ -236,6 +236,11 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
     /// and can never float over other apps or detach in Mission Control.
     func presentFileEditor(model: FileViewerModel) {
         dismissFileEditor()
+        // The overlay covers the terminal surface, so it never receives a
+        // mouse-exit to clear a hovered link. Without this, the "⌘ click to
+        // open" banner (driven by surfaceView.hoverUrl) stays stuck on screen
+        // after the editor is closed — e.g. after ⌘-clicking a .md path.
+        VaultsTabsModel.shared.activeTerminal?.focusedSurface?.hoverUrl = nil
         guard let container = window?.contentView else { return }
         let host = NSHostingView(rootView:
             FileViewerView(model: model, onClose: { [weak self] in self?.dismissFileEditor() })

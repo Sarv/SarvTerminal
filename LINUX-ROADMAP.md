@@ -1663,6 +1663,7 @@ Source: `macos/Sources/Features/HostManager/HostManagerController.swift` (`prese
 - **Presenter.** `presentFileEditor(model:)` builds an `NSHostingView(FileViewerView(model:onClose:))`, sizes it to `container.bounds` with `autoresizingMask = [.width,.height]`, and adds it as the **topmost** subview of the container (`positioned: .above`). `dismissFileEditor()` removes it; the viewer's own ✕ calls back into it.
   - Autoresizing (not Auto Layout) is mandatory — pinning a hosting view with required constraints lets SwiftUI's intrinsic size force the window past the screen (documented on the container).
   - The overlay covers the tab strip (which lives in the content, not the titlebar); the native titlebar/traffic-lights remain.
+- **Clear the terminal's link-hover banner on present.** A `.md` path is opened by ⌘-clicking a *hovered* link, but the overlay then covers the surface, so it never receives a mouse-exit to clear that hover — leaving the "⌘ click to open" banner (driven by `surfaceView.hoverUrl`) stuck on screen after the editor closes. `presentFileEditor` nils the focused surface's `hoverUrl` up front. A GTK port must do the same: when opening this overlay from a link activation, clear the surface's hovered-link state so the hint doesn't persist.
 - **Why not a separate window.** An earlier iteration used a borderless child `NSWindow` sized over the parent and re-covered on the parent's move/resize/screen-change notifications. Even as a child window it (a) floated above other apps when the app was deactivated, (b) detached / left a sliver when dragged between displays of different size/scale, and (c) appeared separately in Mission Control. An in-window subview eliminates all three by construction — there is no second window.
 - The viewer's `.background(.regularMaterial)` blurs the dashboard behind it so it reads as an opaque cover.
 
@@ -1685,6 +1686,7 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 3. With the editor open, click another application — the whole window (editor included) goes behind it; the editor never floats on top on its own.
 4. In the window overview / expose equivalent, the editor is part of the one window, not a separate tile.
 5. Close via ✕ returns to the dashboard underneath.
+6. ⌘-click a `.md` path in the terminal to open the viewer, then close it: the "⌘ click to open" hover hint must not remain stuck on the terminal afterward.
 
 ## 24. File browser & tooltip refinements
 
