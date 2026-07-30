@@ -192,7 +192,7 @@ struct HostSearchPalette: View {
             resultsList
                 .frame(minHeight: 240, maxHeight: 360)
             Divider()
-            footer
+            PaletteHintBar(label: "Quick connect, or pick a saved host")
         }
         .frame(width: 560)
         .background(
@@ -332,30 +332,4 @@ struct HostSearchPalette: View {
         }
     }
 
-    // MARK: - Footer
-
-    private var footer: some View {
-        HStack {
-            Text("Quick connect, or pick a saved host")
-                .font(.caption)
-                .foregroundStyle(.secondaryText)
-            Spacer()
-            keyHint("↑↓ navigate")
-            keyHint("⏎ open")
-            keyHint("Esc cancel")
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-    }
-
-    private func keyHint(_ text: String) -> some View {
-        Text(text)
-            .font(.caption2)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(Color.secondary.opacity(0.12))
-            )
-            .foregroundStyle(.secondaryText)
-    }
 }

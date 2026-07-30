@@ -1225,6 +1225,8 @@ Portability call-out: the **only** irreducible gap is hardware-bound non-exporta
 
 SarvTerminal replaces stock Ghostty's "New Tab" / "New Window" behavior with a **host-search command palette** — a Termius-style centered overlay that opens on `⌘T`, `⌘N`, and the tab strip's `+` button. Instead of blindly spawning a local shell, it lets the user type to filter their connections and press Enter to open a session. It exists because SarvTerminal is connection-centric (a Vaults/SSH manager), so the primary "new tab" gesture should be "pick or type a host", not "open bash".
 
+Its footer uses the shared **`PaletteHintBar`** (§33) — the same hint row as the SFTP host chooser (§15) — so keyboard affordances read identically across palettes. (The palette's *list* stays bespoke because it has section headers and is driven by the `NSPanel` key-monitor, which `KeyNavigableList` doesn't yet model; the GTK port can still share a sectioned list widget between this and the chooser.)
+
 What the palette indexes (see `HostSearchModel.rows` in `HostSearchPalette.swift`):
 - **Quick-connect action** — whatever the user typed, run as `ssh <query>` (or verbatim if it already starts with `ssh `). Only shown when the query is non-empty.
 - **Local Terminal** — a plain local shell tab (`⌘L`), no command injection.
