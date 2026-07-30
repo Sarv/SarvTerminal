@@ -1227,6 +1227,8 @@ SarvTerminal replaces stock Ghostty's "New Tab" / "New Window" behavior with a *
 
 Its footer uses the shared **`PaletteHintBar`** (§33) — the same hint row as the SFTP host chooser (§15) — so keyboard affordances read identically across palettes. (The palette's *list* stays bespoke because it has section headers and is driven by the `NSPanel` key-monitor, which `KeyNavigableList` doesn't yet model; the GTK port can still share a sectioned list widget between this and the chooser.)
 
+**Presentation & key capture (must be leak-proof).** The palette is a **borderless** floating `NSPanel` (`KeyablePanel`, `canBecomeKey = true`) centered over the active window — borderless so no titlebar chrome shows above the rounded card. Keys are owned by a **LOCAL `NSEvent` keyDown monitor** installed on show: it runs *before* any window's responder chain and swallows Esc / ↑↓ / Enter / typing (routed into the palette's own query) **whenever the panel is visible**, regardless of which window is key. Critically the monitor is **torn down only once the panel is actually off screen** (not on `windowDidResignKey` while still visible) — otherwise an Esc could slip past to a program running in the terminal behind the palette and interrupt it. GTK: a focus-grabbing overlay/popover that stops key propagation to the terminal while shown; ensure Escape closes the palette and never reaches the child pty.
+
 What the palette indexes (see `HostSearchModel.rows` in `HostSearchPalette.swift`):
 - **Quick-connect action** — whatever the user typed, run as `ssh <query>` (or verbatim if it already starts with `ssh `). Only shown when the query is non-empty.
 - **Local Terminal** — a plain local shell tab (`⌘L`), no command injection.

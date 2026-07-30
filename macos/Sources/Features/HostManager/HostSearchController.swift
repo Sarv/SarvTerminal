@@ -27,29 +27,31 @@ final class HostSearchController: NSWindowController, NSWindowDelegate {
     private var globalClickMonitor: Any?
 
     private init() {
-        // `.titled` (chrome hidden via the flags below) lets the panel become
-        // key, so Esc / arrows / Enter routing all work. Dropping
-        // `.nonactivatingPanel` ensures the app actually focuses the panel
-        // (otherwise it stays "invisible to focus" and keyDown events go to
-        // the previously-key terminal window, which is what caused Esc to
-        // do nothing).
+        // BORDERLESS: `.titled` used to be required so the panel could become
+        // key (Esc/arrows routing), but it drew a titlebar region that showed as
+        // a thin bar ABOVE our rounded palette card (the window was taller than
+        // the card, and `titlebarSeparatorStyle = .none` didn't remove it).
+        // Borderless removes all that chrome, and it's safe now because:
+        //   1. `KeyablePanel` overrides `canBecomeKey = true`, so a borderless
+        //      panel still takes focus (with NSApp.activate + makeKeyAndOrderFront).
+        //   2. Keys are captured by the controller's LOCAL keyDown monitor, which
+        //      runs before any window's responder chain and swallows Esc/nav/typing
+        //      whenever the palette is visible — regardless of which window is key.
+        //      So Esc can never reach the terminal behind it.
+        // HostSearch also uses no native text field (a label + caret driven by the
+        // monitor), so there's no field-focus dependency on the titlebar.
         let panel = KeyablePanel(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 460),
-            styleMask: [.titled, .fullSizeContentView],
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
         panel.level = .floating
         panel.hidesOnDeactivate = true
         panel.isReleasedWhenClosed = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
 
         super.init(window: panel)
         panel.delegate = self
@@ -88,6 +90,14 @@ final class HostSearchController: NSWindowController, NSWindowDelegate {
     /// AppKit hides our panel when it resigns key (we set
     /// `hidesOnDeactivate`). Make sure the monitors go with it.
     func windowDidResignKey(_ notification: Notification) {
+        // Only tear down once the palette is actually off screen. If it merely
+        // lost key focus while STILL VISIBLE (e.g. another window in the app
+        // became key), keep the key monitor installed — otherwise an Esc (or any
+        // key) could slip past to the terminal running behind the palette and,
+        // say, interrupt a foreground program. The monitor's own `isVisible`
+        // guard makes it a no-op once hidden, and `show()` re-installs it
+        // idempotently, so keeping it around while visible is safe.
+        guard window?.isVisible != true else { return }
         removeKeyMonitor()
         removeOutsideClickMonitors()
     }
