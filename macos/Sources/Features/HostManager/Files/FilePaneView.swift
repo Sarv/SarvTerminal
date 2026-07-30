@@ -11,6 +11,19 @@ struct FilePaneView: View {
     @State private var pathEditing = false
     @FocusState private var pathFocused: Bool
 
+    /// The connected host's theme background color, used to tint this pane so
+    /// prod/dev servers stay visually distinct (mirrors the terminal). nil for
+    /// Local or a host with no theme. Cached — `themeColors()` is expensive (it
+    /// spins up a config probe), so we recompute only when the location changes.
+    @State private var hostTint: Color?
+    /// True when the host theme's background is dark, so the pane's content
+    /// color scheme is forced dark (light text) — light themes force light
+    /// (dark text). This is what makes text readable on ANY theme background.
+    @State private var hostTintDark = false
+    /// The app's ambient scheme, passed through unchanged for Local / themeless
+    /// panes (only themed panes override it).
+    @Environment(\.colorScheme) private var systemColorScheme
+
     // Column widths shared by the header and rows so they line up.
     private let dateW: CGFloat = 150
     private let sizeW: CGFloat = 78
@@ -40,6 +53,30 @@ struct FilePaneView: View {
             fileList
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Paint the whole pane with the connected host's theme background (full
+        // opacity, to match the terminal), and force the content's color scheme
+        // to match that background's brightness — so text/icons resolve to a
+        // readable dark-on-light or light-on-dark automatically for ANY theme
+        // (red, white, …). Local / themeless panes keep the app's own scheme.
+        .background {
+            if let hostTint { hostTint }
+        }
+        .environment(\.colorScheme,
+                     hostTint == nil ? systemColorScheme : (hostTintDark ? .dark : .light))
+        .task(id: model.location) { refreshHostTint() }
+    }
+
+    /// Resolve the connected host's theme background color into `hostTint`.
+    /// nil for Local or a host with an empty theme.
+    private func refreshHostTint() {
+        guard case let .host(h) = model.location,
+              !h.themeName.trimmingCharacters(in: .whitespaces).isEmpty,
+              let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty,
+              let colors = ghostty.themeColors(h.themeName),
+              let color = Color(hex: colors.bgHex)
+        else { hostTint = nil; return }
+        hostTint = color
+        hostTintDark = colors.bgLum < 0.5
     }
 
     // MARK: Toolbar
@@ -58,6 +95,9 @@ struct FilePaneView: View {
                     Image(systemName: "chevron.down").font(.system(size: 9)).foregroundStyle(.secondaryText)
                 }
                 .padding(.horizontal, 8).padding(.vertical, 4)
+                // Neutral chip — the whole pane already carries the host's theme
+                // color; `.secondary` adapts via the forced scheme so it stays
+                // visible on both dark (red) and light (white) backgrounds.
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.12)))
             }
             .buttonStyle(.plain).hoverTip("Change host / Local")
@@ -308,6 +348,8 @@ struct FileHostChooser: View {
 
     @ObservedObject private var store = SavedHostsStore.shared
     @State private var search = ""
+    @State private var selection: Int?
+    @FocusState private var searchFocused: Bool
 
     private var hosts: [SavedHost] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -333,34 +375,48 @@ struct FileHostChooser: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondaryText)
                 TextField("Search hosts", text: $search).textFieldStyle(.plain)
+                    .focused($searchFocused)
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
             Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    if hosts.isEmpty {
-                        Text("No saved hosts").foregroundStyle(.secondaryText).padding(20)
+            // Shared keyboard-navigable list: ↑/↓/Enter/Esc all work and are
+            // captured so they can't leak past the palette.
+            KeyNavigableList(
+                items: hosts,
+                selection: $selection,
+                onActivate: { onPick(.host($0)) },
+                onCancel: onCancel
+            ) { host, isSelected in
+                HStack(spacing: 10) {
+                    Image(systemName: "server.rack").foregroundStyle(.secondaryText).frame(width: 18)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(host.displayLabel).fontWeight(.medium)
+                        Text(host.subtitle).font(.caption).foregroundStyle(.secondaryText)
                     }
-                    ForEach(hosts) { host in
-                        Button { onPick(.host(host)) } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "server.rack").foregroundStyle(.secondaryText).frame(width: 18)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(host.displayLabel).fontWeight(.medium)
-                                    Text(host.subtitle).font(.caption).foregroundStyle(.secondaryText)
-                                }
-                                Spacer()
-                            }
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    Spacer()
                 }
-                .padding(8)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? Color.accentColor.opacity(0.18) : .clear))
             }
+            .overlay {
+                if hosts.isEmpty {
+                    Text("No saved hosts").foregroundStyle(.secondaryText)
+                }
+            }
+            Divider()
+            PaletteHintBar()
         }
         .frame(width: 460, height: 420)
+        .onAppear {
+            selection = nil                                    // start in the search bar, not the list
+            DispatchQueue.main.async { searchFocused = true }  // sheets need a tick before focus takes
+        }
+        // Typing filters; keep the highlight cleared so focus stays in the field
+        // until the user arrows down into the list.
+        .onChange(of: search) { _ in selection = nil }
+        // Arrowing up off the top of the list hands focus back to the search field.
+        .onChange(of: selection) { newValue in if newValue == nil { searchFocused = true } }
     }
 }
 

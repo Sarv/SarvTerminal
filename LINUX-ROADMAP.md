@@ -1046,6 +1046,10 @@ A dual-pane graphical file manager (Finder/Termius-style) built into the Vaults 
 
 Stock Ghostty has no file browser at all; this is entirely Sarv-added. The design deliberately **shells out to the system `ssh`/`sftp`/`scp` CLIs** rather than linking a libssh — it reuses the same auth path (identity file, agent, or password-via-askpass) already used elsewhere in the app, and works against both GNU coreutils and BusyBox/Alpine hosts.
 
+**Per-host theming (`FilePaneView`).** Each pane connected to a host is tinted with that host's terminal theme (`themeName` → `ghostty.themeColors(...).bgHex`), so prod/dev servers stay visually distinct in the file browser exactly like their terminal tabs — critical since a transfer to the wrong box is as dangerous as a command on it. The pane background is painted with the theme's background color and the content's **color scheme is forced to match the background's brightness** (`bgLum < 0.5` ⇒ dark scheme/light text; else light scheme/dark text) so text/icons stay readable on ANY theme (dark-red *or* white), without recoloring each label. `themeColors()` is expensive (a config probe), so the result is cached and recomputed only on `.task(id: location)`. Local/themeless panes stay neutral. GTK: derive the pane background from the host scheme and set the widget's light/dark style class from the background luminance.
+
+**Host chooser (`FileHostChooser`).** The "Select Host" picker is built on the shared `KeyNavigableList` + `PaletteHintBar` (§33): search field auto-focused, ↑/↓/Enter/Esc all work and are captured, filter by label/hostname. Reuse the same components for the GTK chooser.
+
 Key files (all under `macos/Sources/Features/HostManager/Files/`):
 - `FileBackend.swift` — the `FileBackend` protocol + `LocalFileBackend` + `RemoteFileBackend` (the core; includes the process runner + cancellation model + `ls` parser).
 - `FileItem.swift` — the row model + `FileLocation` enum.
