@@ -1823,6 +1823,22 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify on Linux.** Put the terminal in a broken mode (`printf '\e[?1h'` then arrows show `^[OA`, or kill a raw-mode TUI so the shell echoes control bytes — arrows show `^[OA`, clear-screen adds a literal `^L`); the menu "Reset Terminal" (or the bound key) restores normal input **and** the TTY (arrows navigate history again, clear-screen clears instead of printing `^L`) — no typed `reset` needed. Then open a fresh shell, break DECCKM from a killed program, and confirm the next prompt's arrow keys work without a manual reset (the auto-heal).
 
+## 33. Reusable palette building blocks (KeyNavigableList + PaletteHintBar)
+
+**What it is.** Two shared SwiftUI components so every palette/picker (host chooser, ⌘P command palette, …) behaves identically instead of each re-implementing list keyboard handling:
+
+- **`KeyNavigableList`** (`Helpers/KeyNavigableList.swift`) — a generic list (items + a `selection` index binding + a row builder) that, while its window is key, OWNS the navigation keys and swallows them so they can't leak to whatever's behind the palette (e.g. a running terminal): ↑/↓ move (auto-scroll to keep visible), Return activates, Esc cancels; every other key passes through to the search field. Hover/click also select/activate.
+- **`PaletteHintBar`** (`Helpers/PaletteHintBar.swift`) — the footer hint row (optional caption + `↑↓ navigate · ⏎ open · Esc cancel` chips).
+
+**Key logic / gotchas.**
+- Key capture is a hidden `NSViewRepresentable` (`KeyNavCapture`) that installs a LOCAL `keyDown` monitor anchored to the view's window lifetime; guarded by `window.isKeyWindow` so it only acts while the palette is active.
+- **Never put an explicit `.id(idx)` on rows inside a `ForEach` that's already keyed by `\.element.id`** — the conflicting identities make the lazy stack recycle stale rows when the items change (a filtered search rendered the old, unfiltered rows). Scroll targets the item's own id instead.
+- From the search field (no selection) ↓ enters the list at the top and ↑ stays put; ↑ off the top of the list deselects so the host view re-focuses the field.
+
+**macOS→Linux.** GTK equivalent is one shared widget: a `GtkListView`/`GtkListBox` in a `GtkScrolledWindow` with a key controller (`GtkEventControllerKey`) handling Up/Down/Return/Escape and scrolling the selection into view, plus a footer `GtkBox` of hint chips. Build it once and reuse for the host chooser and command palette. The "own the keyboard so keys don't reach the terminal behind" rule maps to grabbing focus / stopping event propagation on the palette overlay.
+
+**Verify.** In any palette using it: ↑/↓ move the highlight (scrolling only when it would leave view), typing filters and Enter opens the top/selected result, Esc closes, and none of those keys reach a program running in the tab behind the palette.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
