@@ -592,6 +592,13 @@ pub fn clearScreen(self: *Termio, td: *ThreadData, history: bool) !void {
         // self.terminal.markSemanticPrompt(.command);
         // assert(!self.terminal.cursorIsAtPrompt());
         self.terminal.eraseDisplay(.complete, false);
+
+        // `.complete` at a prompt SCROLLS the visible screen into scrollback
+        // (Ghostty's "^L keeps your recent output" heuristic — see
+        // Terminal.eraseDisplay). SarvTerminal wants Cmd+K to be a real clear:
+        // a fresh window you can't scroll up from. So wipe the scrollback back
+        // out after the scroll-in.
+        if (history) self.terminal.eraseDisplay(.scrollback, false);
     }
 
     // If we reached here it means we're at a prompt, so we send a form-feed.
