@@ -1847,6 +1847,19 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify.** In any palette using it: ↑/↓ move the highlight (scrolling only when it would leave view), typing filters and Enter opens the top/selected result, Esc closes, and none of those keys reach a program running in the tab behind the palette.
 
+## 34. Terminal search: grep-style "Only matching lines" filter overlay
+
+**What it is.** The terminal find bar has a **filter mode** (`SurfaceSearchFilter.swift`): with "Only matching lines" on, an overlay replaces the terminal view with just the matching scrollback lines plus grep-style `Before`/`After` context (`−NB / +NA`), match highlighting, and a live tail (new matches append as output streams). Great for watching a filtered `tail -f`.
+
+**Key logic.**
+- `IncrementalLineFilter` re-filters the surface text; it detects pure appends vs. rewrites/clears and rebuilds only when needed. The overlay re-reads on a **~0.6s poll timer** (plus on needle/context/case/regex changes), which keeps it cheap under heavy output.
+- **Header affordances:** a `−NB / +NA` + match-count readout, and a **"Clear screen" button** (eraser) that fires the `clear_screen` binding action (`SurfaceView.clearScreen`) to wipe the buffer so the filter then shows only *new* incoming matches. Because `clear_screen` is async (IO thread), the button schedules a few quick `refresh()`es (30/120/300 ms) so the overlay repaints immediately instead of waiting for the poll — otherwise a single click felt like it did nothing. The button sits next to the "Filtered" label because the far-right corner is covered by the floating search bar.
+- Exit the filter via the search bar's X / Esc (not the header).
+
+**macOS→Linux.** GTK: a filtered list view over the scrollback with a header carrying the same context/match readout and a clear-screen button dispatching the shared `clear_screen` action; if the list refreshes on a poll, nudge it right after a clear so it feels instant.
+
+**Verify.** Run `tail -f` on a busy log, enable "Only matching lines" with a needle; matching lines stream in with context. Click **Clear screen** once → the overlay empties instantly and then fills only with new matches.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

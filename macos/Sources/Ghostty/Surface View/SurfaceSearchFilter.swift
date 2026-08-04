@@ -287,6 +287,30 @@ extension Ghostty {
                 Image(systemName: "line.3.horizontal.decrease")
                 Text("Filtered").font(.caption.weight(.semibold))
                 Text("“\(searchState.needle)”").font(.caption).foregroundColor(.secondaryText)
+                // Clear the terminal's screen + scrollback right from the filtered
+                // view — e.g. wipe old `tail -f` output so the filter then shows
+                // only new incoming matches. Placed next to the label because the
+                // far-right corner is covered by the floating search bar.
+                Button {
+                    surfaceView.clearScreen()
+                    // clear_screen runs async on the IO thread; poke the filtered
+                    // view to re-read as soon as it lands so it updates instantly
+                    // instead of waiting for the ~0.6s poll (which felt like it
+                    // needed several clicks).
+                    for delay in [0.03, 0.12, 0.3] {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: refresh)
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "eraser")
+                        Text("Clear screen")
+                    }
+                    .font(.caption2.weight(.medium))
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(Capsule().fill(Color.secondary.opacity(0.18)))
+                }
+                .buttonStyle(.plain)
+                .help("Clear the screen & scrollback (⌘K) — keeps only new incoming lines")
                 Spacer()
                 Text("\(matchCount) match\(matchCount == 1 ? "" : "es") · −\(searchState.linesBefore)B / +\(searchState.linesAfter)A")
                     .font(.caption.monospacedDigit()).foregroundColor(.secondaryText)
