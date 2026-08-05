@@ -328,6 +328,22 @@ _ghostty_deferred_init() {
       }
     fi
 
+    # SarvTerminal: make Cmd+Backspace erase to the start of the line (macOS).
+    #
+    # The terminal sends ^U (0x15) for Cmd+Backspace, matching macOS text
+    # fields where Cmd+Backspace deletes from the cursor to the line start --
+    # which is exactly what ^U does under bash/readline (unix-line-discard).
+    # Zsh's default instead binds ^U to `kill-whole-line`, wiping the WHOLE
+    # line regardless of cursor position (e.g. `tail -f app.log | grep x` with
+    # the cursor before `app.log` loses the entire command instead of just the
+    # `tail -f ` before the cursor). Rebind ^U to `backward-kill-line` to match.
+    # We only touch it when ^U is still at the zsh default, so a user who
+    # deliberately rebound it (their .zshrc is sourced before this deferred
+    # init runs) keeps their choice.
+    if [[ "$(builtin bindkey '^U')" == '"^U" kill-whole-line' ]]; then
+        builtin bindkey '^U' backward-kill-line
+    fi
+
     # Some zsh users manually run `source ~/.zshrc` in order to apply rc file
     # changes to the current shell. This is a terrible practice that breaks many
     # things, including our shell integration. For example, Oh My Zsh and Prezto
