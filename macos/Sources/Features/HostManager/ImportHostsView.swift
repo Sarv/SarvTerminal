@@ -22,6 +22,7 @@ struct ImportHostsView: View {
     @State private var filter = ""
     @State private var title = "Add hosts to your vault"
     @State private var note: String?       // inline error / hint
+    @State private var savedTemplateURL: URL?   // green "saved" confirmation on the CSV step
     @State private var result: HostImportResult?
 
     var body: some View {
@@ -126,6 +127,7 @@ struct ImportHostsView: View {
             }
             .padding(.top, 4)
 
+            if let savedTemplateURL { savedTemplateLabel(savedTemplateURL) }
             if let note { noteLabel(note) }
             Spacer()
         }
@@ -236,10 +238,23 @@ struct ImportHostsView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
+    /// Green "template saved" confirmation with a reveal-in-Finder shortcut.
+    private func savedTemplateLabel(_ url: URL) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text("Template saved to \(url.lastPathComponent)")
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                .buttonStyle(.link)
+        }
+        .font(.callout)
+    }
+
     // MARK: - Actions
 
     private func backToFormats() {
         screen = .formats; title = "Add hosts to your vault"; note = nil
+        savedTemplateURL = nil
         candidates = []; selected = []; filter = ""
     }
 
@@ -312,6 +327,7 @@ struct ImportHostsView: View {
         panel.canChooseFiles = true; panel.canChooseDirectories = false
         panel.allowedContentTypes = [.commaSeparatedText, .plainText]
         panel.prompt = "Open"
+        savedTemplateURL = nil   // a new action supersedes the "saved" confirmation
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             guard let content = try? String(contentsOf: url, encoding: .utf8) else {
@@ -346,7 +362,14 @@ struct ImportHostsView: View {
         // SwiftUI event handler inside a `.sheet` hangs the app.
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            try? HostImporter.csvTemplate.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try HostImporter.csvTemplate.write(to: url, atomically: true, encoding: .utf8)
+                note = nil
+                savedTemplateURL = url   // shows the green in-app confirmation
+            } catch {
+                savedTemplateURL = nil
+                note = "Couldn't save the template: \(error.localizedDescription)"
+            }
         }
     }
 }

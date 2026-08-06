@@ -541,7 +541,9 @@ Two behaviors the port must reproduce:
 
 - **File panels must be async, never `runModal()`.** `NSOpenPanel`/`NSSavePanel` are opened with `panel.begin { response in … }` (completion runs on the main thread), NOT `runModal()`. A synchronous modal opened from a SwiftUI event handler while a `.sheet` is up **hangs the app** (the outer sheet's modal session and the panel's deadlock). This bit "Save template…" first but applied to every picker (`chooseCSV`, PuTTY/Moba via `pickFile`, SecureCRT). **GTK note:** `GtkFileDialog` (4.10+) is already async/callback-based (`open`/`save` with a `GAsyncReadyCallback`), so this hazard doesn't exist there — just don't spin a nested `GMainLoop` to fake synchronous behavior.
 
-**Verify (additions):** (a) drill into a group, import a CSV with no `group` column → hosts appear inside that group, not root; with a `group` column → nested beneath it. (b) On the CSV intro step click "Save template…" → the save dialog appears and the app stays responsive (no beachball/hang); same for every source's file picker.
+- **"Save template…" gives in-app feedback.** On success the CSV step shows a green "Template saved to <name>" confirmation with a **Show in Finder** action (`NSWorkspace.activateFileViewerSelecting`); on failure it shows the error (the write is a real `do/catch`, not `try?` — never swallow the save error). The confirmation clears on Back or when a new CSV is chosen. **macOS→Linux:** reveal-in-Finder maps to `gtk_file_launcher_open_containing_folder` (GTK 4.10+) or a `Gio.AppInfo` file-manager launch; the success/error banner is a plain in-dialog label.
+
+**Verify (additions):** (a) drill into a group, import a CSV with no `group` column → hosts appear inside that group, not root; with a `group` column → nested beneath it. (b) On the CSV intro step click "Save template…" → the save dialog appears, the app stays responsive (no beachball/hang), and after saving a green "Template saved" confirmation with Show-in-Finder appears; same non-hang behavior for every source's file picker.
 
 ## 9. SSH connection flow
 
