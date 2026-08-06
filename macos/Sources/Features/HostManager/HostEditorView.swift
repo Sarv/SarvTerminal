@@ -61,7 +61,7 @@ struct HostEditorView: View {
         order += [.osPicker, .themePicker, .advancedExpander]
         if showAdvanced {
             order += [.strictHostKey, .connectTimeout, .keepAlive, .proxyJump,
-                      .compression, .forceTTY, .term, .localForwardsExpander]
+                      .compression, .forceTTY, .term, .remotePath, .localForwardsExpander]
             if showLocalForwards { order.append(.localForwards) }
             order.append(.remoteForwardsExpander)
             if showRemoteForwards { order.append(.remoteForwards) }
@@ -535,6 +535,13 @@ struct HostEditorView: View {
                                   focus: $focusedField, field: .term)
                         .id(HostEditorFocusField.term)
                         .help("TERM to advertise to the remote. Empty = xterm-256color (works everywhere). Set \"xterm-ghostty\" to auto-install Ghostty's terminfo on the server for full features.")
+                    EditorTextRow(icon: "folder",
+                                  placeholder: "Remote path for SFTP, e.g. /var/www (empty = home)",
+                                  text: $draft.remotePath,
+                                  onEditingEnded: { autosaveIf(!draft.remotePath.isEmpty) },
+                                  focus: $focusedField, field: .remotePath)
+                        .id(HostEditorFocusField.remotePath)
+                        .help("Default folder the SFTP file browser opens at for this host, like FileZilla. Empty = your login home directory. A leading ~ is resolved against home.")
 
                     EditorSubheading(text: "Port forwarding")
                     EditorExpandRow(icon: "arrow.right.square",
@@ -714,6 +721,7 @@ struct HostEditorView: View {
             || draft.useCompression
             || draft.requestTTY
             || !draft.termOverride.isEmpty
+            || !draft.remotePath.isEmpty
             || !draft.localForwards.isEmpty
             || !draft.remoteForwards.isEmpty
             || draft.dynamicForwardPort != 0 {
@@ -791,6 +799,7 @@ private extension SavedHost {
         copy.note = ""
         copy.identityFile = ""
         copy.proxyJump = ""
+        copy.remotePath = ""
         copy.initialCommand = ""
         copy.localForwards = []
         copy.remoteForwards = []

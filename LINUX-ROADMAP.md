@@ -1740,6 +1740,19 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **macOS→Linux.** GTK tooltips have their own timing; expose one delay constant if a custom tooltip layer is used.
 
+### 24.4 Per-host default remote directory (SFTP)
+
+**What it is.** A per-host **Remote path** field (FileZilla's "default remote directory"). When set, opening the SFTP file browser for that host starts in that directory instead of the login home. Empty = home (unchanged behavior).
+
+**Logic.**
+- New persisted field `SavedHost.remotePath` (default `""`; decoder tolerates its absence in old files, so no migration).
+- Editor: an `EditorTextRow` in the **Advanced** section (`HostEditorView.swift`), wired into the focus/tab order (`focusOrder`, `HostEditorFocusField.remotePath`), the "auto-expand Advanced when non-default" check, and the field reset. Autosaves on blur like the other text rows.
+- Open logic (`SFTPBrowserModel.connect` → `loadInitial`): if the host has a non-empty `remotePath`, list it; a leading `~` (or bare `~`) is resolved against `homeDirectory()` first (because the remote `ls` runs the path quoted, so the shell won't expand `~` itself). **If the configured directory can't be listed** (typo/gone/no permission) it **falls back to `loadHome()`** so the pane is never stuck empty — gentler than FileZilla, which just errors. Local panes and empty-path hosts go straight to home as before. History is seeded with the opened directory so back/forward work from there.
+
+**macOS→Linux.** No platform specifics. The GTK Vaults host model needs the same `remotePath` field (match the JSON key), the editor needs the same Advanced text field, and the remote file backend's initial-load must apply the same "preferred path, `~`-expand, fall back to home" rule. Keep the fallback — a bad saved path should never leave the browser blank.
+
+**Verify on Linux.** Set a host's Remote path to an existing dir (e.g. `/var/www` or `~/somedir`), open its file browser → it opens there. Set it to a non-existent path → it opens at home (no error wall). Clear it → opens at home.
+
 ## 25. Team Vaults gated as "coming soon"
 
 **What it is.** The Team Vault sign-in and Teams surfaces aren't production-ready, so both now show a **"coming soon"** state instead of a functional sign-in: the account-button popover (`AccountMenuButton.signInPanel`) replaces the public Login/token UI with a "Team Vaults — coming soon" notice, and the Teams section's signed-out empty state (`TeamsSectionView`) says the same. The account button's tooltip reads "Team Vaults (coming soon)".

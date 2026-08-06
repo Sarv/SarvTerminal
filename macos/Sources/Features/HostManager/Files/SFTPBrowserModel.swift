@@ -59,17 +59,46 @@ final class SFTPBrowserModel: ObservableObject {
         else { sortColumn = column; sortAscending = true }
     }
 
-    /// Point this pane at a location and load its home directory.
+    /// Point this pane at a location and load its initial directory: the host's
+    /// configured remote path (FileZilla-style default dir) if set, otherwise
+    /// the login home directory.
     func connect(to location: FileLocation) {
         self.location = location
+        var preferred: String?
         switch location {
-        case .local: backend = LocalFileBackend()
-        case .host(let h): backend = RemoteFileBackend(host: h)
+        case .local:
+            backend = LocalFileBackend()
+        case .host(let h):
+            backend = RemoteFileBackend(host: h)
+            let p = h.remotePath.trimmingCharacters(in: .whitespacesAndNewlines)
+            preferred = p.isEmpty ? nil : p
         }
         selectedID = nil
         history = []
         historyIndex = -1
-        Task { await loadHome() }
+        Task { await loadInitial(preferred: preferred) }
+    }
+
+    /// Open `preferred` if given, else home. A leading `~` is resolved against
+    /// home. If the preferred directory can't be listed (typo, gone, no
+    /// permission) we fall back to home so the pane is never stuck empty.
+    private func loadInitial(preferred: String?) async {
+        guard var path = preferred, !path.isEmpty else { await loadHome(); return }
+        if path == "~" || path.hasPrefix("~/") {
+            if let home = try? await backend.homeDirectory() {
+                path = home + path.dropFirst()   // "~" -> home, "~/x" -> home + "/x"
+            }
+        }
+        do {
+            let listed = try await backend.list(path)
+            self.path = path
+            self.items = listed
+            self.selectedID = nil
+            self.history = [path]
+            self.historyIndex = 0
+        } catch {
+            await loadHome()
+        }
     }
 
     func loadHome() async {

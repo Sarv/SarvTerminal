@@ -39,6 +39,13 @@ struct SavedHost: Codable, Identifiable, Hashable {
     /// sent verbatim.
     var termOverride: String = ""
 
+    // MARK: Files (SFTP)
+    /// Default remote directory the SFTP file browser opens at for this host
+    /// (FileZilla-style). "" = start at the login home directory (`pwd`). A
+    /// leading `~` is resolved against home. Falls back to home if it can't
+    /// be listed.
+    var remotePath: String = ""
+
     // MARK: Port forwarding (raw ssh -L/-R/-D operands)
     var localForwards: [String]   // each like "8080:localhost:80"
     var remoteForwards: [String]  // each like "9000:localhost:9000"
@@ -247,6 +254,7 @@ struct SavedHost: Codable, Identifiable, Hashable {
         requestTTY                  = try c.decodeIfPresent(Bool.self,           forKey: .requestTTY)                  ?? false
         proxyJump                   = try c.decodeIfPresent(String.self,         forKey: .proxyJump)                   ?? ""
         termOverride                = try c.decodeIfPresent(String.self,         forKey: .termOverride)                ?? ""
+        remotePath                  = try c.decodeIfPresent(String.self,         forKey: .remotePath)                  ?? ""
         localForwards               = try c.decodeIfPresent([String].self,       forKey: .localForwards)               ?? []
         remoteForwards              = try c.decodeIfPresent([String].self,       forKey: .remoteForwards)              ?? []
         dynamicForwardPort          = try c.decodeIfPresent(Int.self,            forKey: .dynamicForwardPort)          ?? 0

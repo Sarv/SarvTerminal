@@ -99,6 +99,7 @@ enum HostEditorFocusField: Hashable {
     case osPicker, themePicker
     case advancedExpander
     case strictHostKey, connectTimeout, keepAlive, proxyJump, compression, forceTTY, term
+    case remotePath
     case localForwardsExpander, localForwards
     case remoteForwardsExpander, remoteForwards
     case socksPort
