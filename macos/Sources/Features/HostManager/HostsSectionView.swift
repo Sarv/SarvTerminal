@@ -179,7 +179,7 @@ struct HostsSectionView: View {
         // host from the store so a just-saved password shows).
         .onAppear { openPendingEditHostIfNeeded() }
         .onChange(of: hostSelection.pendingEditHostID) { _ in openPendingEditHostIfNeeded() }
-        .sheet(isPresented: $showImporter) { ImportHostsView() }
+        .sheet(isPresented: $showImporter) { ImportHostsView(targetGroupID: focusedGroupID) }
     }
 
     private func openPendingEditHostIfNeeded() {

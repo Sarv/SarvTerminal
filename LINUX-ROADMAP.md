@@ -533,6 +533,16 @@ Nothing in the parsers requires macOS APIs — they are pure string processing a
 5. **Persistence + encryption:** after import, confirm hosts survive an app restart and that the on-disk hosts file is not plaintext (encrypted at rest, per the Vaults store), with `AuthMethod` serialized as exactly `password`/`publicKey`/`agent`/`ask`.
 6. **Cancel paths:** cancelling any file picker leaves the wizard on its current step with no partial import.
 
+### Import target group + non-blocking file panels
+
+Two behaviors the port must reproduce:
+
+- **Imports default into the group the user is drilled into.** `HostsSectionView` tracks a `focusedGroupID` (nil = root). It is passed into the wizard (`ImportHostsView(targetGroupID:)`) and threaded to `HostImporter.commit(_, into: baseGroupID)`. On commit each host's parent is: the base group if the row has no `group` path; otherwise the `group` path resolved *beneath* the base (`resolveGroup(path:under:cache:)`), so importing `Workspace/Dev` while inside "Prod" yields `Prod/Workspace/Dev`. The resolver's cache key is `(base, path)` so the same path under different bases doesn't collide. Root import (base nil) preserves the old behavior. **Root cause of the bug:** the wizard never received the focused group, so `commit` always resolved from root — hosts landed at the top level regardless of which group was open.
+
+- **File panels must be async, never `runModal()`.** `NSOpenPanel`/`NSSavePanel` are opened with `panel.begin { response in … }` (completion runs on the main thread), NOT `runModal()`. A synchronous modal opened from a SwiftUI event handler while a `.sheet` is up **hangs the app** (the outer sheet's modal session and the panel's deadlock). This bit "Save template…" first but applied to every picker (`chooseCSV`, PuTTY/Moba via `pickFile`, SecureCRT). **GTK note:** `GtkFileDialog` (4.10+) is already async/callback-based (`open`/`save` with a `GAsyncReadyCallback`), so this hazard doesn't exist there — just don't spin a nested `GMainLoop` to fake synchronous behavior.
+
+**Verify (additions):** (a) drill into a group, import a CSV with no `group` column → hosts appear inside that group, not root; with a `group` column → nested beneath it. (b) On the CSV intro step click "Save template…" → the save dialog appears and the app stays responsive (no beachball/hang); same for every source's file picker.
+
 ## 9. SSH connection flow
 
 ### What it is

@@ -10,6 +10,10 @@ import UniformTypeIdentifiers
 struct ImportHostsView: View {
     @Environment(\.dismiss) private var dismiss
 
+    /// The group the user is currently drilled into. Imported hosts default
+    /// here (per-row `group` paths are created beneath it); `nil` = root.
+    var targetGroupID: UUID? = nil
+
     private enum Screen { case formats, csvIntro, preview, done }
     @State private var screen: Screen = .formats
 
@@ -252,17 +256,19 @@ struct ImportHostsView: View {
     }
 
     private func startPuTTY() {
-        guard let content = readPickedFile(allowDirectory: false) else { return }
-        let (hosts, error) = HostImporter.parsePuTTY(content)
-        if let error { note = error; return }
-        showPreview(hosts, title: "Review \(hosts.count) PuTTY session\(hosts.count == 1 ? "" : "s")")
+        pickFile(allowDirectory: false) { content in
+            let (hosts, error) = HostImporter.parsePuTTY(content)
+            if let error { note = error; return }
+            showPreview(hosts, title: "Review \(hosts.count) PuTTY session\(hosts.count == 1 ? "" : "s")")
+        }
     }
 
     private func startMobaXterm() {
-        guard let content = readPickedFile(allowDirectory: false) else { return }
-        let (hosts, error) = HostImporter.parseMobaXterm(content)
-        if let error { note = error; return }
-        showPreview(hosts, title: "Review \(hosts.count) MobaXterm session\(hosts.count == 1 ? "" : "s")")
+        pickFile(allowDirectory: false) { content in
+            let (hosts, error) = HostImporter.parseMobaXterm(content)
+            if let error { note = error; return }
+            showPreview(hosts, title: "Review \(hosts.count) MobaXterm session\(hosts.count == 1 ? "" : "s")")
+        }
     }
 
     private func startSecureCRT() {
@@ -272,26 +278,33 @@ struct ImportHostsView: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "Import"
         panel.message = "Choose your SecureCRT 'Sessions' folder (or a single .ini)."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let (hosts, error) = HostImporter.parseSecureCRT(at: url)
-        if let error { note = error; return }
-        showPreview(hosts, title: "Review \(hosts.count) SecureCRT session\(hosts.count == 1 ? "" : "s")")
+        // Async `begin` (not `runModal`): a synchronous modal opened from a
+        // SwiftUI event handler inside a `.sheet` hangs the app.
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let (hosts, error) = HostImporter.parseSecureCRT(at: url)
+            if let error { note = error; return }
+            showPreview(hosts, title: "Review \(hosts.count) SecureCRT session\(hosts.count == 1 ? "" : "s")")
+        }
     }
 
-    /// Open a file panel and return the file's text contents (nil if cancelled
-    /// or unreadable — the latter sets `note`).
-    private func readPickedFile(allowDirectory: Bool) -> String? {
+    /// Open a file panel and hand its text contents to `handler`. No-op on
+    /// cancel; sets `note` if the file can't be read. Uses async `begin` (see
+    /// `startSecureCRT`) so it never hangs the sheet.
+    private func pickFile(allowDirectory: Bool, then handler: @escaping (String) -> Void) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = allowDirectory
         panel.allowsMultipleSelection = false
         panel.prompt = "Open"
-        guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
-            note = "Couldn't read that file."
-            return nil
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+                note = "Couldn't read that file."
+                return
+            }
+            handler(content)
         }
-        return content
     }
 
     private func chooseCSV() {
@@ -299,13 +312,15 @@ struct ImportHostsView: View {
         panel.canChooseFiles = true; panel.canChooseDirectories = false
         panel.allowedContentTypes = [.commaSeparatedText, .plainText]
         panel.prompt = "Open"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
-            note = "Couldn't read that file."; return
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+                note = "Couldn't read that file."; return
+            }
+            let (hosts, error) = HostImporter.parseCSV(content)
+            if let error { note = error; return }
+            showPreview(hosts, title: "Review \(hosts.count) host\(hosts.count == 1 ? "" : "s")")
         }
-        let (hosts, error) = HostImporter.parseCSV(content)
-        if let error { note = error; return }
-        showPreview(hosts, title: "Review \(hosts.count) host\(hosts.count == 1 ? "" : "s")")
     }
 
     private func showPreview(_ hosts: [ParsedHost], title: String) {
@@ -318,7 +333,7 @@ struct ImportHostsView: View {
 
     private func commit() {
         let chosen = candidates.filter { selected.contains($0.id) }
-        result = HostImporter.commit(chosen)
+        result = HostImporter.commit(chosen, into: targetGroupID)
         title = "Import complete"
         screen = .done
     }
@@ -327,7 +342,11 @@ struct ImportHostsView: View {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = "sarvterminal-hosts-template.csv"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? HostImporter.csvTemplate.write(to: url, atomically: true, encoding: .utf8)
+        // Async `begin` (not `runModal`): a synchronous modal opened from a
+        // SwiftUI event handler inside a `.sheet` hangs the app.
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            try? HostImporter.csvTemplate.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 }

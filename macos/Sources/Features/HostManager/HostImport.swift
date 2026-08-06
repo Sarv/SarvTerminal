@@ -335,14 +335,20 @@ enum HostImporter {
 
     // MARK: - Commit (mutates the stores)
 
+    /// Commit the chosen hosts. `baseGroupID` is the group the user is currently
+    /// drilled into when they start the import — imported hosts default there
+    /// (instead of the root), and any per-row `group` path is created *beneath*
+    /// it. Pass `nil` to import at the root.
     @MainActor
-    static func commit(_ hosts: [ParsedHost]) -> HostImportResult {
+    static func commit(_ hosts: [ParsedHost], into baseGroupID: UUID? = nil) -> HostImportResult {
         var result = HostImportResult()
         var groupCache: [String: UUID] = [:]
         for p in hosts {
             if isDuplicate(hostname: p.hostname, username: p.username) { result.skipped += 1; continue }
             var host = p.toSavedHost()
-            if !p.groupPath.isEmpty { host.groupID = resolveGroup(path: p.groupPath, cache: &groupCache) }
+            host.groupID = p.groupPath.isEmpty
+                ? baseGroupID
+                : resolveGroup(path: p.groupPath, under: baseGroupID, cache: &groupCache)
             SavedHostsStore.shared.upsert(host)
             result.imported += 1
         }
@@ -368,15 +374,21 @@ enum HostImporter {
         }
     }
 
+    /// Resolve a `/`-separated group path into a group id, creating groups as
+    /// needed. The path is resolved *beneath* `baseGroupID` (the currently
+    /// focused group), so e.g. importing `Workspace/Dev` while inside "Prod"
+    /// yields `Prod/Workspace/Dev`. An empty path resolves to the base itself.
     @MainActor
-    private static func resolveGroup(path: String, cache: inout [String: UUID]) -> UUID? {
-        if let cached = cache[path.lowercased()] { return cached }
+    private static func resolveGroup(path: String, under baseGroupID: UUID?, cache: inout [String: UUID]) -> UUID? {
+        // Cache per (base, path) so the same path under different bases doesn't collide.
+        let cacheKey = "\(baseGroupID?.uuidString ?? "")/\(path.lowercased())"
+        if let cached = cache[cacheKey] { return cached }
         let parts = path.split(separator: "/")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        guard !parts.isEmpty else { return nil }
+        guard !parts.isEmpty else { return baseGroupID }
         let store = HostGroupsStore.shared
-        var parentID: UUID?
+        var parentID: UUID? = baseGroupID
         for name in parts {
             if let existing = store.children(of: parentID).first(where: {
                 $0.displayName.lowercased() == name.lowercased()
@@ -389,7 +401,7 @@ enum HostImporter {
                 parentID = group.id
             }
         }
-        cache[path.lowercased()] = parentID
+        cache[cacheKey] = parentID
         return parentID
     }
 
