@@ -3,6 +3,15 @@
   <channel>
     <title>Sarv Terminal</title>
     <item>
+      <title>Version 1.9.7</title>
+      <link>https://github.com/Sarv/SarvTerminal/releases/download/v1.9.7/SarvTerminal-1.9.7.dmg</link>
+      <sparkle:version>1.9.7</sparkle:version>
+      <sparkle:shortVersionString>1.9.7</sparkle:shortVersionString>
+      <sparkle:releaseNotesLink>https://sarv.github.io/SarvTerminal/release-notes/1.9.7.html</sparkle:releaseNotesLink>
+      <sparkle:minimumSystemVersion>13.0.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/Sarv/SarvTerminal/releases/download/v1.9.7/SarvTerminal-1.9.7.dmg" sparkle:version="1.9.7" sparkle:shortVersionString="1.9.7" length="37415275" type="application/octet-stream" sparkle:edSignature="xW12tUN3Ak+RM4ySecP9fIjo9dXyUsMb2VO1Egy3eSO/r7We2C16BCG3n+/LJR4D3tJlp2zSs7QXViD2DRfyCQ=="/>
+    </item>
+    <item>
       <title>Version 1.9.6</title>
       <link>https://github.com/Sarv/SarvTerminal/releases/download/v1.9.6/SarvTerminal-1.9.6.dmg</link>
       <sparkle:version>1.9.6</sparkle:version>
