@@ -20,6 +20,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  actions: write   # delete stale artifacts so re-runs don't collide
 
 concurrency:
   group: pages
@@ -34,6 +35,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # A re-run of this workflow keeps the PRIOR attempt's "github-pages"
+      # artifact around (actions/upload-artifact@v4 doesn't clear other
+      # attempts). actions/deploy-pages@v4 then finds two artifacts with that
+      # name and aborts ("Multiple artifacts named github-pages ... count is
+      # 2"), so a transiently-failed run can never be recovered by re-running.
+      # Delete any stale one first — a no-op on a fresh run, idempotent on re-run.
+      - name: Remove stale github-pages artifact from earlier attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '.artifacts[] | select(.name=="github-pages") | .id' \
+          | while read -r id; do
+              echo "Deleting stale artifact $id"
+              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
+            done
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs
