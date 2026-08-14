@@ -1885,6 +1885,18 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify.** Run `tail -f` on a busy log, enable "Only matching lines" with a needle; matching lines stream in with context. Click **Clear screen** once → the overlay empties instantly and then fills only with new matches.
 
+## 35. Disk-access (TCC) detect-and-guide banner — macOS only
+
+**What it is.** A top-of-window notice bar (`DiskAccessBanner.swift`) that appears when the app can't read protected folders, with a one-click deep-link to grant access. Files: `DiskAccess` helper + `DiskAccessBanner` view, wired into `VaultsRootView` (`diskAccessMissing`/`diskAccessDismissed` state, re-probed `onAppear` and on `NSApplication.didBecomeActiveNotification`).
+
+**Why.** macOS gates Desktop/Documents/Downloads behind TCC. A terminal spawns shells via setuid `/usr/bin/login`, which resets the TCC "responsible process," so per-folder "Files & Folders" grants are attributed unreliably to nested subprocesses and flap mid-session (`Operation not permitted`). The robust grant is **Full Disk Access** (keyed to the app's code signature). There is **no API to request FDA** — an app can only detect it's missing and guide the user to Settings. Detection probes `~/Desktop`/`~/Documents` from the app process (only an explicit permission denial counts as "no access"); the probe also triggers the first-run Files & Folders prompt. The deep-link is `x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles`.
+
+**Not done (deliberately):** responsible-process "pinning" to make per-folder grants reliable — `responsibility_spawnattrs_setdisclaim` is a `posix_spawn` API, but Ghostty uses raw `fork`+`execvp` (`Command.zig`), and the setuid `login` reset has no supported override in the fork/exec path. A blind private-API hack there would risk regressing file access for all users, so it was not shipped.
+
+**macOS→Linux.** **Not applicable.** Linux has no TCC/FDA; a GTK terminal reads the user's files subject only to normal Unix permissions. The GTK port should simply omit this banner and the `DiskAccess` probe entirely — there is nothing to detect or grant. (If a future Flatpak/Snap sandbox restricts filesystem access, that's a portal/permission concern handled by the packaging manifest, not an in-app banner.)
+
+**Verify (macOS).** On a Mac without the grant: launch → the OS Desktop prompt appears and, if denied, the banner shows; **Open Settings** jumps to Full Disk Access; after granting + relaunch the banner is gone. On a granted Mac: no banner.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

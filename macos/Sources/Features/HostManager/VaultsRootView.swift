@@ -10,6 +10,11 @@ struct VaultsRootView: View {
     /// Termius-style right command sidebar (Search / Snippets / History / Themes).
     @State private var sidebarVisible = false
     @State private var sidebarTab: VaultsCommandSidebar.Tab = .snippets
+    /// macOS disk-access (TCC) notice: shown when the app can't read protected
+    /// folders. Dismiss is session-only — re-probed on launch and on reactivate
+    /// so it clears once the user grants access and relaunches.
+    @State private var diskAccessMissing = false
+    @State private var diskAccessDismissed = false
     /// The shared libghostty app. Non-nil in practice (set post-launch); if it
     /// were ever nil we fall back to a dashboard-only window rather than
     /// constructing a second libghostty instance.
@@ -27,6 +32,10 @@ struct VaultsRootView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if diskAccessMissing && !diskAccessDismissed {
+                DiskAccessBanner(onDismiss: { diskAccessDismissed = true })
+                Divider()
+            }
             topBar
                 // The tab bar is always opaque so it stays readable and the
                 // window-level shared image never shows behind it.
@@ -108,6 +117,22 @@ struct VaultsRootView: View {
         // sidebar). Sits in the named space that every `.hoverTip` resolves in.
         .overlay { TooltipOverlay() }
         .coordinateSpace(name: TooltipPresenter.space)
+        // Probe TCC disk access at launch (also triggers the first-run OS
+        // prompt) and again whenever the app is reactivated, so the notice
+        // clears itself once the user grants access and relaunches.
+        .onAppear { recheckDiskAccess() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            recheckDiskAccess()
+        }
+    }
+
+    /// Re-probe protected-folder access off the main thread (the listing is a
+    /// filesystem hit) and flip the banner state on the main actor.
+    private func recheckDiskAccess() {
+        DispatchQueue.global(qos: .utility).async {
+            let missing = !DiskAccess.hasProtectedFolderAccess()
+            DispatchQueue.main.async { diskAccessMissing = missing }
+        }
     }
 
     /// The Termius-style strip, now in content (just below the titlebar) so
