@@ -2002,7 +2002,7 @@ Files: `VaultsRootView.swift` (top bar container), `VaultsTabStrip.swift` (the s
 
 **Tab color picker** (`TabColorPicker` popover): width `220`, padding `14`; 5-column `LazyVGrid` of `GridItem(.fixed(26), spacing: 10)`, spacing `10`; swatch `24×24` circles; selected = `Circle().strokeBorder(Color.primary, lineWidth: 2)`, unselected = `Color.secondary.opacity(0.25)` `lineWidth 1`; a "None" swatch uses `circle.slash`. Header "Tab Color" `.system(size: 12, weight: .semibold)`, `.secondaryText`.
 
-**Tab context menu** items: Close Tab / Close Other Tabs / Close Tabs to the Right / Show All Tabs / Duplicate Tab / Save Session… / (separator) Rename Tab… / Tab Color…
+**Tab context menu** items: Duplicate Tab / (separator) Close Tab / Close Other Tabs / Close Tabs to the Right / Show All Tabs / Save Session… / (separator) Rename Tab… / Tab Color… — Duplicate is the first, most-reached action and sits in its own group above the destructive close actions.
 
 ---
 

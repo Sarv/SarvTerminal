@@ -489,11 +489,11 @@ private struct TabChip: View {
 
     private var menuItems: [TabChipMenuItem] {
         [
-            .init(title: "Close Tab", action: { tabs.requestCloseTerminal(tab.id) }),
+            .init(title: "Duplicate Tab", action: { tabs.duplicateTab(tab.id) }),
+            .init(title: "Close Tab", action: { tabs.requestCloseTerminal(tab.id) }, separatorBefore: true),
             .init(title: "Close Other Tabs", action: { tabs.requestCloseOtherTabs(keep: tab.id) }),
             .init(title: "Close Tabs to the Right", action: { tabs.requestCloseTabsToRight(of: tab.id) }),
             .init(title: "Show All Tabs", action: { tabs.showAllTabs = true }),
-            .init(title: "Duplicate Tab", action: { tabs.duplicateTab(tab.id) }),
             .init(title: "Save Session…", action: onSaveSession),
             .init(title: "Rename Tab…", action: onRename, separatorBefore: true),
             .init(title: "Tab Color…", action: { showColorPicker = true }),
