@@ -1897,6 +1897,18 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **Verify (macOS).** On a Mac without the grant: launch → the OS Desktop prompt appears and, if denied, the banner shows; **Open Settings** jumps to Full Disk Access; after granting + relaunch the banner is gone. On a granted Mac: no banner.
 
+## 36. Keep the tab open when a shell exits early (startup-crash recovery)
+
+**Symptom.** A tab whose shell crashes on startup (e.g. a `~/.bashrc` that recursively `source`s itself, a bad `exec` in a profile) vanished instantly — the error scrolled by with the closing tab, so the user had no idea what happened.
+
+**Root cause & reasoning.** On child exit, libghostty either shows its own `ChildExitedMessageBar` (surface stays, "press any key to close") or fires `close_surface`. Its show-message guard (`window != nil && runtime_ms > 0`) *fails for launch-time crashes* (surface not yet in a window / near-zero runtime), so it falls through to `close_surface`, and `VaultsTabsModel.handleClose` tears the tab down. Net effect: a startup crash silently closes the tab.
+
+**Platform-agnostic logic.** In the tab model's close handler, when a **self-exiting** process (`process_alive == false`) is the tab's **last** surface, is a **local shell** (not an SSH/connection pane — those already have their own reconnect card), and it **ran less than a threshold** (`shellCrashKeepOpenSeconds = 5`), do NOT close: mark the tab `exitedAfter = runtime` and keep the surface (its final frame stays visible). Render a bottom overlay bar ("Shell exited — ran for Ns, likely a startup error…") with **Restart** (respawn a fresh shell in the same cwd, re-run the tab's launch command, reset the spawn time, clear the flag) and **Close Tab**. A shell used past the threshold then `exit`ed deliberately closes as normal; a crashing split *pane* still collapses the split (only a tab's last surface qualifies). This mirrors the existing SSH keep-alive branch right above it in `handleClose`.
+
+**macOS→Linux.** `handleClose` → the GTK tab controller's child-exit handler; `TerminalTab.spawnedAt/exitedAfter` → equivalent per-tab fields; `ShellExitedBar` → a GTK `GtkInfoBar`/`GtkRevealer` at the bottom of the terminal pane with Restart/Close buttons; `restartTab` → spawn a new PTY/surface in the tab reusing its cwd + launch command. The threshold heuristic and "only the last surface, only local shells" rules are platform-agnostic — keep them identical.
+
+**How to verify on Linux.** Put `exit 1` (or a recursive `source`) at the top of a shell rc file, open a tab → it stays open showing the error with the bar (does not vanish). Remove the bad line, click **Restart** → a clean shell. Use a shell normally for >5s then `exit` → the tab closes without the bar.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

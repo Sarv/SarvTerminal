@@ -227,6 +227,16 @@ private struct VaultsTerminalPane: View {
             }
         }
         .ghosttyLastFocusedSurface(lastFocusedSurface)
+        // Shell exited early (likely a startup crash): keep the tab open with its
+        // output + Restart/Close instead of vanishing.
+        .overlay(alignment: .bottom) {
+            if let ranFor = tab.exitedAfter {
+                ShellExitedBar(
+                    ranFor: ranFor,
+                    onRestart: { tabs.restartTab(tab.id) },
+                    onClose: { tabs.requestCloseTerminal(tab.id) })
+            }
+        }
         .focused($focused)
         .onAppear {
             focused = true

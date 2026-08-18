@@ -105,6 +105,15 @@ final class VaultsTabsModel: ObservableObject {
         /// anchor when splitting from the palette.
         weak var focusedSurface: Ghostty.SurfaceView?
 
+        /// When this tab's shell was (re)spawned — used to tell a startup crash
+        /// (shell dies seconds after launch, e.g. a broken rc file) from a
+        /// deliberate `exit` after real use.
+        var spawnedAt = Date()
+        /// Non-nil when the tab's shell exited *early* and we kept the tab open
+        /// (the value is how long it ran) so the output stays readable with a
+        /// Restart/Close overlay instead of the tab silently vanishing.
+        @Published var exitedAfter: TimeInterval?
+
         /// The saved host this tab connected to, if any — carried so a
         /// reconnect or "Duplicate Tab" can re-run the guided connect (and
         /// prefill the password).
@@ -2231,8 +2240,43 @@ final class VaultsTabsModel: ObservableObject {
                     message: "This terminal still has a running process. If you close it the process will be killed.",
                     perform: performClose)
             }
+        } else if tab.surfaceTree.removing(node).isEmpty,
+                  connections[surface.id] == nil,
+                  Date().timeIntervalSince(tab.spawnedAt) < Self.shellCrashKeepOpenSeconds {
+            // The tab's LAST surface — a local shell (not an SSH/connection pane,
+            // handled above) — died on its own SHORTLY after launch. That's the
+            // signature of a startup crash (e.g. a broken rc file), so keep the
+            // tab open with its output + a Restart/Close overlay instead of
+            // letting it silently vanish. A shell used for a while then exited
+            // deliberately runs past the threshold and closes as normal below.
+            MainActor.assumeIsolated { tab.exitedAfter = Date().timeIntervalSince(tab.spawnedAt) }
         } else {
             performClose()
+        }
+    }
+
+    /// How soon after launch a self-exiting local shell is treated as a startup
+    /// crash (keep the tab open) rather than a deliberate `exit` (close it).
+    private static let shellCrashKeepOpenSeconds: TimeInterval = 5
+
+    /// Restart a tab whose shell exited early (the keep-open overlay's Restart):
+    /// spawn a fresh shell in the same directory, re-run its launch command, and
+    /// clear the exited state.
+    func restartTab(_ id: UUID) {
+        guard let tab = terminals.first(where: { $0.id == id }),
+              let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
+        var cfg = Ghostty.SurfaceConfiguration()
+        cfg.workingDirectory = tab.surfaceTree.root?.leftmostLeaf().pwd ?? Self.newTabWorkingDirectory
+        let surface = Ghostty.SurfaceView(app, baseConfig: cfg)
+        tab.surfaceTree = .init(view: surface)
+        tab.spawnedAt = Date()
+        tab.exitedAfter = nil
+        selection = .terminal(tab.id)
+        Ghostty.moveFocus(to: surface)
+        if let command = tab.launchCommand {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                surface.surfaceModel?.sendText("\(command)\n")
+            }
         }
     }
 
