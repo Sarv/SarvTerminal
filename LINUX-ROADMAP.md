@@ -1909,6 +1909,21 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **How to verify on Linux.** Put `exit 1` (or a recursive `source`) at the top of a shell rc file, open a tab → it stays open showing the error with the bar (does not vanish). Remove the bad line, click **Restart** → a clean shell. Use a shell normally for >5s then `exit` → the tab closes without the bar.
 
+## 37. Multiple windows (⇧⌘N / Dock → New Window)
+
+**What it is.** SarvTerminal is single-window (the Vaults window), so `⌘N`/Dock New Window opened the command palette, not a window. Now a **separate window** can be opened with **⇧⌘N** and **Dock → New Window** — a full second Vaults instance (its own tabs, host sidebar, palette) that **shares the vault data** (hosts/groups/snippets). `⌘N` is unchanged (palette / new tab in the current window). This matches how Termius/iTerm/VS Code do multi-window: **one process, many windows** (NOT multiple app processes — that would race on the shared encrypted vault files).
+
+**Architecture (the whole cost was two singletons).**
+- `HostManagerController` de-singletoned: a registry `all: [HostManagerController]`, `frontmost` (key window's controller, else most-recently-active, else bootstrap), `shared` = `frontmost`. Each controller owns its own `let tabs: VaultsTabsModel` and builds its `VaultsRootView` with that instance passed explicitly (never `.shared`, to avoid re-entering `frontmost` during init before the controller is registered). `windowDidBecomeKey` keeps `all` ordered front-most-last; `windowWillClose` removes it.
+- `VaultsTabsModel.shared` became a computed `HostManagerController.frontmost.tabs`. Global/action call sites (⌘T, palette, notifications, drag, dashboard actions on shared data) keep using `.shared` — correct because they act on the front window at interaction time. Only the per-window **rendering** views are handed their window's instance explicitly: the tab strip, the terminal pane, `VaultsSplitTreeView`, `ScratchpadPanel`, `VaultsFocusModeView`.
+- **Per-window close:** the LAST window's red button quits the app (existing confirm-if-running); a SECONDARY window just closes.
+- **Session restore/persist is primary-window-only** (`VaultsTabsModel.isPrimary`): a second window opens fresh and never re-restores (duplicate tabs) or persists (clobbering `session.json`). Per-window session is a later stage.
+- Wiring: `AppDelegate.newVaultsWindow` (⇧⌘N via a runtime-inserted File-menu item) + the Dock menu's "New Window" both call `HostManagerController.newWindow()`. `⌘N`/`newWindow` (palette) untouched.
+
+**macOS→Linux.** GTK is naturally multi-window: each new window is a new top-level `GtkWindow`/`AdwApplicationWindow` with its own tab model, sharing the same in-process data stores. Mirror: (1) per-window tab model, a "front/active window" resolver for global actions, (2) shared host/group/snippet stores, (3) session save/restore owned by one window, (4) `⌘N`-equivalent = new tab, a distinct shortcut = new window. Do **not** implement this as multiple processes — the shared encrypted store is not multi-process safe.
+
+**How to verify.** ⇧⌘N and Dock → New Window each open a real second window; each window's tabs/scratchpad/focus-mode reflect *that* window; hosts/groups are shared; closing a secondary window keeps the app running; closing the last quits; the saved session isn't duplicated or wiped by opening/closing extra windows.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

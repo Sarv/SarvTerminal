@@ -55,7 +55,7 @@ final class ScratchpadStore: ObservableObject {
 /// ⌘↵ to run it in the focused terminal.
 struct ScratchpadPanel: View {
     @ObservedObject private var store = ScratchpadStore.shared
-    @ObservedObject private var tabs = VaultsTabsModel.shared
+    @ObservedObject var tabs: VaultsTabsModel = .shared
     @StateObject private var find = FileFindSession()
     let onClose: () -> Void
 

@@ -50,7 +50,7 @@ struct VaultsRootView: View {
                 // Left-edge scratchpad — only alongside a terminal (its Send/Run
                 // target the focused pane).
                 if tabs.scratchpadVisible, inTerminal {
-                    ScratchpadPanel(onClose: {
+                    ScratchpadPanel(tabs: tabs, onClose: {
                         withAnimation(.easeInOut(duration: 0.18)) { tabs.scratchpadVisible = false }
                     })
                     .transition(.move(edge: .leading))
@@ -139,7 +139,7 @@ struct VaultsRootView: View {
     /// tab drag works. Carries the gear/bell on the trailing edge.
     private var topBar: some View {
         HStack(spacing: 8) {
-            VaultsTabStrip(newTabAction: newTabAction)
+            VaultsTabStrip(tabs: tabs, newTabAction: newTabAction)
             // Trailing order: + (in the tab strip) · bell · sidebar · account.
             // No gear icon — Settings follows the macOS convention (app menu
             // "Sarv Terminal → Settings…", ⌘,) instead of a chrome button.
@@ -194,7 +194,7 @@ struct VaultsRootView: View {
             HostManagerView()
         case .terminal:
             if let tab = tabs.activeTerminal {
-                VaultsTerminalPane(tab: tab, ghostty: ghostty, awaiting: tabs.awaitingChoice)
+                VaultsTerminalPane(tab: tab, ghostty: ghostty, tabs: tabs, awaiting: tabs.awaitingChoice)
                     // Rebuild (and re-focus) when the active tab changes.
                     .id(tab.id)
             } else {
@@ -209,7 +209,7 @@ struct VaultsRootView: View {
 private struct VaultsTerminalPane: View {
     @ObservedObject var tab: VaultsTabsModel.TerminalTab
     @ObservedObject var ghostty: Ghostty.App
-    @ObservedObject private var tabs: VaultsTabsModel = .shared
+    @ObservedObject var tabs: VaultsTabsModel = .shared
     /// Surface IDs showing the inline split chooser.
     let awaiting: Set<UUID>
 
@@ -221,7 +221,7 @@ private struct VaultsTerminalPane: View {
     var body: some View {
         Group {
             if tabs.focusMode {
-                VaultsFocusModeView(tab: tab, ghostty: ghostty)
+                VaultsFocusModeView(tab: tab, ghostty: ghostty, tabs: tabs)
             } else {
                 grid
             }
@@ -275,9 +275,9 @@ private struct VaultsTerminalPane: View {
             awaiting: awaiting,
             broadcasting: tab.broadcasting,
             focusedID: lastFocusedSurface?.value?.id,
-            onResolve: { surface, action in VaultsTabsModel.shared.resolveChoice(surface: surface, action: action) },
-            onDismiss: { surface in VaultsTabsModel.shared.closePaneSkippingConfirm(surface: surface) },
-            action: { VaultsTabsModel.shared.performSplitOperation($0, in: tab) }
+            onResolve: { surface, action in tabs.resolveChoice(surface: surface, action: action) },
+            onDismiss: { surface in tabs.closePaneSkippingConfirm(surface: surface) },
+            action: { tabs.performSplitOperation($0, in: tab) }
         )
         .environmentObject(ghostty)
     }

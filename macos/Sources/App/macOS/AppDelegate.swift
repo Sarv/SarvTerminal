@@ -370,6 +370,7 @@ class AppDelegate: NSObject,
         // Setup our menu
         setupMenuImages()
         setupResetTerminalMenuItem()
+        setupNewVaultsWindowMenuItem()
 
         // Setup signal handlers
         setupSignals()
@@ -1203,9 +1204,15 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func newWindow(_ sender: Any?) {
-        // Single-window model: "New Window" opens the command palette (new
-        // tab / connection) rather than a separate window.
+        // ⌘N (unchanged): opens the command palette (new tab / connection) in the
+        // current window rather than a separate window.
         HostSearchController.shared.show()
+    }
+
+    /// ⇧⌘N and Dock → "New Window": open a genuinely separate Vaults window with
+    /// its own tabs (sharing the vault data). Distinct from ⌘N above.
+    @IBAction func newVaultsWindow(_ sender: Any?) {
+        HostManagerController.newWindow()
     }
 
     @IBAction func newTab(_ sender: Any?) {
@@ -1238,6 +1245,19 @@ class AppDelegate: NSObject,
         let item = NSMenuItem(title: "Reset Terminal", action: action, keyEquivalent: "")
         viewMenu.addItem(.separator())
         viewMenu.addItem(item)
+    }
+
+    /// Insert "New Window" (⇧⌘N) into the File menu at runtime → a genuinely
+    /// separate Vaults window. ⌘N stays the existing palette/new-tab action; this
+    /// is the distinct multi-window entry, matching the Dock → New Window item.
+    private func setupNewVaultsWindowMenuItem() {
+        let action = #selector(newVaultsWindow(_:))
+        guard let fileMenu = NSApp.mainMenu?.item(withTitle: "File")?.submenu,
+              !fileMenu.items.contains(where: { $0.action == action })
+        else { return }
+        let item = NSMenuItem(title: "New Window", action: action, keyEquivalent: "n")
+        item.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.insertItem(item, at: 0)
     }
 
     @IBAction func closeAllWindows(_ sender: Any?) {
@@ -1367,7 +1387,9 @@ extension AppDelegate {
     }
 
     private func reloadDockMenu() {
-        let newWindow = NSMenuItem(title: "New Window", action: #selector(newWindow), keyEquivalent: "")
+        // Dock "New Window" opens a genuinely separate Vaults window; "New Tab"
+        // opens the command palette (new tab in the current window).
+        let newWindow = NSMenuItem(title: "New Window", action: #selector(newVaultsWindow), keyEquivalent: "")
         let newTab = NSMenuItem(title: "New Tab", action: #selector(newTab), keyEquivalent: "")
 
         dockMenu.removeAllItems()

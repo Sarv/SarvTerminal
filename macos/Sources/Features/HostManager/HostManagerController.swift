@@ -55,12 +55,43 @@ struct VaultsBellView: View {
 /// what keeps the Termius-style layout stable. See the `vaults-window-tabbing`
 /// memory for the history.
 class HostManagerController: NSWindowController, NSWindowDelegate {
-    static let shared: HostManagerController = HostManagerController()
+    /// Every open Vaults window. Front-most is kept last (see `windowDidBecomeKey`).
+    static private(set) var all: [HostManagerController] = []
 
-    private init() {
+    /// The window the user is currently working in: the key window's controller,
+    /// else the most-recently-active, else a freshly created one (bootstrap on
+    /// first access at launch).
+    static var frontmost: HostManagerController {
+        if let c = NSApp.keyWindow?.windowController as? HostManagerController { return c }
+        if let c = all.last { return c }
+        return HostManagerController()
+    }
+
+    /// Back-compat: nearly every call site wants "the front window's controller".
+    static var shared: HostManagerController { frontmost }
+
+    /// This window's own tab model. Views inside this window bind to it directly;
+    /// `VaultsTabsModel.shared` resolves to the front window's copy.
+    let tabs: VaultsTabsModel
+
+    /// Open a brand-new, independent Vaults window (⇧⌘N / Dock → New Window). It
+    /// gets its own tabs but shares the vault data stores (hosts, groups, …).
+    @discardableResult
+    static func newWindow() -> HostManagerController {
+        let controller = HostManagerController()
+        controller.show()
+        return controller
+    }
+
+    init() {
         // Kill the native macOS window tab bar app-wide. It was showing as a
         // stray "…" row under our custom strip and intercepting tab drags.
         NSWindow.allowsAutomaticWindowTabbing = false
+
+        // This window's own tab model. Created as a local first so we can hand it
+        // to the root view WITHOUT touching `.shared` (which would re-enter
+        // `frontmost` before this controller is registered).
+        let tabsModel = VaultsTabsModel()
 
         let window = OpaqueWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
@@ -130,6 +161,7 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
         container.addSubview(imageView)
 
         let hosting = NSHostingView(rootView: VaultsRootView(
+            tabs: tabsModel,
             ghostty: ghostty,
             newTabAction: { HostSearchController.shared.show() }
         ))
@@ -139,9 +171,11 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
 
         window.contentView = container
         self.backgroundImageView = imageView
+        self.tabs = tabsModel
 
         super.init(window: window)
         window.delegate = self
+        Self.all.append(self)
 
         // Keep the backing image in sync with the shared-background settings.
         backgroundCancellable = BackgroundDisplayStore.shared.objectWillChange
@@ -240,7 +274,7 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
         // mouse-exit to clear a hovered link. Without this, the "⌘ click to
         // open" banner (driven by surfaceView.hoverUrl) stays stuck on screen
         // after the editor is closed — e.g. after ⌘-clicking a .md path.
-        VaultsTabsModel.shared.activeTerminal?.focusedSurface?.hoverUrl = nil
+        tabs.activeTerminal?.focusedSurface?.hoverUrl = nil
         guard let container = window?.contentView else { return }
         let host = NSHostingView(rootView:
             FileViewerView(model: model, onClose: { [weak self] in self?.dismissFileEditor() })
@@ -259,9 +293,10 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
         fileEditorOverlay = nil
     }
 
-    /// ⌘T (and the New Tab menu item routed here) → new embedded terminal tab.
+    /// ⌘T (and the New Tab menu item routed here) → new embedded terminal tab
+    /// in THIS window.
     @IBAction func newTab(_ sender: Any?) {
-        VaultsTabsModel.shared.newTerminal()
+        tabs.newTerminal()
     }
 
     // MARK: - NSWindowDelegate
@@ -275,26 +310,45 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
     // Always returns false — quitting is driven by NSApp.terminate below.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         let ghostty = (NSApp.delegate as? AppDelegate)?.ghostty
+        // The LAST window's red button quits the app (⌘Q semantics). A SECONDARY
+        // window just closes itself, leaving the app (and other windows) running.
+        let isLastWindow = Self.all.count <= 1
 
-        // Nothing running → quit immediately (plain ⌘Q semantics).
+        // Nothing running → close immediately.
         guard ghostty?.needsConfirmQuit ?? false else {
-            NSApp.terminate(nil)
-            return false
+            if isLastWindow { NSApp.terminate(nil); return false }
+            return true
         }
 
-        // Something is running → confirm before terminating. `present` defers a
+        // Something is running → confirm before tearing down. `present` defers a
         // runloop turn so the modal is responsive from this delegate callback.
         SarvAlert.present(
-            title: "Quit Sarv Terminal?",
-            message: "A terminal session still has a running process (e.g. an agent or SSH connection). If you quit, it will be terminated.",
+            title: isLastWindow ? "Quit Sarv Terminal?" : "Close Window?",
+            message: isLastWindow
+                ? "A terminal session still has a running process (e.g. an agent or SSH connection). If you quit, it will be terminated."
+                : "A terminal session still has a running process. If you close this window, it will be terminated.",
             buttons: [
-                .init("Quit", isDestructive: true),
+                .init(isLastWindow ? "Quit" : "Close", isDestructive: true),
                 .init("Cancel", isCancel: true),
             ]
         ) { result in
-            if result.buttonIndex == 0 { NSApp.terminate(nil) }
+            guard result.buttonIndex == 0 else { return }
+            if isLastWindow { NSApp.terminate(nil) } else { sender.close() }
         }
         return false
+    }
+
+    /// Keep `all` ordered front-most-last, so `frontmost` falls back correctly
+    /// when there's no key window (e.g. a menu action while unfocused).
+    func windowDidBecomeKey(_ notification: Notification) {
+        if let idx = Self.all.firstIndex(where: { $0 === self }) {
+            Self.all.remove(at: idx)
+            Self.all.append(self)
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        Self.all.removeAll { $0 === self }
     }
 }
 

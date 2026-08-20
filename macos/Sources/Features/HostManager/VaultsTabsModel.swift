@@ -76,7 +76,12 @@ struct TabDragID: Codable, Transferable {
 /// libghostty posts notifications targeting the focused surface and we mutate
 /// the owning tab's split tree.
 final class VaultsTabsModel: ObservableObject {
-    static let shared = VaultsTabsModel()
+    /// Multi-window: each Vaults window owns its own `VaultsTabsModel`. `.shared`
+    /// resolves to the **front window's** model so global actions (⌘T, the
+    /// command palette, notifications) act on the window the user is looking at.
+    /// Views inside a specific window are handed *their* window's instance
+    /// explicitly (not `.shared`) so they never bind to the wrong window.
+    static var shared: VaultsTabsModel { HostManagerController.frontmost.tabs }
 
     /// A single terminal tab: a split tree of surfaces + its live title.
     final class TerminalTab: ObservableObject, Identifiable {
@@ -269,10 +274,21 @@ final class VaultsTabsModel: ObservableObject {
     private let pathMonitor = NWPathMonitor()
     private var networkSatisfied = true
 
-    private init() {
-        // Capture the previous session BEFORE any tab mutation can overwrite
-        // session.json (the `terminals` didSet persists on every change).
-        pendingRestore = TabSessionStore.load()
+    /// True only for the FIRST window's model. Multi-window: session restore and
+    /// persistence belong to the primary window — a second window (⇧⌘N) opens
+    /// fresh and must NOT re-restore (duplicate tabs) or persist (clobber the
+    /// saved session with its own, possibly empty, tabs). Per-window session
+    /// save/restore is a later stage.
+    let isPrimary: Bool
+    private static var primaryExists = false
+
+    init() {
+        isPrimary = !Self.primaryExists
+        Self.primaryExists = true
+        // Only the primary window restores the previous session. Capture it BEFORE
+        // any tab mutation can overwrite session.json (the `terminals` didSet
+        // persists on every change).
+        pendingRestore = isPrimary ? TabSessionStore.load() : []
         installObservers()
         installReachabilityAndWakeObservers()
     }
@@ -292,8 +308,11 @@ final class VaultsTabsModel: ObservableObject {
         }
     }
 
-    /// Persist the current open tabs so they can be reopened next launch.
+    /// Persist the current open tabs so they can be reopened next launch. Only
+    /// the primary window owns session.json — a secondary window persisting would
+    /// clobber it with its own tabs.
     func persistSession() {
+        guard isPrimary else { return }
         // Splits and pane drags add surfaces without touching `terminals`, so
         // re-sync the tab and per-surface subscriptions on every persist.
         observeTabChanges()

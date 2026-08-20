@@ -7,7 +7,7 @@ import SwiftUI
 struct VaultsFocusModeView: View {
     @ObservedObject var tab: VaultsTabsModel.TerminalTab
     let ghostty: Ghostty.App
-    @ObservedObject private var tabs: VaultsTabsModel = .shared
+    @ObservedObject var tabs: VaultsTabsModel = .shared
 
     private var panes: [Ghostty.SurfaceView] { tab.surfaceTree.root?.leaves() ?? [] }
 
