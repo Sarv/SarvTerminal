@@ -1593,6 +1593,17 @@ final class VaultsTabsModel: ObservableObject {
 
     /// If any of `surfaces` has a live process, show the running-process
     /// confirmation and run `perform` only on confirm; otherwise run `perform`
+    /// True if any tab in THIS window has a session with a running process —
+    /// the per-window signal for the multi-window close confirm (so closing a
+    /// secondary window only prompts when *its own* sessions are busy, not when
+    /// some other window is). Uses the same `needsConfirmQuit` surface signal as
+    /// the tab/quit warnings, so an idle shell never counts.
+    var hasBusyProcess: Bool {
+        terminals.contains { tab in
+            (tab.surfaceTree.root?.leaves() ?? []).contains { $0.needsConfirmQuit }
+        }
+    }
+
     /// immediately. `needsConfirmQuit` is the same signal the quit / close-tab
     /// warnings use, so an idle shell never prompts.
     @MainActor

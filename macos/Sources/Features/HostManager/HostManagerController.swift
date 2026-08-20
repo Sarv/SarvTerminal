@@ -314,8 +314,13 @@ class HostManagerController: NSWindowController, NSWindowDelegate {
         // window just closes itself, leaving the app (and other windows) running.
         let isLastWindow = Self.all.count <= 1
 
+        // Last window → app quit, so check EVERYTHING running (app-wide). A
+        // secondary window only tears down ITS OWN sessions, so confirm based on
+        // just this window's tabs — don't prompt because a different window is busy.
+        let busy = isLastWindow ? (ghostty?.needsConfirmQuit ?? false) : tabs.hasBusyProcess
+
         // Nothing running → close immediately.
-        guard ghostty?.needsConfirmQuit ?? false else {
+        guard busy else {
             if isLastWindow { NSApp.terminate(nil); return false }
             return true
         }
