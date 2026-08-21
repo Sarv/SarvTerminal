@@ -40,12 +40,6 @@ pub const StreamHandler = struct {
     /// a repaint should happen.
     renderer_wakeup: xev.Async,
 
-    /// The default cursor state. This is used with CSI q. This is
-    /// set to true when we're currently in the default cursor state.
-    default_cursor: bool = true,
-    default_cursor_style: terminal.CursorStyle,
-    default_cursor_blink: ?bool,
-
     /// The response to use for ENQ requests. The memory is owned by
     /// whoever owns StreamHandler.
     enquiry_response: []const u8,
@@ -110,13 +104,8 @@ pub const StreamHandler = struct {
         self.osc_color_report_format = config.osc_color_report_format;
         self.clipboard_write = config.clipboard_write;
         self.enquiry_response = config.enquiry_response;
-        self.default_cursor_style = config.cursor_style;
-        self.default_cursor_blink = config.cursor_blink;
-
-        // If our cursor is the default, then we update it immediately.
-        if (self.default_cursor) self.setCursorStyle(.default) catch |err| {
-            log.warn("failed to set default cursor style: {}", .{err});
-        };
+        self.terminal.setDefaultCursorStyle(config.cursor_style);
+        self.terminal.setDefaultCursorBlink(config.cursor_blink);
 
         // The config could have changed any of our colors so update mode 2031
         self.messageWriter(.{ .color_scheme_report = .{ .force = false } });
@@ -242,7 +231,7 @@ pub const StreamHandler = struct {
                 self.terminal.screens.active.cursor.y + 1 +| value.value,
                 self.terminal.screens.active.cursor.x + 1,
             ),
-            .cursor_style => try self.setCursorStyle(value),
+            .cursor_style => self.terminal.setCursorStyle(value),
             .erase_display_below => self.terminal.eraseDisplay(.below, value),
             .erase_display_above => self.terminal.eraseDisplay(.above, value),
             .erase_display_complete => {
@@ -687,7 +676,7 @@ pub const StreamHandler = struct {
         // their shell config when they render prompts to ensure the
         // cursor is exactly as they request.
         if (mode == .cursor_blinking and
-            self.default_cursor_blink != null)
+            self.terminal.cursor.default_blink != null)
         {
             return;
         }
@@ -747,8 +736,10 @@ pub const StreamHandler = struct {
                 const grid_size = self.size.grid();
                 self.terminal.resize(
                     self.alloc,
-                    grid_size.columns,
-                    grid_size.rows,
+                    .{
+                        .cols = grid_size.columns,
+                        .rows = grid_size.rows,
+                    },
                 ) catch |err| {
                     log.err("error updating terminal size: {}", .{err});
                 };
@@ -889,55 +880,6 @@ pub const StreamHandler = struct {
             },
 
             .color_scheme => self.messageWriter(.{ .color_scheme_report = .{ .force = true } }),
-        }
-    }
-
-    pub fn setCursorStyle(
-        self: *StreamHandler,
-        style: terminal.CursorStyleReq,
-    ) !void {
-        // Assume we're setting to a non-default.
-        self.default_cursor = false;
-
-        switch (style) {
-            .default => {
-                self.default_cursor = true;
-                self.terminal.screens.active.cursor.cursor_style = self.default_cursor_style;
-                self.terminal.modes.set(
-                    .cursor_blinking,
-                    self.default_cursor_blink orelse true,
-                );
-            },
-
-            .blinking_block => {
-                self.terminal.screens.active.cursor.cursor_style = .block;
-                self.terminal.modes.set(.cursor_blinking, true);
-            },
-
-            .steady_block => {
-                self.terminal.screens.active.cursor.cursor_style = .block;
-                self.terminal.modes.set(.cursor_blinking, false);
-            },
-
-            .blinking_underline => {
-                self.terminal.screens.active.cursor.cursor_style = .underline;
-                self.terminal.modes.set(.cursor_blinking, true);
-            },
-
-            .steady_underline => {
-                self.terminal.screens.active.cursor.cursor_style = .underline;
-                self.terminal.modes.set(.cursor_blinking, false);
-            },
-
-            .blinking_bar => {
-                self.terminal.screens.active.cursor.cursor_style = .bar;
-                self.terminal.modes.set(.cursor_blinking, true);
-            },
-
-            .steady_bar => {
-                self.terminal.screens.active.cursor.cursor_style = .bar;
-                self.terminal.modes.set(.cursor_blinking, false);
-            },
         }
     }
 

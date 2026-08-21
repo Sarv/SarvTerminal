@@ -1036,27 +1036,15 @@ palette: Palette = .{},
 /// If the macOS values are set, then this implies `background-blur = true`
 /// on non-macOS platforms.
 ///
-/// Supported on macOS and on some Linux desktop environments, including:
+/// On Linux, the exact blur intensity is ignored and any positive integer
+/// or `true` value will enable background blur. On Wayland, Ghostty uses
+/// the [`ext-background-effect-v1`](https://wayland.app/protocols/ext-background-effect-v1)
+/// protocol to enable the blur effect, but this is not always supported
+/// on all compositors. Check the documentation of your compositor or
+/// desktop environment for blur support and how to configure it.
 ///
-///   * KDE Plasma (Wayland and X11)
-///
-/// Warning: the exact blur intensity is _ignored_ under KDE Plasma, and setting
-/// this setting to either `true` or any positive blur intensity value would
-/// achieve the same effect. The reason is that KWin, the window compositor
-/// powering Plasma, only has one global blur setting and does not allow
-/// applications to specify individual blur settings.
-///
-/// To configure KWin's global blur setting, open System Settings and go to
-/// "Apps & Windows" > "Window Management" > "Desktop Effects" and select the
-/// "Blur" plugin. If disabled, enable it by ticking the checkbox to the left.
-/// Then click on the "Configure" button and there will be two sliders that
-/// allow you to set background blur and noise intensities for all apps,
-/// including Ghostty.
-///
-/// All other Linux desktop environments are as of now unsupported. Users may
-/// need to set environment-specific settings and/or install third-party plugins
-/// in order to support background blur, as there isn't a unified interface for
-/// doing so.
+/// On X11, blur can only be enabled when using the KWin compositor
+/// as a part of KDE Plasma.
 @"background-blur": BackgroundBlur = .false,
 
 /// The opacity level (opposite of transparency) of an unfocused split.

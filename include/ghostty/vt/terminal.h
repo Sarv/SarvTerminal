@@ -1197,6 +1197,22 @@ typedef enum GHOSTTY_ENUM_TYPED {
    * Output type: bool *
    */
   GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE = 32,
+
+  /**
+   * Whether VT processing encountered a non-gracefully handled error that may
+   * have prevented a terminal-owned semantic update.
+   *
+   * Processing remains best-effort, and ghostty_terminal_reset() does not 
+   * clear it. Gracefully handled protocol failures, configured limits, 
+   * malformed or unsupported input, and failures limited to external effects 
+   * or query responses do not set it.
+   *
+   * This can't currently be unset. This is purely informational to consumers
+   * if there was some error that happened at some point during VT processing.
+   *
+   * Output type: bool *
+   */
+  GHOSTTY_TERMINAL_DATA_VT_PROCESSING_ERROR = 33,
   GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalData;
 

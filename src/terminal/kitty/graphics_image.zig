@@ -88,6 +88,7 @@ pub const LoadingImage = struct {
                 .height = t.height,
                 .compression = t.compression,
                 .format = t.format,
+                .usage = t.usage,
             },
 
             .display = cmd.display(),
@@ -512,6 +513,7 @@ pub const Image = struct {
     format: command.Transmission.Format = .rgb,
     compression: command.Transmission.Compression = .none,
     data: []const u8 = "",
+    usage: command.Transmission.Usage = .default,
 
     /// Unique, monotonically increasing stamp assigned each time an
     /// image is added to (or replaced in) an ImageStorage. A changed

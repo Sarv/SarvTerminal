@@ -7,6 +7,7 @@ const std = @import("std");
 const build_options = @import("terminal_options");
 const lib = @import("lib.zig");
 const assert = @import("../quirks.zig").inlineAssert;
+const tripwire = @import("../tripwire.zig");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const unicode = @import("../unicode/main.zig");
@@ -79,6 +80,9 @@ previous_char: ?u21 = null,
 
 /// The modes that this terminal currently has active.
 modes: modespkg.ModeState = .{},
+
+/// Terminal-level cursor state.
+cursor: Cursor = .{},
 
 /// The most recently set mouse shape for the terminal.
 mouse_shape: mouse.Shape = .text,
@@ -235,6 +239,19 @@ pub const ScrollingRegion = struct {
     right: size.CellCountInt,
 };
 
+/// Terminal-level cursor state shared by all screens.
+pub const Cursor = struct {
+    /// Whether the current cursor appearance follows the configured defaults.
+    is_default: bool = true,
+
+    /// Configured style restored by DECSCUSR default and RIS.
+    default_style: Screen.CursorStyle = .block,
+
+    /// Configured blink restored by DECSCUSR default and RIS. Null selects
+    /// the terminal emulator default, which is blinking.
+    default_blink: ?bool = false,
+};
+
 pub const Options = struct {
     cols: size.CellCountInt,
     rows: size.CellCountInt,
@@ -244,6 +261,10 @@ pub const Options = struct {
     /// The default mode state. When the terminal gets a reset, it
     /// will revert back to this state.
     default_modes: modespkg.ModePacked = .{},
+
+    /// Cursor state restored by DECSCUSR default and RIS.
+    default_cursor_style: Screen.CursorStyle = .block,
+    default_cursor_blink: ?bool = false,
 
     /// The total storage limit for Kitty images in bytes. Has no effect
     /// if kitty images are disabled at build-time.
@@ -283,7 +304,7 @@ pub fn init(
     });
     errdefer screen_set.deinit(alloc);
 
-    return .{
+    var result: Terminal = .{
         .cols = cols,
         .rows = rows,
         .screens = screen_set,
@@ -301,7 +322,13 @@ pub fn init(
             .values = opts.default_modes,
             .default = opts.default_modes,
         },
+        .cursor = .{
+            .default_style = opts.default_cursor_style,
+            .default_blink = opts.default_cursor_blink,
+        },
     };
+    result.setCursorStyle(.default);
+    return result;
 }
 
 pub fn deinit(self: *Terminal, alloc: Allocator) void {
@@ -334,6 +361,63 @@ pub fn vtStream(self: *Terminal) Stream {
 /// This is the handler-side only for vtStream.
 pub fn vtHandler(self: *Terminal) Stream.Handler {
     return .init(self);
+}
+
+/// Change the cursor's current shape and blink behavior.
+///
+/// The terminal parser uses this for DECSCUSR (`CSI Ps SP q`), but the behavior
+/// is general: `.default` selects the configured defaults, while any other
+/// value selects a concrete appearance until it is changed again or reset.
+pub fn setCursorStyle(self: *Terminal, value: ansi.CursorStyle) void {
+    // Remember whether future configuration changes should update the visible
+    // cursor. An explicit appearance must remain in effect until the program
+    // selects the default again.
+    self.cursor.is_default = value == .default;
+
+    // Convert the request into the concrete values used by the renderer and
+    // terminal mode state. A null default blink means the emulator default.
+    self.modes.set(.cursor_blinking, switch (value) {
+        .default => self.cursor.default_blink orelse true,
+        .steady_block, .steady_bar, .steady_underline => false,
+        .blinking_block, .blinking_bar, .blinking_underline => true,
+    });
+    self.screens.active.cursor.cursor_style = switch (value) {
+        .default => self.cursor.default_style,
+        .blinking_block, .steady_block => .block,
+        .blinking_bar, .steady_bar => .bar,
+        .blinking_underline, .steady_underline => .underline,
+    };
+}
+
+/// Change the default cursor shape.
+///
+/// If the cursor currently follows its defaults, the visible shape changes
+/// immediately. Otherwise the new shape is saved for the next reset or default
+/// selection, such as DECSCUSR `CSI 0 SP q`.
+pub fn setDefaultCursorStyle(
+    self: *Terminal,
+    configured_style: Screen.CursorStyle,
+) void {
+    // Always retain the new default, even while an explicit appearance is
+    // active, so a later reset or default request can restore it.
+    self.cursor.default_style = configured_style;
+
+    // Do not overwrite an appearance explicitly selected by the program.
+    if (self.cursor.is_default) self.setCursorStyle(.default);
+}
+
+/// Change the default cursor blink behavior.
+///
+/// Null selects the terminal emulator default (blinking). Like the default
+/// shape, this is applied immediately only when the cursor currently follows
+/// its defaults; otherwise it is saved for the next reset or default selection.
+pub fn setDefaultCursorBlink(self: *Terminal, blink: ?bool) void {
+    // Keep the configured value separate from the currently resolved mode so
+    // null can continue to mean "use the emulator default."
+    self.cursor.default_blink = blink;
+
+    // Do not overwrite blink behavior explicitly selected by the program.
+    if (self.cursor.is_default) self.setCursorStyle(.default);
 }
 
 /// The general allocator we should use for this terminal.
@@ -2558,60 +2642,19 @@ pub fn insertLines(self: *Terminal, count: usize) void {
             // If our page doesn't match, then we need to do a copy from
             // one page to another. This is the slow path.
             if (src_p.node != dst_p.node) {
-                dst_p.node.page().clonePartialRowFrom(
+                // The copy may replace the destination node in order
+                // to increase its capacity. Our pins are tracked so
+                // they update automatically; we can discard the
+                // replacement because the remainder of this iteration
+                // only accesses rows through the pins.
+                _ = self.screens.active.clonePartialRowGrowCapacity(
+                    dst_p.node,
+                    dst_p.y,
                     src_p.node.page(),
-                    dst_row,
                     src_row,
                     self.scrolling_region.left,
                     self.scrolling_region.right + 1,
-                ) catch |err| {
-                    // Adjust our page capacity to make
-                    // room for we didn't have space for
-                    _ = self.screens.active.increaseCapacity(
-                        dst_p.node,
-                        switch (err) {
-                            // Rehash the sets
-                            error.StyleSetNeedsRehash,
-                            error.HyperlinkSetNeedsRehash,
-                            => null,
-
-                            // Increase style memory
-                            error.StyleSetOutOfMemory,
-                            => .styles,
-
-                            // Increase string memory
-                            error.StringAllocOutOfMemory,
-                            => .string_bytes,
-
-                            // Increase hyperlink memory
-                            error.HyperlinkSetOutOfMemory,
-                            error.HyperlinkMapOutOfMemory,
-                            => .hyperlink_bytes,
-
-                            // Increase grapheme memory
-                            error.GraphemeMapOutOfMemory,
-                            error.GraphemeAllocOutOfMemory,
-                            => .grapheme_bytes,
-                        },
-                    ) catch |e| switch (e) {
-                        // System OOM. We have no way to recover from this
-                        // currently. We should probably change insertLines
-                        // to raise an error here.
-                        error.OutOfMemory,
-                        => @panic("increaseCapacity system allocator OOM"),
-
-                        // The page can't accommodate the managed memory required
-                        // for this operation. We previously just corrupted
-                        // memory here so a crash is better. The right long
-                        // term solution is to allocate a new page here
-                        // move this row to the new page, and start over.
-                        error.OutOfSpace,
-                        => @panic("increaseCapacity OutOfSpace"),
-                    };
-
-                    // Continue the loop to try handling this row again.
-                    continue;
-                };
+                );
             } else {
                 if (!left_right) {
                     // Swap the src/dst cells. This ensures that our dst gets the
@@ -2759,53 +2802,19 @@ pub fn deleteLines(self: *Terminal, count: usize) void {
             // If our page doesn't match, then we need to do a copy from
             // one page to another. This is the slow path.
             if (src_p.node != dst_p.node) {
-                dst_p.node.page().clonePartialRowFrom(
+                // The copy may replace the destination node in order
+                // to increase its capacity. Our pins are tracked so
+                // they update automatically; we can discard the
+                // replacement because the remainder of this iteration
+                // only accesses rows through the pins.
+                _ = self.screens.active.clonePartialRowGrowCapacity(
+                    dst_p.node,
+                    dst_p.y,
                     src_p.node.page(),
-                    dst_row,
                     src_row,
                     self.scrolling_region.left,
                     self.scrolling_region.right + 1,
-                ) catch |err| {
-                    // Adjust our page capacity to make
-                    // room for we didn't have space for
-                    _ = self.screens.active.increaseCapacity(
-                        dst_p.node,
-                        switch (err) {
-                            // Rehash the sets
-                            error.StyleSetNeedsRehash,
-                            error.HyperlinkSetNeedsRehash,
-                            => null,
-
-                            // Increase style memory
-                            error.StyleSetOutOfMemory,
-                            => .styles,
-
-                            // Increase string memory
-                            error.StringAllocOutOfMemory,
-                            => .string_bytes,
-
-                            // Increase hyperlink memory
-                            error.HyperlinkSetOutOfMemory,
-                            error.HyperlinkMapOutOfMemory,
-                            => .hyperlink_bytes,
-
-                            // Increase grapheme memory
-                            error.GraphemeMapOutOfMemory,
-                            error.GraphemeAllocOutOfMemory,
-                            => .grapheme_bytes,
-                        },
-                    ) catch |e| switch (e) {
-                        // See insertLines
-                        error.OutOfMemory,
-                        => @panic("increaseCapacity system allocator OOM"),
-
-                        error.OutOfSpace,
-                        => @panic("increaseCapacity OutOfSpace"),
-                    };
-
-                    // Continue the loop to try handling this row again.
-                    continue;
-                };
+                );
             } else {
                 if (!left_right) {
                     // Swap the src/dst cells. This ensures that our dst gets the
@@ -3519,71 +3528,306 @@ pub fn deccolm(self: *Terminal, alloc: Allocator, mode: DeccolmMode) !void {
     self.modes.set(.@"132_column", mode == .@"132_cols");
 
     // Resize to the requested size
-    try self.resize(
-        alloc,
-        switch (mode) {
+    try self.resize(alloc, .{
+        .cols = switch (mode) {
             .@"132_cols" => 132,
             .@"80_cols" => 80,
         },
-        self.rows,
-    );
+        .rows = self.rows,
+    });
 
     // Erase our display and move our cursor.
     self.eraseDisplay(.complete, false);
     self.setCursorPos(1, 1);
 }
 
+/// A terminal resize expressed in cells with optional per-cell pixel
+/// geometry. It is highly recommended that callers supply cell geometry
+/// but a terminal can technically function without it (but some reports
+/// like certain mouse reporting modes and Kitty image protocol will
+/// not be functional).
+///
+/// Cell pixel dimensions must already be scaled for the current display DPI.
+pub const Resize = struct {
+    cols: size.CellCountInt,
+    rows: size.CellCountInt,
+    cell_size_px: ?struct {
+        width: u32,
+        height: u32,
+    } = null,
+};
+
+pub const ResizeError = error{
+    /// Resize requires allocation
+    OutOfMemory,
+
+    /// Input value was invalid, such as a 0-sized dimension.
+    InvalidValue,
+};
+
+const resize_tw = tripwire.module(enum {
+    tabstops,
+    primary_screen,
+    alternate_screen,
+    alternate_screen_init,
+}, resize);
+
 /// Resize the underlying terminal.
+///
+/// This has follow-on impacts:
+///
+///   - If the column count changes, tabstops are reset.
+///   - The scroll region is always reset
+///   - Synchronized output mode is reset for every successful resize.
+///
+/// This handles errors gracefully and recovers the terminal back to
+/// a clean usable state.
+///
+/// The only error handling edge case is in the highly exceptional scenario
+/// where the primary screen can be resized but the alternate screen cannot.
+/// In this scenario, we attempt to clear the alt screen at the desired
+/// new size. If that fails, we unconditionally deallocate the alt screen
+/// and move to primary screen. This can break terminal programs but it
+/// requires a really particular scenario where memory exists for one
+/// but not the other and we do our best.
 pub fn resize(
     self: *Terminal,
     alloc: Allocator,
-    cols: size.CellCountInt,
-    rows: size.CellCountInt,
-) !void {
-    // If our cols/rows didn't change then we're done
-    if (self.cols == cols and self.rows == rows) return;
+    opts: Resize,
+) ResizeError!void {
+    const tw = resize_tw;
 
-    // Resize our tabstops
-    if (self.cols != cols) {
-        const tabstops: Tabstops = try .init(
-            alloc,
-            cols,
-            TABSTOP_INTERVAL,
-        );
-        self.tabstops.deinit(alloc);
-        self.tabstops = tabstops;
+    // Screen and scrolling-region invariants require non-zero dimensions.
+    // Validate before changing any terminal state.
+    if (opts.cols == 0 or opts.rows == 0) return error.InvalidValue;
+
+    // Pixel geometry and synchronized output are updated on every valid
+    // resize attempt, including one that doesn't change the grid dimensions.
+    // Save their old values so later allocation failures can roll them back.
+    const old_width_px = self.width_px;
+    const old_height_px = self.height_px;
+    const old_synchronized_output = self.modes.get(.synchronized_output);
+    errdefer {
+        self.width_px = old_width_px;
+        self.height_px = old_height_px;
+        self.modes.set(.synchronized_output, old_synchronized_output);
     }
 
-    // Resize primary screen, which supports reflow
+    // If our pixel geometry was set, then we set it even if our rows/cols
+    // didn't change.
+    if (opts.cell_size_px) |cell_size| {
+        self.width_px = std.math.mul(
+            u32,
+            opts.cols,
+            cell_size.width,
+        ) catch std.math.maxInt(u32);
+        self.height_px = std.math.mul(
+            u32,
+            opts.rows,
+            cell_size.height,
+        ) catch std.math.maxInt(u32);
+    }
+
+    self.modes.set(.synchronized_output, false);
+
+    // If our cols/rows didn't change, skip grid work but still apply pixels.
+    if (self.cols == opts.cols and self.rows == opts.rows) return;
+
+    // Build replacement tabstops without touching the current table. Keep
+    // ownership here until every fallible resize operation has succeeded.
+    var new_tabstops: ?Tabstops = null;
+    errdefer if (new_tabstops) |*v| v.deinit(alloc);
+    if (self.cols != opts.cols) {
+        try tw.check(.tabstops);
+        new_tabstops = try .init(
+            alloc,
+            opts.cols,
+            TABSTOP_INTERVAL,
+        );
+    }
+
+    // Resize primary screen, which supports reflow. We do this first
+    // because the cleanup situation is a lot better if this succeeds
+    // and alt fails than the reverse.
+    try tw.check(.primary_screen);
     const primary = self.screens.get(.primary).?;
     try primary.resize(.{
-        .cols = cols,
-        .rows = rows,
+        .cols = opts.cols,
+        .rows = opts.rows,
         .reflow = self.modes.get(.wraparound),
         .prompt_redraw = self.flags.shell_redraws_prompt,
     });
 
-    // Alternate screen, if it exists, doesn't reflow
-    if (self.screens.get(.alternate)) |alt| try alt.resize(.{
-        .cols = cols,
-        .rows = rows,
-        .reflow = false,
-    });
+    // Alternate screen, if it exists, doesn't reflow. The primary resize
+    // above can't be losslessly undone, so if the alternate resize fails we
+    // replace it with an empty screen at the requested size. If that
+    // also fails, we fall back to the primary screen.
+    if (self.screens.get(.alternate)) |alt| alt: {
+        const err: ResizeError = resize: {
+            tw.check(.alternate_screen) catch |err| break :resize err;
+            alt.resize(.{
+                .cols = opts.cols,
+                .rows = opts.rows,
+                .reflow = false,
+            }) catch |err| break :resize err;
+
+            // Resize succeeded.
+            break :alt;
+        };
+
+        log.warn("alternate screen resize failed, replacing it err={}", .{err});
+
+        // If the alternate screen isn't active, then we just free it
+        // and move on. It'll be reallocated when it gets reinitialized lazily.
+        // In this case, we just lose the prior data if the terminal program
+        // expected it to be saved.
+        if (self.screens.active_key != .alternate) {
+            self.screens.remove(alloc, .alternate);
+            break :alt;
+        }
+
+        // The alt screen is active, so we temporarily switch to primary
+        // so we can safely remove the alt and recreate it blank. This loses
+        // the data but hopefully keeps us on the alt screen.
+        const charset = alt.charset;
+        self.screens.switchTo(.primary);
+        self.screens.remove(alloc, .alternate);
+
+        // Replace the alt screen with an empty version. If this fails
+        // we just go back to the primary screen. Not great, but best
+        // we can do.
+        tw.check(.alternate_screen_init) catch break :alt;
+        const replacement = self.screens.getInit(alloc, .alternate, .{
+            .cols = opts.cols,
+            .rows = opts.rows,
+            .max_scrollback = 0,
+            .kitty_image_storage_limit = if (comptime build_options.kitty_graphics)
+                primary.kitty_images.total_limit
+            else
+                0,
+            .kitty_image_loading_limits = if (comptime build_options.kitty_graphics)
+                primary.kitty_images.image_limits
+            else {},
+        }) catch |init_err| {
+            log.warn(
+                "alternate screen replacement failed, falling back to primary err={}",
+                .{init_err},
+            );
+            break :alt;
+        };
+
+        replacement.charset = charset;
+        self.screens.switchTo(.alternate);
+    }
+
+    // No more failures are allowed after this point because the screens have
+    // committed their new sizes and the remaining Terminal state must follow.
+    errdefer comptime unreachable;
+
+    // All fallible work is complete. Replace the old tabstop table only now.
+    if (new_tabstops) |v| {
+        self.tabstops.deinit(alloc);
+        self.tabstops = v;
+        new_tabstops = null;
+    }
 
     // Whenever we resize we just mark it as a screen clear
     self.flags.dirty.clear = true;
 
     // Set our size
-    self.cols = cols;
-    self.rows = rows;
+    self.cols = opts.cols;
+    self.rows = opts.rows;
 
     // Reset the scrolling region
     self.scrolling_region = .{
         .top = 0,
-        .bottom = rows - 1,
+        .bottom = opts.rows - 1,
         .left = 0,
-        .right = cols - 1,
+        .right = opts.cols - 1,
     };
+}
+
+test "Terminal: resize resets synchronized output" {
+    const alloc = testing.allocator;
+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+
+    t.modes.set(.synchronized_output, true);
+    try t.resize(alloc, .{ .cols = 10, .rows = 5 });
+    try testing.expect(!t.modes.get(.synchronized_output));
+}
+
+test "Terminal: resize rejects zero dimensions before mutation" {
+    const alloc = testing.allocator;
+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+
+    t.width_px = 100;
+    t.height_px = 100;
+    t.flags.dirty.clear = false;
+
+    try testing.expectError(error.InvalidValue, t.resize(alloc, .{
+        .cols = 0,
+        .rows = 5,
+        .cell_size_px = .{ .width = 9, .height = 18 },
+    }));
+    try testing.expectError(error.InvalidValue, t.resize(alloc, .{
+        .cols = 10,
+        .rows = 0,
+        .cell_size_px = .{ .width = 9, .height = 18 },
+    }));
+
+    try testing.expectEqual(@as(size.CellCountInt, 10), t.cols);
+    try testing.expectEqual(@as(size.CellCountInt, 5), t.rows);
+    try testing.expectEqual(@as(u32, 100), t.width_px);
+    try testing.expectEqual(@as(u32, 100), t.height_px);
+    try testing.expect(!t.flags.dirty.clear);
+}
+
+test "Terminal: resize preserves pixel dimensions when omitted" {
+    const alloc = testing.allocator;
+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+
+    t.width_px = 90;
+    t.height_px = 90;
+    try t.resize(alloc, .{ .cols = 20, .rows = 10 });
+
+    try testing.expectEqual(@as(u32, 90), t.width_px);
+    try testing.expectEqual(@as(u32, 90), t.height_px);
+}
+
+test "Terminal: resize updates pixels without changing cell dimensions" {
+    const alloc = testing.allocator;
+    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.resize(alloc, .{
+        .cols = 10,
+        .rows = 5,
+        .cell_size_px = .{ .width = 9, .height = 18 },
+    });
+
+    try testing.expectEqual(@as(u32, 90), t.width_px);
+    try testing.expectEqual(@as(u32, 90), t.height_px);
+}
+
+test "Terminal: resize pixel dimensions saturate" {
+    const alloc = testing.allocator;
+    var t = try init(alloc, .{ .cols = 2, .rows = 3 });
+    defer t.deinit(alloc);
+
+    try t.resize(alloc, .{
+        .cols = 2,
+        .rows = 3,
+        .cell_size_px = .{
+            .width = std.math.maxInt(u32),
+            .height = std.math.maxInt(u32),
+        },
+    });
+
+    try testing.expectEqual(std.math.maxInt(u32), t.width_px);
+    try testing.expectEqual(std.math.maxInt(u32), t.height_px);
 }
 
 test "Terminal: resize preserves tabstops on allocation failure" {
@@ -3593,10 +3837,197 @@ test "Terminal: resize preserves tabstops on allocation failure" {
     defer t.deinit(alloc);
 
     failing.fail_index = failing.alloc_index;
-    try testing.expectError(error.OutOfMemory, t.resize(alloc, 513, 1));
+    try testing.expectError(error.OutOfMemory, t.resize(alloc, .{
+        .cols = 513,
+        .rows = 1,
+    }));
 
     try testing.expectEqual(@as(size.CellCountInt, 10), t.cols);
     try testing.expect(t.tabstops.get(8));
+}
+
+test "Terminal: resize failure paths preserve consistent state" {
+    const alloc = testing.allocator;
+
+    for ([_]resize_tw.FailPoint{
+        .tabstops,
+        .primary_screen,
+        .alternate_screen,
+    }) |tag| {
+        const tw = resize_tw;
+        defer tw.end(.reset) catch unreachable;
+
+        var t = try init(alloc, .{ .cols = 10, .rows = 3 });
+        defer t.deinit(alloc);
+
+        try t.printString("primary");
+        _ = try t.switchScreen(.alternate);
+        try t.printString("alternate");
+        _ = try t.switchScreen(.primary);
+
+        t.width_px = 100;
+        t.height_px = 50;
+        t.modes.set(.synchronized_output, true);
+        t.flags.dirty.clear = false;
+        t.scrolling_region = .{
+            .top = 1,
+            .bottom = 2,
+            .left = 1,
+            .right = 8,
+        };
+        t.tabstops.unset(8);
+        t.tabstops.set(3);
+
+        const primary = t.screens.get(.primary).?;
+        const alternate = t.screens.get(.alternate).?;
+        const alternate_generation = t.screens.generation(.alternate);
+        try testing.expectEqual(primary.pages.pages.first, primary.pages.pages.last);
+        try testing.expectEqual(alternate.pages.pages.first, alternate.pages.pages.last);
+
+        const before = t;
+        const before_primary = primary.*;
+        const before_alternate = alternate.*;
+        const before_primary_page = try alloc.dupe(
+            u8,
+            primary.pages.pages.first.?.page().memory,
+        );
+        defer alloc.free(before_primary_page);
+        const before_alternate_page = try alloc.dupe(
+            u8,
+            alternate.pages.pages.first.?.page().memory,
+        );
+        defer alloc.free(before_alternate_page);
+        tw.errorAlways(tag, error.OutOfMemory);
+
+        // A failure after the primary screen has resized is recovered by
+        // dropping the inactive alternate and completing the resize. This
+        // also proves the alternate tripwire is after the primary resize
+        // rather than acting as a preflight check.
+        if (tag == .alternate_screen) {
+            try t.resize(alloc, .{
+                .cols = 513,
+                .rows = 4,
+                .cell_size_px = .{ .width = 9, .height = 18 },
+            });
+
+            try testing.expectEqual(@as(size.CellCountInt, 513), t.cols);
+            try testing.expectEqual(@as(size.CellCountInt, 4), t.rows);
+            try testing.expectEqual(@as(u32, 4617), t.width_px);
+            try testing.expectEqual(@as(u32, 72), t.height_px);
+            try testing.expect(!t.modes.get(.synchronized_output));
+            try testing.expect(t.flags.dirty.clear);
+            try testing.expectEqual(@as(size.CellCountInt, 513), primary.pages.cols);
+            try testing.expectEqual(@as(size.CellCountInt, 4), primary.pages.rows);
+            try testing.expectEqual(@as(?*Screen, null), t.screens.get(.alternate));
+            try testing.expectEqual(
+                alternate_generation +% 1,
+                t.screens.generation(.alternate),
+            );
+            try testing.expectEqual(.primary, t.screens.active_key);
+            try testing.expectEqual(primary, t.screens.active);
+            try testing.expect(t.tabstops.get(8));
+            try testing.expect(!t.tabstops.get(3));
+
+            // The alternate is recreated lazily at the terminal's new size.
+            _ = try t.switchScreen(.alternate);
+            const replacement = t.screens.get(.alternate).?;
+            try testing.expectEqual(@as(size.CellCountInt, 513), replacement.pages.cols);
+            try testing.expectEqual(@as(size.CellCountInt, 4), replacement.pages.rows);
+            try testing.expect(replacement.pages.getCell(.{ .active = .{} }).?.cell.isEmpty());
+            continue;
+        }
+
+        try testing.expectError(error.OutOfMemory, t.resize(alloc, .{
+            .cols = 513,
+            .rows = 4,
+            .cell_size_px = .{ .width = 9, .height = 18 },
+        }));
+
+        try testing.expectEqual(before.width_px, t.width_px);
+        try testing.expectEqual(before.height_px, t.height_px);
+        try testing.expect(std.meta.eql(before.modes, t.modes));
+        try testing.expectEqual(before.cols, t.cols);
+        try testing.expectEqual(before.rows, t.rows);
+        try testing.expectEqual(before.scrolling_region, t.scrolling_region);
+        try testing.expectEqual(before.flags, t.flags);
+        try testing.expect(std.meta.eql(before.tabstops, t.tabstops));
+        try testing.expectEqual(before.screens.active_key, t.screens.active_key);
+        try testing.expectEqual(before.screens.active, t.screens.active);
+
+        try testing.expectEqual(before_primary.pages.cols, primary.pages.cols);
+        try testing.expectEqual(before_primary.pages.rows, primary.pages.rows);
+        try testing.expectEqual(
+            before_primary.pages.total_rows,
+            primary.pages.total_rows,
+        );
+        try testing.expect(std.meta.eql(before_primary.cursor, primary.cursor));
+        try testing.expectEqualSlices(
+            u8,
+            before_primary_page,
+            primary.pages.pages.first.?.page().memory,
+        );
+
+        try testing.expectEqual(before_alternate.pages.cols, alternate.pages.cols);
+        try testing.expectEqual(before_alternate.pages.rows, alternate.pages.rows);
+        try testing.expectEqual(
+            before_alternate.pages.total_rows,
+            alternate.pages.total_rows,
+        );
+        try testing.expect(std.meta.eql(before_alternate.cursor, alternate.cursor));
+        try testing.expectEqualSlices(
+            u8,
+            before_alternate_page,
+            alternate.pages.pages.first.?.page().memory,
+        );
+    }
+}
+
+test "Terminal: alternate resize failure replaces active alternate screen" {
+    const alloc = testing.allocator;
+    const tw = resize_tw;
+    defer tw.end(.reset) catch unreachable;
+
+    var t = try init(alloc, .{ .cols = 10, .rows = 3 });
+    defer t.deinit(alloc);
+
+    _ = try t.switchScreen(.alternate);
+    try testing.expectEqual(.alternate, t.screens.active_key);
+    t.screens.active.charset.gl = .G1;
+    try t.printString("alternate");
+    const generation = t.screens.generation(.alternate);
+
+    tw.errorAlways(.alternate_screen, error.OutOfMemory);
+    try t.resize(alloc, .{ .cols = 20, .rows = 4 });
+
+    const alternate = t.screens.get(.alternate).?;
+    try testing.expectEqual(.alternate, t.screens.active_key);
+    try testing.expectEqual(alternate, t.screens.active);
+    try testing.expectEqual(@as(size.CellCountInt, 20), alternate.pages.cols);
+    try testing.expectEqual(@as(size.CellCountInt, 4), alternate.pages.rows);
+    try testing.expect(alternate.pages.getCell(.{ .active = .{} }).?.cell.isEmpty());
+    try testing.expectEqual(.G1, alternate.charset.gl);
+    try testing.expectEqual(generation +% 1, t.screens.generation(.alternate));
+}
+
+test "Terminal: alternate resize replacement failure falls back to primary" {
+    const alloc = testing.allocator;
+    const tw = resize_tw;
+    defer tw.end(.reset) catch unreachable;
+
+    var t = try init(alloc, .{ .cols = 10, .rows = 3 });
+    defer t.deinit(alloc);
+
+    _ = try t.switchScreen(.alternate);
+    tw.errorAlways(.alternate_screen, error.OutOfMemory);
+    tw.errorAlways(.alternate_screen_init, error.OutOfMemory);
+    try t.resize(alloc, .{ .cols = 20, .rows = 4 });
+
+    const primary = t.screens.get(.primary).?;
+    try testing.expectEqual(@as(?*Screen, null), t.screens.get(.alternate));
+    try testing.expectEqual(.primary, t.screens.active_key);
+    try testing.expectEqual(primary, t.screens.active);
+    try testing.expectEqual(@as(size.CellCountInt, 20), primary.pages.cols);
+    try testing.expectEqual(@as(size.CellCountInt, 4), primary.pages.rows);
 }
 
 /// Set the pwd for the terminal.
@@ -3908,6 +4339,7 @@ pub fn fullReset(self: *Terminal) void {
         .left = 0,
         .right = self.cols - 1,
     };
+    self.setCursorStyle(.default);
 
     // Always mark dirty so we redraw everything
     self.flags.dirty.clear = true;
@@ -7099,6 +7531,91 @@ test "Terminal: insertLines across page boundary marks all shifted rows dirty" {
     }
 }
 
+test "Terminal: insertLines hyperlink-dense row crosses page boundary" {
+    // Regression test for the cross-page copy of insertLines: when the
+    // shifted row carries more unique hyperlinks than the destination
+    // page's hyperlink capacity, the copy must increase the destination
+    // page's capacity and retry rather than corrupting the page list.
+    const alloc = testing.allocator;
+    var t = try init(alloc, .{ .rows = 5, .cols = 10, .max_scrollback = 1024 });
+    defer t.deinit(alloc);
+
+    const pages = &t.screens.active.pages;
+
+    // Fill the first page so it is exactly full, then two more rows so
+    // the second page holds the last two active rows (y=3 and y=4).
+    const first_page_rows = pages.pages.first.?.capacity().rows;
+    for (0..first_page_rows + 1) |_| try t.linefeed();
+    try testing.expect(pages.pages.first != pages.pages.last);
+    try testing.expectEqual(@as(usize, 2), pages.pages.last.?.rows());
+
+    // Marker rows so we can verify the shift afterwards.
+    t.setCursorPos(1, 1);
+    try t.printString("0");
+    t.setCursorPos(2, 1);
+    try t.printString("1");
+    t.setCursorPos(4, 1);
+    try t.printString("3");
+    t.setCursorPos(5, 1);
+    try t.printString("4");
+
+    // Fill the last row of the first page (active y=2) with unique
+    // hyperlinks: more than the second page can hold with its default
+    // hyperlink capacity. Writing them grows the first page's capacity
+    // as needed; the second page keeps its default capacity.
+    t.setCursorPos(3, 1);
+    for (0..10) |i| {
+        var buf: [64]u8 = undefined;
+        const uri = try std.fmt.bufPrint(&buf, "http://example.com/{d}", .{i});
+        try t.screens.active.startHyperlink(uri, null);
+        try t.print(@intCast('A' + i));
+        t.screens.active.endHyperlink();
+    }
+    {
+        const pin = pages.pin(.{ .active = .{ .y = 2 } }).?;
+        try testing.expectEqual(pages.pages.first.?, pin.node);
+        try testing.expectEqual(pin.node.rows() - 1, @as(usize, pin.y));
+    }
+    try testing.expect(pages.pages.last.?.page().hyperlink_set.layout.cap < 10);
+
+    // Insert a line at the top: every row shifts down by one and the
+    // dense row crosses the page boundary into the second page.
+    t.setCursorPos(1, 1);
+    t.insertLines(1);
+
+    {
+        const str = try t.plainString(testing.allocator);
+        defer testing.allocator.free(str);
+        try testing.expectEqualStrings("\n0\n1\nABCDEFGHIJ\n3", str);
+    }
+
+    // The second page's hyperlink capacity had to grow to receive the
+    // row, proving the capacity-retry path ran.
+    try testing.expect(pages.pages.last.?.page().hyperlink_set.layout.cap >= 10);
+
+    // Every cell of the dense row must still resolve to a real
+    // hyperlink entry with the correct URI. A half-applied shift
+    // leaves cells whose hyperlink flag is set but that have no map
+    // entry, which aborts in clearCells later.
+    for (0..10) |x| {
+        const list_cell = pages.getCell(.{ .active = .{
+            .x = @intCast(x),
+            .y = 3,
+        } }).?;
+        try testing.expect(list_cell.cell.hyperlink);
+        const page: *Page = list_cell.node.page();
+        const id = page.lookupHyperlink(list_cell.cell).?;
+        const link = page.hyperlink_set.get(page.memory, id);
+        var buf: [64]u8 = undefined;
+        const uri = try std.fmt.bufPrint(&buf, "http://example.com/{d}", .{x});
+        try testing.expectEqualStrings(uri, link.uri.slice(page.memory));
+    }
+
+    // All pages must pass integrity checks.
+    var node_: ?*PageList.List.Node = pages.pages.first;
+    while (node_) |node| : (node_ = node.next) node.page().assertIntegrity();
+}
+
 test "Terminal: insertLines (legacy test)" {
     const alloc = testing.allocator;
     var t = try init(alloc, .{ .cols = 2, .rows = 5 });
@@ -9897,6 +10414,96 @@ test "Terminal: deleteLines across page boundary marks all shifted rows dirty" {
     }
 }
 
+test "Terminal: deleteLines hyperlink-dense row crosses page boundary" {
+    // Regression test for the cross-page copy of deleteLines: when the
+    // shifted row carries more unique hyperlinks than the destination
+    // page's hyperlink capacity, the copy must increase the destination
+    // page's capacity and retry rather than corrupting the page list.
+    //
+    // This is the mirror of the insertLines variant: the dense row
+    // starts as the first row of the second page and is pulled up into
+    // the first page, which also happens to be the cursor's page so
+    // this exercises the cursor accounting of the capacity increase.
+    const alloc = testing.allocator;
+    var t = try init(alloc, .{ .rows = 5, .cols = 10, .max_scrollback = 1024 });
+    defer t.deinit(alloc);
+
+    const pages = &t.screens.active.pages;
+
+    // Fill the first page so it is exactly full, then two more rows so
+    // the second page holds the last two active rows (y=3 and y=4).
+    const first_page_rows = pages.pages.first.?.capacity().rows;
+    for (0..first_page_rows + 1) |_| try t.linefeed();
+    try testing.expect(pages.pages.first != pages.pages.last);
+    try testing.expectEqual(@as(usize, 2), pages.pages.last.?.rows());
+
+    // Marker rows so we can verify the shift afterwards.
+    t.setCursorPos(1, 1);
+    try t.printString("0");
+    t.setCursorPos(2, 1);
+    try t.printString("1");
+    t.setCursorPos(3, 1);
+    try t.printString("2");
+    t.setCursorPos(5, 1);
+    try t.printString("4");
+
+    // Fill the first row of the second page (active y=3) with unique
+    // hyperlinks: more than the first page can hold with its default
+    // hyperlink capacity. Writing them grows the second page's
+    // capacity as needed; the first page keeps its default capacity.
+    t.setCursorPos(4, 1);
+    for (0..10) |i| {
+        var buf: [64]u8 = undefined;
+        const uri = try std.fmt.bufPrint(&buf, "http://example.com/{d}", .{i});
+        try t.screens.active.startHyperlink(uri, null);
+        try t.print(@intCast('A' + i));
+        t.screens.active.endHyperlink();
+    }
+    {
+        const pin = pages.pin(.{ .active = .{ .y = 3 } }).?;
+        try testing.expectEqual(pages.pages.last.?, pin.node);
+        try testing.expectEqual(@as(usize, 0), @as(usize, pin.y));
+    }
+    try testing.expect(pages.pages.first.?.page().hyperlink_set.layout.cap < 10);
+
+    // Delete the top line: every row shifts up by one and the dense
+    // row crosses the page boundary into the first page.
+    t.setCursorPos(1, 1);
+    t.deleteLines(1);
+
+    {
+        const str = try t.plainString(testing.allocator);
+        defer testing.allocator.free(str);
+        try testing.expectEqualStrings("1\n2\nABCDEFGHIJ\n4", str);
+    }
+
+    // The first page's hyperlink capacity had to grow to receive the
+    // row, proving the capacity-retry path ran.
+    try testing.expect(pages.pages.first.?.page().hyperlink_set.layout.cap >= 10);
+
+    // Every cell of the dense row must still resolve to a real
+    // hyperlink entry with the correct URI. A half-applied shift
+    // leaves cells whose hyperlink flag is set but that have no map
+    // entry, which aborts in clearCells later.
+    for (0..10) |x| {
+        const list_cell = pages.getCell(.{ .active = .{
+            .x = @intCast(x),
+            .y = 2,
+        } }).?;
+        try testing.expect(list_cell.cell.hyperlink);
+        const page: *Page = list_cell.node.page();
+        const id = page.lookupHyperlink(list_cell.cell).?;
+        const link = page.hyperlink_set.get(page.memory, id);
+        var buf: [64]u8 = undefined;
+        const uri = try std.fmt.bufPrint(&buf, "http://example.com/{d}", .{x});
+        try testing.expectEqualStrings(uri, link.uri.slice(page.memory));
+    }
+
+    // All pages must pass integrity checks.
+    var node_: ?*PageList.List.Node = pages.pages.first;
+    while (node_) |node| : (node_ = node.next) node.page().assertIntegrity();
+}
+
 test "Terminal: deleteLines (legacy)" {
     const alloc = testing.allocator;
     var t = try init(alloc, .{ .cols = 80, .rows = 80 });
@@ -11819,7 +12426,7 @@ test "Terminal: saveCursor resize" {
 
     t.setCursorPos(1, 10);
     t.saveCursor();
-    try t.resize(alloc, 5, 5);
+    try t.resize(alloc, .{ .cols = 5, .rows = 5 });
     t.restoreCursor();
     try t.print('X');
 
@@ -13711,6 +14318,64 @@ test "Terminal: cursorIsAtPrompt alternate screen" {
     try testing.expect(!t.cursorIsAtPrompt());
 }
 
+test "Terminal: cursor defaults update current default cursor" {
+    var t = try init(testing.allocator, .{
+        .cols = 10,
+        .rows = 10,
+        .default_cursor_style = .bar,
+        .default_cursor_blink = true,
+    });
+    defer t.deinit(testing.allocator);
+
+    // Initialization applies the configured defaults.
+    try testing.expect(t.cursor.is_default);
+    try testing.expectEqual(.bar, t.screens.active.cursor.cursor_style);
+    try testing.expect(t.modes.get(.cursor_blinking));
+
+    // Configuration changes are immediately visible while the cursor still
+    // follows its defaults.
+    t.setDefaultCursorStyle(.underline);
+    t.setDefaultCursorBlink(false);
+    try testing.expect(t.cursor.is_default);
+    try testing.expectEqual(.underline, t.screens.active.cursor.cursor_style);
+    try testing.expect(!t.modes.get(.cursor_blinking));
+
+    // Null restores the terminal emulator's blinking default.
+    t.setDefaultCursorBlink(null);
+    try testing.expect(t.modes.get(.cursor_blinking));
+}
+
+test "Terminal: cursor defaults do not override explicit cursor" {
+    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(testing.allocator);
+
+    t.setCursorStyle(.blinking_bar);
+    try testing.expect(!t.cursor.is_default);
+    try testing.expectEqual(.bar, t.screens.active.cursor.cursor_style);
+    try testing.expect(t.modes.get(.cursor_blinking));
+
+    // New defaults are retained without replacing the explicit appearance.
+    t.setDefaultCursorStyle(.underline);
+    t.setDefaultCursorBlink(false);
+    try testing.expectEqual(.underline, t.cursor.default_style);
+    try testing.expectEqual(false, t.cursor.default_blink);
+    try testing.expectEqual(.bar, t.screens.active.cursor.cursor_style);
+    try testing.expect(t.modes.get(.cursor_blinking));
+
+    // Selecting the default applies the values that changed above.
+    t.setCursorStyle(.default);
+    try testing.expect(t.cursor.is_default);
+    try testing.expectEqual(.underline, t.screens.active.cursor.cursor_style);
+    try testing.expect(!t.modes.get(.cursor_blinking));
+
+    // A full reset also leaves the cursor on the configured defaults.
+    t.setCursorStyle(.steady_block);
+    t.fullReset();
+    try testing.expect(t.cursor.is_default);
+    try testing.expectEqual(.underline, t.screens.active.cursor.cursor_style);
+    try testing.expect(!t.modes.get(.cursor_blinking));
+}
+
 test "Terminal: fullReset with a non-empty pen" {
     var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
@@ -13837,7 +14502,7 @@ test "Terminal: resize less cols with wide char then print" {
 
     try t.print('x');
     try t.print('😀'); // 0x1F600
-    try t.resize(alloc, 2, 3);
+    try t.resize(alloc, .{ .cols = 2, .rows = 3 });
     t.setCursorPos(1, 2);
     try t.print('😀'); // 0x1F600
 }
@@ -13854,11 +14519,11 @@ test "Terminal: resize with left and right margin set" {
     t.modes.set(.enable_left_and_right_margin, true);
     try t.print('0');
     t.modes.set(.enable_mode_3, true);
-    try t.resize(alloc, cols, rows);
+    try t.resize(alloc, .{ .cols = cols, .rows = rows });
     t.setLeftAndRightMargin(2, 0);
     try t.printRepeat(1850);
     _ = t.modes.restore(.enable_mode_3);
-    try t.resize(alloc, cols, rows);
+    try t.resize(alloc, .{ .cols = cols, .rows = rows });
 }
 
 // https://github.com/mitchellh/ghostty/issues/1343
@@ -13875,7 +14540,7 @@ test "Terminal: resize with wraparound off" {
     try t.print('2');
     try t.print('3');
     const new_cols = 2;
-    try t.resize(alloc, new_cols, rows);
+    try t.resize(alloc, .{ .cols = new_cols, .rows = rows });
 
     const str = try t.plainString(testing.allocator);
     defer testing.allocator.free(str);
@@ -13895,7 +14560,7 @@ test "Terminal: resize with wraparound on" {
     try t.print('2');
     try t.print('3');
     const new_cols = 2;
-    try t.resize(alloc, new_cols, rows);
+    try t.resize(alloc, .{ .cols = new_cols, .rows = rows });
 
     const str = try t.plainString(testing.allocator);
     defer testing.allocator.free(str);
@@ -13919,7 +14584,7 @@ test "Terminal: resize with high unique style per cell" {
         }
     }
 
-    try t.resize(alloc, 60, 30);
+    try t.resize(alloc, .{ .cols = 60, .rows = 30 });
 }
 
 test "Terminal: resize with high unique style per cell with wrapping" {
@@ -13940,7 +14605,7 @@ test "Terminal: resize with high unique style per cell with wrapping" {
         try t.print('x');
     }
 
-    try t.resize(alloc, 60, 30);
+    try t.resize(alloc, .{ .cols = 60, .rows = 30 });
 }
 
 test "Terminal: resize with reflow and saved cursor" {
@@ -13965,7 +14630,7 @@ test "Terminal: resize with reflow and saved cursor" {
     }
 
     t.saveCursor();
-    try t.resize(alloc, 5, 3);
+    try t.resize(alloc, .{ .cols = 5, .rows = 3 });
     t.restoreCursor();
 
     {
@@ -14006,7 +14671,7 @@ test "Terminal: resize with reflow and saved cursor pending wrap" {
     }
 
     t.saveCursor();
-    try t.resize(alloc, 5, 3);
+    try t.resize(alloc, .{ .cols = 5, .rows = 3 });
     t.restoreCursor();
 
     {

@@ -594,8 +594,8 @@ pub const ImageStorage = struct {
     }
 
     /// Evict image to make space. This will evict the oldest image,
-    /// prioritizing unused images first, as recommended by the published
-    /// Kitty spec.
+    /// prioritizing transient images and unused images as recommended by the
+    /// published Kitty spec.
     ///
     /// This will evict as many images as necessary to make space for
     /// req bytes.
@@ -608,14 +608,20 @@ pub const ImageStorage = struct {
         const Candidate = struct {
             id: u32,
             generation: u64,
-            used: bool,
+            // Map images into four distinct blocks:
+            // 0: transient, unused
+            // 1: not transient, unused
+            // 2: transient, used
+            // 3: not transient, used
+            block: u2,
         };
 
-        var candidates: std.ArrayList(Candidate) = .empty;
-        defer candidates.deinit(alloc);
+        const candidates = try alloc.alloc(Candidate, self.images.count());
+        defer alloc.free(candidates);
 
         var it = self.images.iterator();
-        while (it.next()) |kv| {
+        var i: usize = 0;
+        while (it.next()) |kv| : (i += 1) {
             const img = kv.value_ptr;
 
             // This is a huge waste. See comment above about redesigning
@@ -633,17 +639,24 @@ pub const ImageStorage = struct {
                 break :used false;
             };
 
-            try candidates.append(alloc, .{
+            const transient = img.usage.transient;
+
+            candidates[i] = .{
                 .id = img.id,
                 .generation = img.generation,
-                .used = used,
-            });
+                // Map images into four distinct blocks:
+                // 0: transient, unused
+                // 1: not transient, unused
+                // 2: transient, used
+                // 3: not transient, used
+                .block = (if (transient) @as(u2, 0) else @as(u2, 1)) + (if (used) @as(u2, 2) else @as(u2, 0)),
+            };
         }
 
         // Sort
         std.mem.sortUnstable(
             Candidate,
-            candidates.items,
+            candidates,
             {},
             struct {
                 fn lessThan(
@@ -653,17 +666,20 @@ pub const ImageStorage = struct {
                 ) bool {
                     _ = ctx;
 
-                    // If their usage matches, then it's based on the
-                    // generation stamp, which orders by transmit time.
-                    // (Stamps are unique but tie-break by ID anyway to
-                    // stay deterministic for hand-built test images.)
-                    if (lhs.used == rhs.used) return if (lhs.generation == rhs.generation)
+                    // If images mapped into different blocks, prioritize lower
+                    // numbered blocks.
+                    if (lhs.block < rhs.block) return true;
+                    if (lhs.block > rhs.block) return false;
+
+                    // If images mapped to the same block, compare generations.
+                    return if (lhs.generation == rhs.generation)
+                        // If the generation is the same, use the ID to
+                        // prioritize evicting "earlier" images.
                         lhs.id < rhs.id
                     else
+                        // If the generation is different, prioritize evicting
+                        // images from earlied generations.
                         lhs.generation < rhs.generation;
-
-                    // If not used, then its a better candidate
-                    return !lhs.used;
                 }
             }.lessThan,
         );
@@ -675,7 +691,7 @@ pub const ImageStorage = struct {
 
         // They're in order of best to evict.
         var evicted: usize = 0;
-        for (candidates.items) |c| {
+        for (candidates) |c| {
             // Delete all the placements for this image and the image.
             var p_it = self.placements.iterator();
             while (p_it.next()) |entry| {
@@ -1598,4 +1614,46 @@ test "storage: no-op delete does not mark a mutation" {
     s.delete(alloc, &t, .{ .id = .{ .image_id = 1 } });
     try testing.expect(s.dirty);
     try testing.expect(s.generation > gen);
+}
+
+test "storage: evict unused transient image" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var t = try terminal.Terminal.init(alloc, .{ .rows = 3, .cols = 3 });
+    defer t.deinit(alloc);
+
+    var s: ImageStorage = .{ .total_limit = 192 };
+    defer s.deinit(alloc, t.screens.active);
+
+    try s.addImage(alloc, .{
+        .id = 1,
+        .data = try alloc.dupe(u8, "*" ** 64),
+        .usage = .{ .transient = false },
+    });
+    try s.addImage(alloc, .{
+        .id = 2,
+        .data = try alloc.dupe(u8, "*" ** 64),
+        .usage = .{ .transient = true },
+    });
+    try s.addImage(alloc, .{
+        .id = 3,
+        .data = try alloc.dupe(u8, "*" ** 64),
+        .usage = .{ .transient = true },
+    });
+    try s.addPlacement(
+        alloc,
+        2,
+        1,
+        .{ .location = .{ .pin = try trackPin(&t, .{ .x = 1, .y = 1 }) } },
+    );
+
+    const gen = s.generation;
+    const result = try s.evictImage(alloc, 32);
+    try testing.expect(s.dirty);
+    try testing.expect(s.generation > gen);
+    try testing.expectEqual(true, result);
+    try testing.expectEqual(2, s.images.count());
+    try testing.expect(s.images.contains(1));
+    try testing.expect(s.images.contains(2));
+    try testing.expect(!s.images.contains(3));
 }

@@ -589,17 +589,11 @@ fn setTyped(
         },
         .default_cursor_style => {
             const style = (if (value) |ptr| ptr.* else TerminalCursorStyle.block).toZig() orelse return .invalid_value;
-            wrapper.stream.handler.default_cursor_style = style;
-            if (wrapper.stream.handler.default_cursor) {
-                wrapper.terminal.screens.active.cursor.cursor_style = style;
-            }
+            wrapper.terminal.setDefaultCursorStyle(style);
         },
         .default_cursor_blink => {
             const blink = if (value) |ptr| ptr.* else false;
-            wrapper.stream.handler.default_cursor_blink = blink;
-            if (wrapper.stream.handler.default_cursor) {
-                wrapper.terminal.modes.set(.cursor_blinking, blink);
-            }
+            wrapper.terminal.setDefaultCursorBlink(blink);
         },
     }
     return .success;
@@ -651,34 +645,17 @@ pub fn resize(
     cell_height_px: u32,
 ) callconv(lib.calling_conv) Result {
     const wrapper = terminal_ orelse return .invalid_value;
-    const t = wrapper.terminal;
-    if (cols == 0 or rows == 0) return .invalid_value;
-    t.resize(t.gpa(), cols, rows) catch return .out_of_memory;
-
-    // Update pixel sizes
-    t.width_px = std.math.mul(u32, cols, cell_width_px) catch std.math.maxInt(u32);
-    t.height_px = std.math.mul(u32, rows, cell_height_px) catch std.math.maxInt(u32);
-
-    // Disable synchronized output mode so that we show changes
-    // immediately for a resize. This is allowed by the spec.
-    t.modes.set(.synchronized_output, false);
-
-    // If we have in-band size reporting enabled, send a report.
-    if (t.modes.get(.in_band_size_reports)) in_band: {
-        const func = wrapper.effects.write_pty orelse break :in_band;
-
-        var buf: [1024]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&buf);
-        size_report.encode(&writer, .mode_2048, .{
-            .rows = rows,
-            .columns = cols,
-            .cell_width = cell_width_px,
-            .cell_height = cell_height_px,
-        }) catch break :in_band;
-
-        const data = writer.buffered();
-        func(@ptrCast(wrapper), wrapper.effects.userdata, data.ptr, data.len);
-    }
+    wrapper.stream.handler.resize(.{
+        .cols = cols,
+        .rows = rows,
+        .cell_size_px = .{
+            .width = cell_width_px,
+            .height = cell_height_px,
+        },
+    }) catch |err| return switch (err) {
+        error.InvalidValue => .invalid_value,
+        error.OutOfMemory => .out_of_memory,
+    };
 
     return .success;
 }
@@ -756,13 +733,19 @@ pub const TerminalData = enum(c_int) {
     kitty_graphics = 30,
     selection = 31,
     viewport_active = 32,
+    vt_processing_error = 33,
 
     /// Output type expected for querying the data of the given kind.
     pub fn OutType(comptime self: TerminalData) type {
         return switch (self) {
             .invalid => void,
             .cols, .rows, .cursor_x, .cursor_y => size.CellCountInt,
-            .cursor_pending_wrap, .cursor_visible, .mouse_tracking, .viewport_active => bool,
+            .cursor_pending_wrap,
+            .cursor_visible,
+            .mouse_tracking,
+            .viewport_active,
+            .vt_processing_error,
+            => bool,
             .active_screen => TerminalScreen,
             .kitty_keyboard_flags => u8,
             .scrollbar => TerminalScrollbar,
@@ -837,7 +820,8 @@ fn getTyped(
     comptime data: TerminalData,
     out: *data.OutType(),
 ) Result {
-    const t: *ZigTerminal = (terminal_ orelse return .invalid_value).terminal;
+    const wrapper = terminal_ orelse return .invalid_value;
+    const t: *ZigTerminal = wrapper.terminal;
     switch (data) {
         .invalid => return .invalid_value,
         .cols => out.* = t.cols,
@@ -898,6 +882,7 @@ fn getTyped(
             t.screens.active.selection orelse return .no_value,
         ),
         .viewport_active => out.* = t.screens.active.pages.viewport == .active,
+        .vt_processing_error => out.* = wrapper.stream.handler.semantic_failure,
     }
 
     return .success;
@@ -1582,6 +1567,54 @@ test "get cursor position" {
     try testing.expectEqual(0, y);
 }
 
+test "get vt_processing_error" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{
+            .cols = 80,
+            .rows = 24,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    var processing_error: bool = true;
+    try testing.expectEqual(Result.success, get(
+        t,
+        .vt_processing_error,
+        @ptrCast(&processing_error),
+    ));
+    try testing.expect(!processing_error);
+
+    // Force a non-graceful terminal-owned update failure through the public
+    // VT write path.
+    {
+        const alloc = t.?.terminal.screens.active.alloc;
+        t.?.terminal.screens.active.alloc = testing.failing_allocator;
+        defer t.?.terminal.screens.active.alloc = alloc;
+
+        const input = "\x1B]2;unavailable\x1B\\";
+        vt_write(t, input, input.len);
+    }
+
+    try testing.expectEqual(Result.success, get(
+        t,
+        .vt_processing_error,
+        @ptrCast(&processing_error),
+    ));
+    try testing.expect(processing_error);
+
+    reset(t);
+    try testing.expectEqual(Result.success, get(
+        t,
+        .vt_processing_error,
+        @ptrCast(&processing_error),
+    ));
+    try testing.expect(processing_error);
+}
+
 test "get null" {
     var cols: size.CellCountInt = undefined;
     try testing.expectEqual(Result.invalid_value, get(null, .cols, @ptrCast(&cols)));
@@ -1796,6 +1829,12 @@ test "set default cursor style and blink" {
 
     // DECSCUSR reset restores the configured default style and blink.
     vt_write(t, "\x1b[0 q", 5);
+    try testing.expectEqual(Screen.CursorStyle.underline, t.?.terminal.screens.active.cursor.cursor_style);
+    try testing.expect(t.?.terminal.modes.get(.cursor_blinking));
+
+    // RIS also restores cursor defaults from Terminal-owned state.
+    vt_write(t, "\x1b[2 q", 5);
+    reset(t);
     try testing.expectEqual(Screen.CursorStyle.underline, t.?.terminal.screens.active.cursor.cursor_style);
     try testing.expect(t.?.terminal.modes.get(.cursor_blinking));
 }
@@ -3368,11 +3407,12 @@ test "resize updates pixel dimensions" {
     ));
     defer free(t);
 
-    try testing.expectEqual(Result.success, resize(t, 100, 40, 9, 18));
+    // Pixel geometry must still be applied when the cell dimensions match.
+    try testing.expectEqual(Result.success, resize(t, 80, 24, 9, 18));
 
     const zt = t.?.terminal;
-    try testing.expectEqual(@as(u32, 100 * 9), zt.width_px);
-    try testing.expectEqual(@as(u32, 40 * 18), zt.height_px);
+    try testing.expectEqual(@as(u32, 80 * 9), zt.width_px);
+    try testing.expectEqual(@as(u32, 24 * 18), zt.height_px);
 }
 
 test "resize pixel overflow saturates" {
@@ -3411,7 +3451,8 @@ test "resize disables synchronized output" {
     const zt = t.?.terminal;
     zt.modes.set(.synchronized_output, true);
 
-    try testing.expectEqual(Result.success, resize(t, 100, 40, 9, 18));
+    // The terminal-level reset must run even if grid work is unnecessary.
+    try testing.expectEqual(Result.success, resize(t, 80, 24, 9, 18));
     try testing.expect(!zt.modes.get(.synchronized_output));
 }
 

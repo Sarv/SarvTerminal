@@ -575,6 +575,7 @@ pub fn clone(
     result.assertIntegrity();
     return result;
 }
+
 pub fn increaseCapacity(
     self: *Screen,
     node: *PageList.List.Node,
@@ -643,6 +644,74 @@ pub fn increaseCapacity(
     self.cursorReload();
 
     return new_node;
+}
+
+/// Clone the cells in columns [x_start, x_end) of a source row into
+/// the row at `dst_y` of the given node's page, increasing the node's
+/// capacity as necessary to fit the managed memory (styles,
+/// hyperlinks, etc.) of the copied cells.
+///
+/// This is the Screen-level analog of PageList.cloneRowGrowCapacity:
+/// capacity increases are routed through Screen.increaseCapacity so
+/// that the cursor's style/hyperlink references are migrated when the
+/// destination node is the cursor's page.
+///
+/// Since increasing capacity replaces the node in the page list, the
+/// (possibly replaced) node is returned and the caller must use it in
+/// place of the old node. Tracked pins are updated automatically. The
+/// source must NOT be on the given node since the node's page memory
+/// may be freed on capacity increase.
+///
+/// Callers use this mid-mutation (after rows have been rotated or
+/// shifted), so a failure can't be propagated without leaving the
+/// page list half-mutated (and corrupt). If the capacity can't be
+/// increased (system OOM or the page is already at max capacity),
+/// this panics: a crash is better than corruption.
+pub fn clonePartialRowGrowCapacity(
+    self: *Screen,
+    node: *PageList.List.Node,
+    dst_y: usize,
+    src_page: *Page,
+    src_row: *const Row,
+    x_start: usize,
+    x_end: usize,
+) *PageList.List.Node {
+    assert(src_page != node.page());
+
+    var current = node;
+    while (true) {
+        const cur_page: *Page = current.page();
+        const cur_rows = cur_page.rows.ptr(cur_page.memory.ptr);
+        cur_page.clonePartialRowFrom(
+            src_page,
+            &cur_rows[dst_y],
+            src_row,
+            x_start,
+            x_end,
+        ) catch |err| {
+            // Adjust our page capacity to make room for what we
+            // didn't have space for and retry the copy.
+            current = self.increaseCapacity(
+                current,
+                PageList.IncreaseCapacity.forCloneError(err),
+            ) catch |e| switch (e) {
+                // We can't gracefully recover from either of these
+                // here: our callers have already rotated or shifted
+                // rows, so returning an error would leave the page
+                // list half-mutated (and corrupt), so a crash is
+                // better.
+                error.OutOfMemory,
+                => @panic("increaseCapacity system allocator OOM"),
+
+                error.OutOfSpace,
+                => @panic("increaseCapacity OutOfSpace"),
+            };
+
+            continue;
+        };
+
+        return current;
+    }
 }
 
 pub inline fn cursorCellRight(self: *Screen, n: size.CellCountInt) *pagepkg.Cell {
@@ -1035,36 +1104,58 @@ fn cursorScrollAboveRotate(
     self: *Screen,
     fresh_node: ?*PageList.List.Node,
 ) !void {
+    // A fresh node given to us is always the newly allocated tail of
+    // the page list (see grow), which is where our iteration starts.
+    assert(fresh_node == null or fresh_node == self.pages.pages.last);
+
     self.cursorChangePin(self.cursor.page_pin.down(1).?);
 
     // Go through each of the pages following our pin, shift all rows
-    // down by one, and copy the last row of the previous page.
+    // down by one, and copy the last row of the previous page. We start
+    // at the tail, which is the only node that can be freshly allocated.
     var current = self.pages.pages.last.?;
-    while (current != self.cursor.page_pin.node) : (current = current.prev.?) {
+    var current_is_fresh = fresh_node != null;
+    while (current != self.cursor.page_pin.node) : ({
+        current = current.prev.?;
+        current_is_fresh = false;
+    }) {
         const prev = current.prev.?;
-        const prev_page = prev.page();
-        const cur_page = current.page();
-        const prev_rows = prev_page.rows.ptr(prev_page.memory.ptr);
-        const cur_rows = cur_page.rows.ptr(cur_page.memory.ptr);
 
         // A newly allocated tail has no earlier references to invalidate.
-        if (fresh_node == null or current != fresh_node.?) {
+        if (!current_is_fresh) {
             // Rotating this page moves every cached row coordinate down by one.
             self.pages.invalidateNodeLayout(current);
         }
 
         // Rotate the pages down: [ 0 1 2 3 ] => [ 3 0 1 2 ]
-        fastmem.rotateOnceR(Row, cur_rows[0..cur_page.size.rows]);
+        {
+            const cur_page = current.page();
+            const cur_rows = cur_page.rows.ptr(cur_page.memory.ptr);
+            fastmem.rotateOnceR(Row, cur_rows[0..cur_page.size.rows]);
+        }
 
         // Copy the last row of the previous page to the top of current.
-        try cur_page.cloneRowFrom(
-            prev_page,
-            &cur_rows[0],
-            &prev_rows[prev_page.size.rows - 1],
-        );
+        // If the current page doesn't have enough capacity for the
+        // managed memory of the copied row (styles, hyperlinks, etc.)
+        // then its capacity is increased and the copy retried, which
+        // may replace `current` in the page list. Our loop condition
+        // guarantees `current` is never the cursor page, and `prev` is
+        // unaffected by the replacement.
+        {
+            const prev_page = prev.page();
+            const prev_rows = prev_page.rows.ptr(prev_page.memory.ptr);
+            current = self.clonePartialRowGrowCapacity(
+                current,
+                0,
+                prev_page,
+                &prev_rows[prev_page.size.rows - 1],
+                0,
+                self.pages.cols,
+            );
+        }
 
         // Mark dirty on the page, since we are dirtying all rows with this.
-        cur_page.dirty = true;
+        current.page().dirty = true;
     }
 
     // Our current is our cursor page, we need to rotate down from
@@ -1851,50 +1942,80 @@ pub const Resize = struct {
     prompt_redraw: osc.semantic_prompt.Redraw = .false,
 };
 
-/// Resize the screen. The rows or cols can be bigger or smaller.
-///
-/// If this returns an error, the screen is left in a likely garbage state.
-/// It is very hard to undo this operation without blowing up our memory
-/// usage. The only way to recover is to reset the screen. The only way
-/// this really fails is if page allocation is required and fails, which
-/// probably means the system is in trouble anyways. I'd like to improve this
-/// in the future but it is not a priority particularly because this scenario
-/// (resize) is difficult.
+const resize_tw = tripwire.module(enum {
+    saved_cursor_pin,
+    pages,
+}, resize);
+
+/// Resize the screen. The rows or cols can be bigger or smaller. If this
+/// returns an error, the screen is unchanged.
 pub inline fn resize(
     self: *Screen,
     opts: Resize,
-) !void {
+) Allocator.Error!void {
+    const tw = resize_tw;
     defer self.assertIntegrity();
 
-    if (comptime build_options.kitty_graphics) {
-        // No matter what we mark our image state as dirty
-        self.kitty_images.dirty = true;
+    // We need to insert a tracked pin for our saved cursor so we can
+    // modify its X/Y for reflow. Do this before changing any state since
+    // tracking the pin can fail.
+    const saved_cursor_pin: ?*Pin = saved_cursor: {
+        const sc = self.saved_cursor orelse break :saved_cursor null;
+        const pin = self.pages.pin(.{ .active = .{
+            .x = sc.x,
+            .y = sc.y,
+        } }) orelse break :saved_cursor null;
+        try tw.check(.saved_cursor_pin);
+        break :saved_cursor try self.pages.trackPin(pin);
+    };
+    defer if (saved_cursor_pin) |p| self.pages.untrackPin(p);
+
+    // A cursor style and hyperlink are partly stored in the page containing
+    // the cursor. Their IDs only have meaning within that page, and the page
+    // keeps reference counts for them. Resizing can replace or destroy the
+    // page, so below we temporarily remove both values from the cursor before
+    // asking PageList to resize.
+    //
+    // Save everything first so we can put the cursor back together afterward,
+    // or restore it unchanged if the resize fails. We also save the original
+    // node and serial so after a successful resize we can tell whether that
+    // page survived and still needs its temporary references released.
+    const cursor_node = self.cursor.page_pin.node;
+    const cursor_node_serial = cursor_node.serial;
+    const cursor_style = self.cursor.style;
+    const cursor_style_id = self.cursor.style_id;
+    const cursor_hyperlink = self.cursor.hyperlink;
+    const cursor_hyperlink_id = self.cursor.hyperlink_id;
+
+    // Keep an extra reference to the cursor style and hyperlink while the
+    // resize is in progress. Releasing the cursor references below therefore
+    // can't delete either entry, and an error can restore the cursor without
+    // any allocation.
+    {
+        const page = cursor_node.page();
+        if (cursor_style_id != style.default_id) {
+            page.styles.use(page.memory, cursor_style_id);
+        }
+        if (cursor_hyperlink_id != 0) {
+            page.hyperlink_set.use(page.memory, cursor_hyperlink_id);
+        }
+    }
+    errdefer {
+        self.cursor.style = cursor_style;
+        self.cursor.style_id = cursor_style_id;
+        self.cursor.hyperlink = cursor_hyperlink;
+        self.cursor.hyperlink_id = cursor_hyperlink_id;
     }
 
-    // Release the cursor style while resizing just
-    // in case the cursor ends up on a different page.
-    const cursor_style = self.cursor.style;
+    // Release the cursor style while resizing just in case the cursor ends
+    // up on a different page.
     self.cursor.style = .{};
     self.manualStyleUpdate() catch unreachable;
-    defer {
-        // Restore the cursor style.
-        self.cursor.style = cursor_style;
-        self.manualStyleUpdate() catch |err| {
-            // This failure should not happen because manualStyleUpdate
-            // handles page splitting, overflow, and more. This should only
-            // happen if we're out of RAM. In this case, we'll just degrade
-            // gracefully back to the default style.
-            log.err("failed to update style on cursor reload err={}", .{err});
-            self.cursor.style = .{};
-            self.cursor.style_id = 0;
-        };
-    }
 
     // If we have a hyperlink, release it from the old page
     // and then we need to re-add it to the new page. This needs
     // to happen because resize below typically reallocates a
     // new page so the old hyperlink is invalid.
-    const hyperlink_ = self.cursor.hyperlink;
     if (self.cursor.hyperlink_id != 0) {
         // Note we do NOT use endHyperlink because we want to keep
         // our allocated self.cursor.hyperlink valid.
@@ -1904,20 +2025,138 @@ pub inline fn resize(
         self.cursor.hyperlink = null;
     }
 
-    // We need to insert a tracked pin for our saved cursor so we can
-    // modify its X/Y for reflow.
-    const saved_cursor_pin: ?*Pin = saved_cursor: {
-        const sc = self.saved_cursor orelse break :saved_cursor null;
-        const pin = self.pages.pin(.{ .active = .{
-            .x = sc.x,
-            .y = sc.y,
-        } }) orelse break :saved_cursor null;
-        break :saved_cursor try self.pages.trackPin(pin);
-    };
-    defer if (saved_cursor_pin) |p| self.pages.untrackPin(p);
+    // Perform the resize operation.
+    try tw.check(.pages);
+    try self.pages.resize(.{
+        .rows = opts.rows,
+        .cols = opts.cols,
+        .reflow = opts.reflow,
+        .cursor = .{
+            .x = self.cursor.x,
+            .y = self.cursor.y,
+            .pin = self.cursor.page_pin,
+        },
+    });
 
+    // No more failures are possible after this. Enforced by compiler
+    // because we do NO cleanup of the state below.
+    errdefer comptime unreachable;
+
+    // Resizing moves image placements, so mark their geometry as dirty.
+    if (comptime build_options.kitty_graphics) self.kitty_images.dirty = true;
+
+    // If we have no scrollback and we shrunk our rows, we must explicitly
+    // erase our history. This is because PageList always keeps at least
+    // a page size of history.
+    if (self.no_scrollback) self.pages.eraseHistory(null);
+
+    // If our cursor was updated, we do a full reload so all our cursor
+    // state is correct.
+    self.cursorReload();
+
+    // Clear any redrawable prompt after the fallible resize but before
+    // restoring the cursor style and hyperlink, so cleared cells retain the
+    // same default styling they had with the previous ordering.
+    self.clearPromptForRedraw(opts.prompt_redraw);
+
+    // Restore the cursor style.
+    self.cursor.style = cursor_style;
+    self.manualStyleUpdate() catch |err| {
+        // This failure should not happen because manualStyleUpdate handles
+        // page splitting, overflow, and more. This should only happen if
+        // we're out of RAM. In this case, we'll just degrade gracefully back
+        // to the default style.
+        log.err("failed to update style on cursor reload err={}", .{err});
+        self.cursor.style = .{};
+        self.cursor.style_id = 0;
+    };
+
+    // If we reflowed a saved cursor, update it.
+    if (saved_cursor_pin) |p| {
+        // This should never fail because a non-null saved_cursor_pin
+        // implies a non-null saved_cursor.
+        const sc = &self.saved_cursor.?;
+        if (self.pages.pointFromPin(.active, p.*)) |pt| {
+            sc.x = @intCast(pt.active.x);
+            sc.y = @intCast(pt.active.y);
+
+            // If we had pending wrap set and we're no longer at the end of
+            // the line, we unset the pending wrap and move the cursor to
+            // reflect the correct next position.
+            if (sc.pending_wrap and sc.x != opts.cols - 1) {
+                sc.pending_wrap = false;
+                sc.x += 1;
+            }
+        } else {
+            // I think this can happen if the screen is resized to be
+            // less rows or less cols and our saved cursor moves outside
+            // the active area. In this case, there isn't anything really
+            // reasonable we can do so we just move the cursor to the
+            // top-left. It may be reasonable to also move the cursor to
+            // match the primary cursor. Any behavior is fine since this is
+            // totally unspecified.
+            sc.x = 0;
+            sc.y = 0;
+            sc.pending_wrap = false;
+        }
+    }
+
+    // Fix up our hyperlink if we had one.
+    if (cursor_hyperlink) |link| {
+        self.startHyperlink(link.uri, switch (link.id) {
+            .explicit => |v| v,
+            .implicit => null,
+        }) catch |err| {
+            // This shouldn't happen because startHyperlink should handle
+            // resizing. This only happens if we're truly out of RAM. Degrade
+            // to forgetting the hyperlink.
+            log.err("failed to update hyperlink on resize err={}", .{err});
+        };
+
+        // Remove our old link
+        link.deinit(self.alloc);
+        self.alloc.destroy(link);
+    }
+
+    // A tracked pin follows its content when PageList moves or replaces a
+    // page. If the cursor's pin still points to the node we started with,
+    // that node survived the resize and still owns the temporary style and
+    // hyperlink references we added above.
+    //
+    // Comparing pointers is not enough by itself. PageList keeps a pool of
+    // nodes, so it can destroy a node and create a replacement at the same
+    // memory address. Every new use of a node gets a different serial number,
+    // making the pointer-and-serial pair an O(1) identity check.
+    const cursor_node_survived =
+        self.cursor.page_pin.node == cursor_node and
+        self.cursor.page_pin.node.serial == cursor_node_serial;
+    if (comptime build_options.slow_runtime_safety) {
+        assert(cursor_node_survived ==
+            self.pages.nodeIsValid(cursor_node, cursor_node_serial));
+    }
+
+    // A surviving node still contains our temporary references, so remove
+    // them now. If the node was replaced, its destruction removed those
+    // references along with the rest of the old page so we don't need to
+    // fix it up.
+    if (cursor_node_survived) {
+        const page = cursor_node.page();
+        if (cursor_style_id != style.default_id) {
+            page.styles.release(page.memory, cursor_style_id);
+        }
+        if (cursor_hyperlink_id != 0) {
+            page.hyperlink_set.release(page.memory, cursor_hyperlink_id);
+        }
+    }
+}
+
+fn clearPromptForRedraw(
+    self: *Screen,
+    redraw: osc.semantic_prompt.Redraw,
+) void {
     // If our cursor is on a prompt or input line, clear it so the shell can
-    // redraw it. This works with OSC 133 semantic prompts.
+    // redraw it. This works with OSC 133 semantic prompts. We do this after
+    // the fallible resize so an error leaves the original prompt untouched.
     //
     // We check cursor.semantic_content rather than page_row.semantic_prompt
     // because some shells (e.g., Nu) mark input areas with OSC 133 B but don't
@@ -1926,10 +2165,10 @@ pub inline fn resize(
     // would miss them. By checking semantic_content, we assume that if the
     // cursor is on anything other than command output, we're at a prompt/input
     // line and should clear from there.
-    if (opts.prompt_redraw != .false and
+    if (redraw != .false and
         self.cursor.semantic_content != .output)
     prompt: {
-        switch (opts.prompt_redraw) {
+        switch (redraw) {
             .false => unreachable,
 
             // For `.last`, only clear the current line where the cursor is.
@@ -1968,76 +2207,6 @@ pub inline fn resize(
                 }
             },
         }
-    }
-
-    // Perform the resize operation.
-    try self.pages.resize(.{
-        .rows = opts.rows,
-        .cols = opts.cols,
-        .reflow = opts.reflow,
-        .cursor = .{
-            .x = self.cursor.x,
-            .y = self.cursor.y,
-            .pin = self.cursor.page_pin,
-        },
-    });
-
-    // If we have no scrollback and we shrunk our rows, we must explicitly
-    // erase our history. This is because PageList always keeps at least
-    // a page size of history.
-    if (self.no_scrollback) {
-        self.pages.eraseHistory(null);
-    }
-
-    // If our cursor was updated, we do a full reload so all our cursor
-    // state is correct.
-    self.cursorReload();
-
-    // If we reflowed a saved cursor, update it.
-    if (saved_cursor_pin) |p| {
-        // This should never fail because a non-null saved_cursor_pin
-        // implies a non-null saved_cursor.
-        const sc = &self.saved_cursor.?;
-        if (self.pages.pointFromPin(.active, p.*)) |pt| {
-            sc.x = @intCast(pt.active.x);
-            sc.y = @intCast(pt.active.y);
-
-            // If we had pending wrap set and we're no longer at the end of
-            // the line, we unset the pending wrap and move the cursor to
-            // reflect the correct next position.
-            if (sc.pending_wrap and sc.x != opts.cols - 1) {
-                sc.pending_wrap = false;
-                sc.x += 1;
-            }
-        } else {
-            // I think this can happen if the screen is resized to be
-            // less rows or less cols and our saved cursor moves outside
-            // the active area. In this case, there isn't anything really
-            // reasonable we can do so we just move the cursor to the
-            // top-left. It may be reasonable to also move the cursor to
-            // match the primary cursor. Any behavior is fine since this is
-            // totally unspecified.
-            sc.x = 0;
-            sc.y = 0;
-            sc.pending_wrap = false;
-        }
-    }
-
-    // Fix up our hyperlink if we had one.
-    if (hyperlink_) |link| {
-        self.startHyperlink(link.uri, switch (link.id) {
-            .explicit => |v| v,
-            .implicit => null,
-        }) catch |err| {
-            // This shouldn't happen because startHyperlink should handle
-            // resizing. This only happens if we're truly out of RAM. Degrade
-            // to forgetting the hyperlink.
-            log.err("failed to update hyperlink on resize err={}", .{err});
-        };
-
-        // Remove our old link
-        link.deinit(self.alloc);
-        self.alloc.destroy(link);
     }
 }
 
@@ -5750,6 +5919,167 @@ test "Screen: scroll above no scrollback bottom of page" {
     try testing.expect(s.pages.isDirty(.{ .active = .{ .x = 0, .y = 2 } }));
 }
 
+test "Screen: scroll above hyperlink-dense row to fresh page" {
+    // Regression test for https://github.com/ghostty-org/ghostty/discussions/13160
+    //
+    // When a scroll-above operation pushes a row carrying more unique
+    // hyperlinks than a fresh page's default hyperlink capacity across
+    // a page boundary, the cross-page row clone must increase the
+    // destination page's capacity (like insertLines/deleteLines do)
+    // rather than error out mid-operation, which leaves the page list
+    // half-mutated and aborts later (e.g. in clearCells).
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{ .cols = 10, .rows = 5, .max_scrollback = 10000 });
+    defer s.deinit();
+
+    // Fill the first page so it is exactly full and the cursor is on
+    // its last row (which is also the bottom row of the active area).
+    // The next grow() will then allocate a fresh page.
+    const first_page_rows = s.pages.pages.first.?.capacity().rows;
+    s.pages.pages.first.?.page().pauseIntegrityChecks(true);
+    for (0..first_page_rows - 1) |_| try s.testWriteString("\n");
+    s.pages.pages.first.?.page().pauseIntegrityChecks(false);
+    try testing.expect(s.pages.pages.first == s.pages.pages.last);
+    try testing.expectEqual(
+        s.pages.pages.first.?.capacity().rows,
+        s.pages.pages.first.?.page().size.rows,
+    );
+    try testing.expectEqual(s.pages.rows - 1, s.cursor.y);
+
+    // Fill the bottom row with unique hyperlinks: more than a fresh
+    // page can hold with default hyperlink capacity.
+    for (0..s.pages.cols) |i| {
+        var buf: [64]u8 = undefined;
+        const uri = try std.fmt.bufPrint(&buf, "http://example.com/{d}", .{i});
+        try s.startHyperlink(uri, null);
+        try s.testWriteString("A");
+        s.endHyperlink();
+    }
+    try testing.expectEqual(
+        @as(usize, s.pages.cols),
+        s.cursor.page_pin.node.page().hyperlink_set.count(),
+    );
+
+    // Move the cursor above the bottom row and scroll. The dense row is
+    // pushed across the page boundary into the freshly allocated page.
+    s.cursorAbsolute(0, 1);
+    try s.cursorScrollAbove();
+
+    // We must have created a second page and the dense row must now be
+    // the top row of that page.
+    try testing.expect(s.pages.pages.first != s.pages.pages.last);
+
+    // All hyperlinks must have survived the scroll intact: every cell
+    // flagged as a hyperlink must resolve to a real entry in its page's
+    // hyperlink map. A half-applied scroll leaves cells whose hyperlink
+    // flag is set but that have no map entry, which aborts in
+    // clearCells later.
+    var node_: ?*PageList.List.Node = s.pages.pages.first;
+    while (node_) |node| : (node_ = node.next) {
+        const page: *Page = node.page();
+        page.assertIntegrity();
+        for (0..page.size.rows) |y| {
+            const row = page.getRow(y);
+            if (!row.hyperlink) continue;
+            for (page.getCells(row)) |*cell| {
+                if (!cell.hyperlink) continue;
+                try testing.expect(page.lookupHyperlink(cell) != null);
+            }
+        }
+    }
+    {
+        const last_page: *Page = s.pages.pages.last.?.page();
+        try testing.expectEqual(
+            @as(usize, s.pages.cols),
+            last_page.hyperlink_set.count(),
+        );
+    }
+
+    // The dense row is still the bottom row of the active area.
+    for (0..s.pages.cols) |x| {
+        const list_cell = s.pages.getCell(.{ .active = .{
+            .x = @intCast(x),
+            .y = 4,
+        } }).?;
+        try testing.expect(list_cell.cell.hyperlink);
+        const page: *Page = list_cell.node.page();
+        const id = page.lookupHyperlink(list_cell.cell).?;
+        const link = page.hyperlink_set.get(page.memory, id);
+        var buf: [64]u8 = undefined;
+        const expected = try std.fmt.bufPrint(&buf, "http://example.com/{d}", .{x});
+        try testing.expectEqualStrings(expected, link.uri.slice(page.memory));
+    }
+}
+
+test "Screen: scroll above hyperlink-dense row to existing page" {
+    // Same as the fresh page variant above but the destination page
+    // already exists (fresh_node == null path in cursorScrollAboveRotate).
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{ .cols = 10, .rows = 5, .max_scrollback = 10000 });
+    defer s.deinit();
+
+    // Fill the first page so it is exactly full and the cursor is on
+    // its last row.
+    const first_page_rows = s.pages.pages.first.?.capacity().rows;
+    s.pages.pages.first.?.page().pauseIntegrityChecks(true);
+    for (0..first_page_rows - 1) |_| try s.testWriteString("\n");
+    s.pages.pages.first.?.page().pauseIntegrityChecks(false);
+    try testing.expectEqual(s.pages.rows - 1, s.cursor.y);
+
+    // Fill the last row of the first page with unique hyperlinks:
+    // more than a page can hold with default hyperlink capacity.
+    for (0..s.pages.cols) |i| {
+        var buf: [64]u8 = undefined;
+        const uri = try std.fmt.bufPrint(&buf, "http://example.com/{d}", .{i});
+        try s.startHyperlink(uri, null);
+        try s.testWriteString("A");
+        s.endHyperlink();
+    }
+
+    // Scroll twice so the active area straddles the page boundary:
+    // the last two active rows are on a second page while the dense
+    // row remains the last row of the first page.
+    try s.testWriteString("\n\n");
+    try testing.expect(s.pages.pages.first != s.pages.pages.last);
+    try testing.expect(s.cursor.page_pin.node == s.pages.pages.last.?);
+
+    // Move the cursor to an active row that is still on the first page
+    // and above the dense row, then scroll. grow() has capacity in the
+    // last page so no fresh page is allocated, but the dense row still
+    // crosses the page boundary during the rotate.
+    s.cursorAbsolute(0, 0);
+    try testing.expect(s.cursor.page_pin.node == s.pages.pages.first.?);
+    try s.cursorScrollAbove();
+
+    // All hyperlinks must have survived the scroll intact: every cell
+    // flagged as a hyperlink must resolve to a real entry in its page's
+    // hyperlink map.
+    var node_: ?*PageList.List.Node = s.pages.pages.first;
+    while (node_) |node| : (node_ = node.next) {
+        const page: *Page = node.page();
+        page.assertIntegrity();
+        for (0..page.size.rows) |y| {
+            const row = page.getRow(y);
+            if (!row.hyperlink) continue;
+            for (page.getCells(row)) |*cell| {
+                if (!cell.hyperlink) continue;
+                try testing.expect(page.lookupHyperlink(cell) != null);
+            }
+        }
+    }
+    {
+        const last_page: *Page = s.pages.pages.last.?.page();
+        try testing.expectEqual(
+            @as(usize, s.pages.cols),
+            last_page.hyperlink_set.count(),
+        );
+    }
+}
+
 test "Screen: clone" {
     const testing = std.testing;
     const alloc = testing.allocator;
@@ -7234,6 +7564,191 @@ test "Screen: resize more cols with reflow" {
     // Our cursor should've moved
     try testing.expectEqual(@as(size.CellCountInt, 2), s.cursor.x);
     try testing.expectEqual(@as(size.CellCountInt, 2), s.cursor.y);
+}
+
+test "Screen: resize errors preserve state" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    for (std.meta.tags(resize_tw.FailPoint)) |tag| {
+        const tw = resize_tw;
+        defer tw.end(.reset) catch unreachable;
+
+        var s = try init(alloc, .{
+            .cols = 10,
+            .rows = 3,
+            .max_scrollback = 0,
+        });
+        defer s.deinit();
+
+        s.cursorSetSemanticContent(.{ .prompt = .initial });
+        try s.testWriteString("> ");
+        s.cursorSetSemanticContent(.{ .input = .clear_explicit });
+        try s.testWriteString("echo");
+        try s.setAttribute(.{ .bold = {} });
+        try s.startHyperlink("https://example.com", "resize");
+        s.saved_cursor = .{
+            .x = 1,
+            .y = 0,
+            .style = s.cursor.style,
+            .protected = s.cursor.protected,
+            .pending_wrap = s.cursor.pending_wrap,
+            .origin = false,
+            .charset = s.charset,
+        };
+
+        if (comptime build_options.kitty_graphics) {
+            s.kitty_images.dirty = false;
+        }
+
+        // Keep a shallow copy for all non-page state and a byte-for-byte
+        // copy of the sole page so reference counts and prompt contents are
+        // covered as well.
+        try testing.expectEqual(s.pages.pages.first, s.pages.pages.last);
+        const before = s;
+        const before_viewport_pin = s.pages.viewport_pin.*;
+        const before_tracked_pins = s.pages.countTrackedPins();
+        const before_page = try alloc.dupe(
+            u8,
+            s.pages.pages.first.?.page().memory,
+        );
+        defer alloc.free(before_page);
+
+        tw.errorAlways(tag, error.OutOfMemory);
+        try testing.expectError(error.OutOfMemory, s.resize(.{
+            .cols = 20,
+            .rows = 4,
+            .prompt_redraw = .true,
+        }));
+
+        try testing.expect(std.meta.eql(before.cursor, s.cursor));
+        try testing.expect(std.meta.eql(before.saved_cursor, s.saved_cursor));
+        try testing.expect(std.meta.eql(before.selection, s.selection));
+        try testing.expect(std.meta.eql(before.charset, s.charset));
+        try testing.expectEqual(before.protected_mode, s.protected_mode);
+        try testing.expect(std.meta.eql(before.kitty_keyboard, s.kitty_keyboard));
+        try testing.expect(std.meta.eql(before.semantic_prompt, s.semantic_prompt));
+        try testing.expectEqual(before.dirty, s.dirty);
+        try testing.expectEqual(before.pages.pages.first, s.pages.pages.first);
+        try testing.expectEqual(before.pages.pages.last, s.pages.pages.last);
+        try testing.expectEqual(before.pages.cols, s.pages.cols);
+        try testing.expectEqual(before.pages.rows, s.pages.rows);
+        try testing.expectEqual(before.pages.total_rows, s.pages.total_rows);
+        try testing.expectEqual(before.pages.viewport, s.pages.viewport);
+        try testing.expectEqual(before_viewport_pin, s.pages.viewport_pin.*);
+        try testing.expectEqual(before_tracked_pins, s.pages.countTrackedPins());
+        try testing.expectEqualSlices(
+            u8,
+            before_page,
+            s.pages.pages.first.?.page().memory,
+        );
+        if (comptime build_options.kitty_graphics) {
+            try testing.expectEqual(
+                before.kitty_images.dirty,
+                s.kitty_images.dirty,
+            );
+        }
+    }
+}
+
+test "Screen: resize cursor references when node survives" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{
+        .cols = 5,
+        .rows = 3,
+        .max_scrollback = 1000,
+    });
+    defer s.deinit();
+
+    try s.setAttribute(.bold);
+    try s.startHyperlink("https://example.com/", "resize");
+    try s.testWriteString("abc");
+
+    const original_node = s.cursor.page_pin.node;
+    const original_serial = original_node.serial;
+    {
+        const page = original_node.page();
+        try testing.expectEqual(
+            4,
+            page.styles.refCount(page.memory, s.cursor.style_id),
+        );
+        try testing.expectEqual(
+            4,
+            page.hyperlink_set.refCount(page.memory, s.cursor.hyperlink_id),
+        );
+    }
+
+    // A row-only resize grows the existing page without replacing the
+    // cursor's node. The temporary resize references must be released from
+    // this page after the cursor state is restored.
+    try s.resize(.{ .cols = 5, .rows = 4 });
+
+    try testing.expectEqual(original_node, s.cursor.page_pin.node);
+    try testing.expectEqual(original_serial, s.cursor.page_pin.node.serial);
+    {
+        const page = s.cursor.page_pin.node.page();
+        try testing.expectEqual(
+            4,
+            page.styles.refCount(page.memory, s.cursor.style_id),
+        );
+        try testing.expectEqual(
+            4,
+            page.hyperlink_set.refCount(page.memory, s.cursor.hyperlink_id),
+        );
+    }
+}
+
+test "Screen: resize cursor references when node is replaced" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s = try init(alloc, .{
+        .cols = 5,
+        .rows = 3,
+        .max_scrollback = 1000,
+    });
+    defer s.deinit();
+
+    try s.setAttribute(.bold);
+    try s.startHyperlink("https://example.com/", "resize");
+    try s.testWriteString("abc");
+
+    const original_node = s.cursor.page_pin.node;
+    const original_serial = original_node.serial;
+    {
+        const page = original_node.page();
+        try testing.expectEqual(
+            4,
+            page.styles.refCount(page.memory, s.cursor.style_id),
+        );
+        try testing.expectEqual(
+            4,
+            page.hyperlink_set.refCount(page.memory, s.cursor.hyperlink_id),
+        );
+    }
+
+    // A column resize with reflow replaces the page and remaps the tracked
+    // cursor pin. The old page owns the temporary references, so destroying
+    // it must account for them without attempting to release them afterward.
+    try s.resize(.{ .cols = 10, .rows = 3 });
+
+    try testing.expect(
+        s.cursor.page_pin.node != original_node or
+            s.cursor.page_pin.node.serial != original_serial,
+    );
+    {
+        const page = s.cursor.page_pin.node.page();
+        try testing.expectEqual(
+            4,
+            page.styles.refCount(page.memory, s.cursor.style_id),
+        );
+        try testing.expectEqual(
+            4,
+            page.hyperlink_set.refCount(page.memory, s.cursor.hyperlink_id),
+        );
+    }
 }
 
 test "Screen: resize more rows and cols with wrapping" {

@@ -248,6 +248,8 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
             .rows = grid_size.rows,
             .max_scrollback = opts.full_config.@"scrollback-limit",
             .default_modes = default_modes,
+            .default_cursor_style = opts.config.cursor_style,
+            .default_cursor_blink = opts.config.cursor_blink,
             .colors = .{
                 .background = .init(opts.config.background.toTerminalRGB()),
                 .foreground = .init(opts.config.foreground.toTerminalRGB()),
@@ -263,9 +265,6 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         };
     });
     errdefer term.deinit(alloc);
-
-    // Set our default cursor style
-    term.screens.active.cursor.cursor_style = opts.config.cursor_style;
 
     // Setup our terminal size in pixels for certain requests.
     term.width_px = term.cols * opts.size.cell.width;
@@ -289,8 +288,6 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         .osc_color_report_format = opts.config.osc_color_report_format,
         .clipboard_write = opts.config.clipboard_write,
         .enquiry_response = opts.config.enquiry_response,
-        .default_cursor_style = opts.config.cursor_style,
-        .default_cursor_blink = opts.config.cursor_blink,
     };
 
     const thread_enter_state = try ThreadEnterState.create(
@@ -482,17 +479,15 @@ pub fn resize(
         // Update the size of our terminal state
         try self.terminal.resize(
             self.alloc,
-            grid_size.columns,
-            grid_size.rows,
+            .{
+                .cols = grid_size.columns,
+                .rows = grid_size.rows,
+                .cell_size_px = .{
+                    .width = self.size.cell.width,
+                    .height = self.size.cell.height,
+                },
+            },
         );
-
-        // Update our pixel sizes
-        self.terminal.width_px = grid_size.columns * self.size.cell.width;
-        self.terminal.height_px = grid_size.rows * self.size.cell.height;
-
-        // Disable synchronized output mode so that we show changes
-        // immediately for a resize. This is allowed by the spec.
-        self.terminal.modes.set(.synchronized_output, false);
 
         // If we have size reporting enabled we need to send a report.
         if (self.terminal.modes.get(.in_band_size_reports)) {
