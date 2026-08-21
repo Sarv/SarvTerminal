@@ -10,6 +10,7 @@ const assert = @import("../quirks.zig").inlineAssert;
 const tripwire = @import("../tripwire.zig");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
+const simd = @import("../simd/main.zig");
 const unicode = @import("../unicode/main.zig");
 const uucode = @import("uucode");
 
@@ -115,6 +116,10 @@ flags: packed struct {
 
     /// True if the window is focused.
     focused: bool = true,
+
+    /// True if the terminal view may be visible. Unknown visibility is
+    /// represented as visible so callers behave conservatively.
+    visible: bool = true,
 
     /// True if the terminal is in a password entry mode. This is set
     /// to true based on termios state. This is set
@@ -255,7 +260,16 @@ pub const Cursor = struct {
 pub const Options = struct {
     cols: size.CellCountInt,
     rows: size.CellCountInt,
-    max_scrollback: usize = 10_000,
+
+    /// The maximum size of scrollback in bytes. Null is unlimited and zero
+    /// disables scrollback.
+    max_scrollback_bytes: ?usize = 10_000,
+
+    /// The maximum number of physical scrollback rows, excluding the active
+    /// area. Null is unlimited. The effective limit permits at least one
+    /// standard page and only complete historical pages are pruned.
+    max_scrollback_lines: ?usize = null,
+
     colors: Colors = .default,
 
     /// The default mode state. When the terminal gets a reset, it
@@ -289,16 +303,18 @@ pub const Options = struct {
 
 /// Initialize a new terminal.
 pub fn init(
+    io_impl: std.Io,
     alloc: Allocator,
     opts: Options,
 ) !Terminal {
     const cols = opts.cols;
     const rows = opts.rows;
 
-    var screen_set: ScreenSet = try .init(alloc, .{
+    var screen_set: ScreenSet = try .init(io_impl, alloc, .{
         .cols = cols,
         .rows = rows,
-        .max_scrollback = opts.max_scrollback,
+        .max_scrollback_bytes = opts.max_scrollback_bytes,
+        .max_scrollback_lines = opts.max_scrollback_lines,
         .kitty_image_storage_limit = opts.kitty_image_storage_limit,
         .kitty_image_loading_limits = opts.kitty_image_loading_limits,
     });
@@ -355,7 +371,10 @@ pub fn deinit(self: *Terminal, alloc: Allocator) void {
 /// for handling escape sequences split across write boundaries), you
 /// must store and reuse the returned stream.
 pub fn vtStream(self: *Terminal) Stream {
-    return .initAlloc(self.gpa(), self.vtHandler());
+    return Stream.init(.{
+        .allocator = self.gpa(),
+        .handler = self.vtHandler(),
+    });
 }
 
 /// This is the handler-side only for vtStream.
@@ -420,9 +439,37 @@ pub fn setDefaultCursorBlink(self: *Terminal, blink: ?bool) void {
     if (self.cursor.is_default) self.setCursorStyle(.default);
 }
 
+/// The I/O implementation we should use for this terminal.
+pub fn io(self: *Terminal) std.Io {
+    return self.screens.active.io;
+}
+
 /// The general allocator we should use for this terminal.
 pub fn gpa(self: *Terminal) Allocator {
     return self.screens.active.alloc;
+}
+
+/// Change the primary screen's maximum scrollback allocation in bytes.
+///
+/// Null removes the byte limit and zero disables scrollback. Disabling
+/// scrollback also immediately erases retained history and changes future
+/// scrolling to use the no-scrollback path. The alternate screen is
+/// intentionally unaffected because it never retains scrollback.
+pub fn setScrollbackMaxBytes(self: *Terminal, max: ?usize) void {
+    const primary = self.screens.get(.primary).?;
+    primary.pages.setMaxBytes(max);
+    primary.no_scrollback = max == 0;
+
+    if (primary.no_scrollback) primary.eraseHistory(null);
+}
+
+/// Change the primary screen's maximum number of physical scrollback lines.
+///
+/// Null removes the line limit. The alternate screen is intentionally
+/// unaffected because it never retains scrollback.
+pub fn setScrollbackMaxLines(self: *Terminal, max: ?usize) void {
+    const primary = self.screens.get(.primary).?;
+    primary.pages.setMaxLines(max);
 }
 
 /// Print UTF-8 encoded string to the terminal.
@@ -443,9 +490,26 @@ pub fn printString(self: *Terminal, str: []const u8) !void {
 
 /// Print the previous printed character a repeated amount of times.
 pub fn printRepeat(self: *Terminal, count_req: usize) !void {
-    if (self.previous_char) |c| {
-        const count = @max(count_req, 1);
-        for (0..count) |_| try self.print(c);
+    const c = self.previous_char orelse return;
+    var remaining = @max(count_req, 1);
+
+    // Print the repeated codepoint in slices so that eligible runs
+    // take the batched printSlice fast path. printSlice is semantically
+    // identical to calling print per codepoint: ineligible characters
+    // or terminal states (insert mode, grapheme clustering, hyperlinks,
+    // etc.) fall back to the per-codepoint print() path internally.
+    //
+    // The buffer is filled with a runtime-bounded loop rather than
+    // `= @splat(c)`: a comptime-known 4096-element splat gets fully
+    // unrolled into ~33KB of consecutive stores (LLVM won't re-roll
+    // or vectorize it, see quirks_memset.zig), and it would fill the
+    // whole buffer even for the typical small repeat counts.
+    var buf: [4096]u32 = undefined;
+    for (buf[0..@min(remaining, buf.len)]) |*cp| cp.* = c;
+    while (remaining > 0) {
+        const n = @min(remaining, buf.len);
+        try self.printSlice(buf[0..n]);
+        remaining -= n;
     }
 }
 
@@ -465,11 +529,55 @@ pub fn printRepeat(self: *Terminal, count_req: usize) !void {
 /// slower per-codepoint path. They're less common and this is optimized
 /// for the aforementioned cases.
 pub fn printSlice(self: *Terminal, cps: []const u32) !void {
+    // Check if we can do the fast path up front. If we can't
+    // we need to go back to scalar `print`.
+    const fast = fast: {
+        // Only the main display is supported.
+        if (self.status_display != .main) break :fast false;
+
+        // Modes that require per-codepoint handling in print().
+        // Wraparound is required (its the default) so that our
+        // row-fill logic below can assume soft-wrap semantics. Insert
+        // mode shifts cells per print.
+        if (self.modes.get(.insert)) break :fast false;
+        if (!self.modes.get(.wraparound)) break :fast false;
+
+        // Charset must map ASCII as-is (true unless a DEC special
+        // charset is actively invoked, which is rare).
+        const screen: *Screen = self.screens.active;
+        if (screen.charset.single_shift != null) break :fast false;
+        switch (screen.charset.charsets.get(screen.charset.gl)) {
+            .utf8, .ascii => {},
+            else => break :fast false,
+        }
+
+        // Hyperlinks require per-cell map bookkeeping.
+        if (screen.cursor.hyperlink_id != 0) break :fast false;
+
+        break :fast true;
+    };
+    if (!fast) {
+        for (cps) |cp| try self.print(@intCast(cp));
+        return;
+    }
+
+    const grapheme_cluster = self.modes.get(.grapheme_cluster);
+
+    // When grapheme clustering is enabled and a left margin is set,
+    // print() consults the cell left of the margin after wrapping,
+    // which we can't reason about here. Restrict the fast path to
+    // the [0x10, 0xFF] range in that case (those never cluster).
+    const allow_unicode = !grapheme_cluster or self.scrolling_region.left == 0;
+
     var i: usize = 0;
     while (i < cps.len) {
         // Try the fast-path print first. This will return the number of
         // codepoints it consumed.
-        const consumed = try self.printSliceFast(cps[i..]);
+        const consumed = try self.printSliceFast(
+            cps[i..],
+            grapheme_cluster,
+            allow_unicode,
+        );
         if (consumed > 0) {
             i += consumed;
             continue;
@@ -491,31 +599,15 @@ pub fn printSlice(self: *Terminal, cps: []const u32) !void {
 ///
 /// The fast path handles runs of narrow (width 1) and wide (width 2)
 /// codepoints being written to simple cells. Everything else (zero
-/// width codepoints, grapheme cluster continuations, insert mode,
-/// charset mapping, hyperlinks, complex cells, etc.) is rejected so
-/// `print` can handle it with full generality.
-fn printSliceFast(self: *Terminal, cps: []const u32) !usize {
-    // Only the main display is supported.
-    if (self.status_display != .main) return 0;
-
-    // Modes that require per-codepoint handling in print(). Wraparound
-    // is required (its the default) so that our row-fill logic below can
-    // assume soft-wrap semantics. Insert mode shifts cells per print.
-    if (self.modes.get(.insert)) return 0;
-    if (!self.modes.get(.wraparound)) return 0;
-
+/// width codepoints, grapheme cluster continuations, complex cells,
+/// etc.) is rejected so `print` can handle it with full generality.
+fn printSliceFast(
+    self: *Terminal,
+    cps: []const u32,
+    grapheme_cluster: bool,
+    allow_unicode: bool,
+) !usize {
     const screen: *Screen = self.screens.active;
-
-    // Charset must map ASCII as-is (true unless a DEC special charset
-    // is actively invoked, which is rare).
-    if (screen.charset.single_shift != null) return 0;
-    switch (screen.charset.charsets.get(screen.charset.gl)) {
-        .utf8, .ascii => {},
-        else => return 0,
-    }
-
-    // Hyperlinks require per-cell map bookkeeping.
-    if (screen.cursor.hyperlink_id != 0) return 0;
 
     // Codepoints in [0x10, 0xFF] are always narrow (width 1, matching
     // the c <= 0xFF fast path in print) and can never interact with
@@ -527,13 +619,6 @@ fn printSliceFast(self: *Terminal, cps: []const u32) !usize {
     // 2027) is enabled, if they are a grapheme break from the
     // previously printed codepoint (so print would never attach them
     // to the previous cell).
-    const grapheme_cluster = self.modes.get(.grapheme_cluster);
-
-    // When grapheme clustering is enabled and a left margin is set,
-    // print() consults the cell left of the margin after wrapping,
-    // which we can't reason about here. Restrict the fast path to
-    // the [0x10, 0xFF] range in that case (those never cluster).
-    const allow_unicode = !grapheme_cluster or self.scrolling_region.left == 0;
 
     // Codepoints in [0x10, 0xFF] are always narrow: print()
     // hardcodes width 1 for c <= 0xFF (no width table lookup).
@@ -562,14 +647,46 @@ fn printSliceFast(self: *Terminal, cps: []const u32) !usize {
     }
 
     // The first codepoint requires care when grapheme clustering is
-    // enabled: print() examines the previous *cell* which can hold
-    // state (grapheme data) that we can't cheaply reason about here.
-    // Note this includes the pending-wrap state: print() may attach
-    // to the pending cell *instead of wrapping*. We only take the
-    // first codepoint if the cursor is at column zero with no pending
-    // wrap, where print() skips clustering entirely.
-    if (grapheme_cluster) {
-        if (screen.cursor.pending_wrap or screen.cursor.x != 0) return 0;
+    // enabled: print() may attach it to the previous *cell* instead
+    // of writing a new one. Take the first codepoint only when we can
+    // determine — computing exactly what print() would — that it
+    // starts a new cluster. At column zero with no pending wrap,
+    // print() skips clustering entirely. Otherwise resolve the
+    // previous cell the way print() does and check for a break.
+    //
+    // Note the pending-wrap rejection: print() may attach to the
+    // pending cell *instead of wrapping*, which we can't model here.
+    if (grapheme_cluster and screen.cursor.x != 0) gate: {
+        if (screen.cursor.pending_wrap) return 0;
+
+        // Resolve the content cell to our left exactly like print():
+        // if the immediate left cell is a wide spacer tail, the
+        // content lives one further left. (A spacer tail can never
+        // be at column zero — its wide half would have to be in the
+        // previous row — so the second cursorCellLeft is in bounds.)
+        const immediate = screen.cursorCellLeft(1);
+        const prev: *Cell = switch (immediate.wide) {
+            .spacer_tail => screen.cursorCellLeft(2),
+            else => immediate,
+        };
+
+        // An empty previous cell is necessarily a grapheme break.
+        if (prev.codepoint() == 0) break :gate;
+
+        // Grapheme data on the previous cell requires the full
+        // cluster state machine replay; only print() can do that.
+        if (prev.hasGrapheme()) return 0;
+
+        // A simple single-codepoint previous cell: print() would run
+        // exactly this break check from the default state.
+        var state: uucode.grapheme.BreakState = .default;
+        if (!unicode.graphemeBreak(
+            prev.content.codepoint.data,
+            @intCast(cp0),
+            &state,
+        )) return 0;
+    } else if (grapheme_cluster) {
+        if (screen.cursor.pending_wrap) return 0;
     }
 
     // The width lookup is a runtime value while printSliceFill is
@@ -624,6 +741,85 @@ inline fn printSliceEligible(cp: u32, comptime width: PrintSliceWidth) bool {
     });
 }
 
+/// Store a run of narrow codepoint cells built from a bit template:
+/// for each `idx` in `[from, to)`, `cells[idx]` is assigned the bits
+/// `template_bits | (cps[idx] << cp_shift)`.
+///
+/// The template is a complete Cell (content tag, style, wide state,
+/// etc. already baked in by the caller) whose codepoint content bits
+/// are zero. Since Cell is a packed struct(u64), OR-ing a codepoint
+/// into the content field's bit position yields a finished cell as a
+/// single integer, keeping the loop pure data movement: no per-cell
+/// field assignments and no branches.
+///
+/// This loop is manually vectorized: Zig 0.16 (LLVM 21) no longer
+/// auto-vectorizes the scalar form the way Zig 0.15 (LLVM 20) did.
+inline fn printSliceStoreRun(
+    cells: [*]Cell,
+    cps: [*]const u32,
+    from: usize,
+    to: usize,
+    template_bits: u64,
+) void {
+    // The bit position of the `content` field within the packed
+    // Cell. A codepoint occupies the low bits of `content`, so
+    // shifting a codepoint left by this amount places it exactly
+    // where `.content = .{ .codepoint = .{ .data = cp } }` would.
+    const cp_shift = @bitOffsetOf(Cell, "content");
+
+    // Since codepoints are OR'd into the content field rather than
+    // assigned, any nonzero content bits in the template would
+    // corrupt the stored codepoints.
+    const content_mask: u64 = comptime mask: {
+        const bits = @bitSizeOf(@FieldType(Cell, "content"));
+        break :mask ((1 << bits) - 1) << cp_shift;
+    };
+    assert(template_bits & content_mask == 0);
+
+    var idx = from;
+
+    // Vectorized bulk of the run.
+    if (simd.lanes(u64)) |lanes| {
+        // u64 due to backing integer of Cell
+        const V = @Vector(lanes, u64);
+
+        // The template and shift amount are loop-invariant, so
+        // broadcast them to every lane once up front.
+        const template: V = @splat(template_bits);
+        const shift: @Vector(
+            lanes,
+            std.math.Log2Int(u64),
+        ) = @splat(cp_shift);
+
+        while (idx + lanes <= to) : (idx += lanes) {
+            // Load `lanes` decoded codepoints...
+            const narrow: @Vector(lanes, u32) = cps[idx..][0..lanes].*;
+
+            // ...widen each u32 lane to the u64 cell size...
+            const wide: V = @intCast(narrow);
+
+            // ...shift each codepoint into the content field's bit
+            // position and merge with the template, producing
+            // `lanes` finished cells (coerced from vector to array
+            // so they can be bitcast for the store below)...
+            const bits: [lanes]u64 = template | (wide << shift);
+
+            // ...and store them contiguously. Cell is a packed
+            // struct(u64) so an array of u64 bit patterns has
+            // identical layout to an array of cells.
+            cells[idx..][0..lanes].* = @bitCast(bits);
+        }
+    }
+
+    // Scalar tail: the final `< lanes` cells of the run, or the
+    // entire run on targets without SIMD. Note `idx` carries over
+    // from the vector loop above. This is the same computation as
+    // the vector body, one cell at a time.
+    while (idx < to) : (idx += 1) {
+        cells[idx] = @bitCast(template_bits | (@as(u64, cps[idx]) << cp_shift));
+    }
+}
+
 /// The row-filling portion of the printSlice fast path, specialized by
 /// width class. The first codepoint must already be validated by the
 /// caller (printSliceFast).
@@ -665,19 +861,20 @@ fn printSliceFill(
         // Anything else (including eligible unicode) proceeds via
         // the scalar loop below.
         if (comptime width == .narrow) {
-            const lanes = 8;
-            const V = @Vector(lanes, u32);
-            const lo: V = @splat(0x10);
-            const hi: V = @splat(0xFF);
-            while (idx + lanes <= cps.len) {
-                const v: V = cps[idx..][0..lanes].*;
-                const in_range = (v >= lo) & (v <= hi);
-                if (!@reduce(.And, in_range)) {
-                    const bits: std.meta.Int(.unsigned, lanes) = @bitCast(in_range);
-                    idx += @ctz(~bits);
-                    break;
+            if (simd.lanes(u32)) |lanes| {
+                const V = @Vector(lanes, u32);
+                const lo: V = @splat(0x10);
+                const hi: V = @splat(0xFF);
+                while (idx + lanes <= cps.len) {
+                    const v: V = cps[idx..][0..lanes].*;
+                    const in_range = (v >= lo) & (v <= hi);
+                    if (!@reduce(.And, in_range)) {
+                        const bits: std.meta.Int(.unsigned, lanes) = @bitCast(in_range);
+                        idx += @ctz(~bits);
+                        break;
+                    }
+                    idx += lanes;
                 }
-                idx += lanes;
             }
         }
 
@@ -734,7 +931,7 @@ fn printSliceFill(
         const style_id = cursor.style_id;
         const template: Cell = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = 0 },
+            .content = .{ .codepoint = .{ .data = 0 } },
             .style_id = style_id,
             .wide = .narrow,
             .protected = cursor.protected,
@@ -811,12 +1008,38 @@ fn printSliceFill(
                 // We can only write whole (wide, spacer) pairs.
                 const pair_end = k + (simple - k) / 2 * 2;
                 var idx = k;
+
+                // Manually vectorized for the same reason as
+                // printSliceStoreRun: build a vector of wide cells,
+                // interleave with spacer tails, and store (wide,
+                // spacer) pairs several at a time.
+                if (simd.lanes(u64)) |lanes| {
+                    const pair_lanes = lanes / 2;
+                    const Vp = @Vector(pair_lanes, u64);
+                    const wide_v: Vp = @splat(wide_bits);
+                    const spacer_v: Vp = @splat(spacer_bits);
+                    const shift_v: @Vector(
+                        pair_lanes,
+                        std.math.Log2Int(u64),
+                    ) = @splat(cp_shift);
+                    while (idx + 2 * pair_lanes <= pair_end) : (idx += 2 * pair_lanes) {
+                        const narrow: @Vector(pair_lanes, u32) =
+                            cps[printed + idx / 2 ..][0..pair_lanes].*;
+                        const wides: Vp = wide_v | (@as(Vp, @intCast(narrow)) << shift_v);
+                        const inter: [2 * pair_lanes]u64 = std.simd.interlace(.{
+                            wides,
+                            spacer_v,
+                        });
+                        cells[idx..][0 .. 2 * pair_lanes].* = @bitCast(inter);
+                    }
+                }
                 while (idx < pair_end) : (idx += 2) {
                     cells[idx] = @bitCast(
                         wide_bits | (@as(u64, cps[printed + idx / 2]) << cp_shift),
                     );
                     cells[idx + 1] = @bitCast(spacer_bits);
                 }
+
                 // If the simple run ended mid-pair we stop at the pair
                 // boundary and handle the offending cell below.
                 k = pair_end;
@@ -826,11 +1049,13 @@ fn printSliceFill(
                     simple = pair_end;
                 }
             } else {
-                for (k..simple) |idx| {
-                    cells[idx] = @bitCast(
-                        template_bits | (@as(u64, cps[printed + idx]) << cp_shift),
-                    );
-                }
+                printSliceStoreRun(
+                    cells,
+                    cps.ptr + printed,
+                    k,
+                    simple,
+                    template_bits,
+                );
                 k = simple;
             }
             if (k >= cell_count) break;
@@ -882,11 +1107,13 @@ fn printSliceFill(
                     page.styles.useMultiple(page.memory, style_id, @intCast(n));
                 }
 
-                for (k..m) |idx| {
-                    cells[idx] = @bitCast(
-                        template_bits | (@as(u64, cps[printed + idx]) << cp_shift),
-                    );
-                }
+                printSliceStoreRun(
+                    cells,
+                    cps.ptr + printed,
+                    k,
+                    m,
+                    template_bits,
+                );
                 k = m;
                 continue :fill;
             }
@@ -1029,7 +1256,7 @@ pub fn print(self: *Terminal, c: u21) !void {
         // necessarily a grapheme break.
         if (prev.cell.codepoint() == 0) break :grapheme;
 
-        var previous_codepoint: u21 = prev.cell.content.codepoint;
+        var previous_codepoint: u21 = prev.cell.content.codepoint.data;
         const grapheme_break = brk: {
             var state: uucode.grapheme.BreakState = .default;
             if (prev.cell.hasGrapheme()) {
@@ -1076,13 +1303,13 @@ pub fn print(self: *Terminal, c: u21) !void {
                         const row_wrap = right_limit == self.cols;
                         if (row_wrap) self.screens.active.cursor.page_row.wrap = true;
 
-                        const prev_cp = prev.cell.content.codepoint;
+                        const prev_cp = prev.cell.content.codepoint.data;
                         if (prev.cell.hasGrapheme()) {
                             // This is like printCell but without clearing the
                             // grapheme data from the cell, so we can move it
                             // later.
                             prev.cell.wide = if (row_wrap) .spacer_head else .narrow;
-                            prev.cell.content.codepoint = 0;
+                            prev.cell.content.codepoint.data = 0;
 
                             try self.printWrap();
                             self.printCell(prev_cp, .wide);
@@ -1147,27 +1374,23 @@ pub fn print(self: *Terminal, c: u21) !void {
                     if (prev.cell.wide != .wide) break :narrow;
                     prev.cell.wide = .narrow;
 
-                    // Remove the wide spacer tail
-                    const cell = self.screens.active.cursorCellLeft(prev.left - 1);
-                    cell.wide = .narrow;
-
-                    // Back track the cursor so that we don't end up with
-                    // an extra space after the character. Since xterm is
-                    // not VS aware, it cannot be used as a reference for
-                    // this behavior; but it does follow the principle of
-                    // least surprise, and also matches the behavior that
-                    // can be observed in Kitty, which is one of the only
-                    // other VS aware terminals.
-                    if (self.screens.active.cursor.x == right_limit - 1) {
-                        // If we're already at the right edge, we stay
-                        // here and set the pending wrap to false since
-                        // when we pend a wrap, we only move our cursor once
-                        // even for wide chars (tests verify).
-                        self.screens.active.cursor.pending_wrap = false;
-                    } else {
-                        // Otherwise, move back.
-                        self.screens.active.cursorLeft(1);
+                    // Remove the wide spacer tail. The previous cell may be
+                    // under the cursor, so locate the tail from the wide base
+                    // rather than by subtracting from the cursor distance.
+                    const prev_x = self.screens.active.cursor.x - prev.left;
+                    if (prev_x < self.cols - 1) {
+                        const cells: [*]Cell = @ptrCast(prev.cell);
+                        cells[1].wide = .narrow;
                     }
+
+                    // Place the cursor one cell after the now-narrow base,
+                    // clamped to the right edge. Usually this moves the cursor
+                    // back from after the old tail, but saved cursor state or
+                    // changed margins can leave it directly on the base.
+                    self.screens.active.cursor.pending_wrap = false;
+                    self.screens.active.cursorHorizontalAbsolute(
+                        @min(prev_x + 1, right_limit - 1),
+                    );
 
                     break :narrow;
                 },
@@ -1235,7 +1458,7 @@ pub fn print(self: *Terminal, c: u21) !void {
 
         // If this is a emoji variation selector, prev must be an emoji
         if (c == 0xFE0F or c == 0xFE0E) {
-            const prev_props = unicode.table.get(prev.content.codepoint);
+            const prev_props = unicode.table.get(prev.content.codepoint.data);
             const emoji = prev_props.grapheme_break == .extended_pictographic;
             if (!emoji) return;
         }
@@ -1395,7 +1618,7 @@ fn printCell(
 
                 // So integrity checks pass. We fix this up later so we don't
                 // need to do this without safety checks.
-                if (comptime std.debug.runtime_safety) {
+                if (comptime build_options.slow_runtime_safety) {
                     cell.wide = .narrow;
                 }
 
@@ -1448,7 +1671,7 @@ fn printCell(
     // Write
     cell.* = .{
         .content_tag = .codepoint,
-        .content = .{ .codepoint = c },
+        .content = .{ .codepoint = .{ .data = c } },
         .style_id = self.screens.active.cursor.style_id,
         .wide = wide,
         .protected = self.screens.active.cursor.protected,
@@ -2124,16 +2347,40 @@ pub fn index(self: *Terminal) !void {
             (!screen.no_scrollback or
                 self.scrolling_region.bottom == 0))
         {
+            // If a bottom margin is set, kitty image placements may
+            // need adjusting around the scroll. The rare placements-
+            // present case is handled out of line so this hot path
+            // only pays a count check (a load from a cache line we
+            // already write, above).
+            if (comptime build_options.kitty_graphics) {
+                if (screen.kitty_images.placements.count() != 0) {
+                    @branchHint(.unlikely);
+                    try self.indexScrollWithImages(.window_shift);
+                    return;
+                }
+            }
+
             try screen.cursorScrollAbove();
             return;
         }
 
         // Slow path for left and right scrolling region margins.
+        // scrollUp handles the kitty image adjustment itself.
         if (self.scrolling_region.left != 0 or
             self.scrolling_region.right != self.cols - 1)
         {
             try self.scrollUp(1);
             return;
+        }
+
+        // Kitty image placements may need adjusting around the scroll;
+        // handled out of line like the scrollback path above.
+        if (comptime build_options.kitty_graphics) {
+            if (screen.kitty_images.placements.count() != 0) {
+                @branchHint(.unlikely);
+                try self.indexScrollWithImages(.in_place);
+                return;
+            }
         }
 
         // Otherwise use a fast path function to efficiently scroll
@@ -2149,6 +2396,69 @@ pub fn index(self: *Terminal) !void {
     if (screen.cursor.y < self.scrolling_region.bottom) {
         screen.cursorDown(1);
     }
+}
+
+/// The operation when we have Kitty image placements during index.
+/// Split out of index() so its hot paths don't carry the adjustment
+/// state in their stack frame, which measurably slows the scroll
+/// hot path.
+fn indexScrollWithImages(
+    self: *Terminal,
+    comptime op: kitty.graphics.ImageStorage.ScrollOp,
+) !void {
+    var kitty_scroll = self.kittyScrollMarginsBegin(-1, op);
+    defer if (kitty_scroll) |*state| state.end();
+    switch (op) {
+        .window_shift => try self.screens.active.cursorScrollAbove(),
+        .in_place => try self.screens.active.cursorScrollRegionUp(
+            self.scrolling_region.bottom - self.scrolling_region.top,
+        ),
+    }
+}
+
+// Handle when Kitty graphics is disabled.
+const KittyScrollMargins = if (build_options.kitty_graphics)
+    kitty.graphics.ImageStorage.ScrollMargins
+else
+    struct {
+        pub inline fn end(self: *@This()) void {
+            _ = self;
+        }
+    };
+
+/// Begin adjusting kitty image placements for a scroll of the
+/// scrolling region by delta rows (negative moves content up). If
+/// adjustment is needed this returns state whose end() must be called
+/// after the scroll's row operations complete (see
+/// ImageStorage.scrollMarginsBegin for why this is two phases). This
+/// returns null when the scrolling region is the full screen, because
+/// placements then follow their anchored rows via pin tracking which
+/// matches kitty's marginless behavior.
+///
+/// Callers must comptime-gate on build_options.kitty_graphics and
+/// check that placements exist before calling, which keeps the cost
+/// on the hot scroll paths cheap.
+fn kittyScrollMarginsBegin(
+    self: *Terminal,
+    delta: isize,
+    op: kitty.graphics.ImageStorage.ScrollOp,
+) ?kitty.graphics.ImageStorage.ScrollMargins {
+    @branchHint(.cold);
+
+    // Full-screen scrolls need no adjustment: placements follow their
+    // anchored rows (possibly into the scrollback) via pin tracking.
+    if (self.scrolling_region.top == 0 and
+        self.scrolling_region.bottom == self.rows - 1 and
+        self.scrolling_region.left == 0 and
+        self.scrolling_region.right == self.cols - 1) return null;
+
+    const screen: *Screen = self.screens.active;
+    return screen.kitty_images.scrollMarginsBegin(
+        self.io(),
+        self,
+        delta,
+        op,
+    );
 }
 
 /// Move the cursor to the previous line in the scrolling region, possibly
@@ -2276,6 +2586,24 @@ pub fn scrollDown(self: *Terminal, count: usize) void {
         self.screens.active.cursor.pending_wrap = old_wrap;
     }
 
+    // If margins are set and kitty image placements exist, they need
+    // adjusting around the scroll. Note this wraps scrollDown and NOT
+    // insertLines: kitty scrolls images for SD/RI but leaves them
+    // alone for IL/DL.
+    var kitty_scroll: ?KittyScrollMargins = null;
+    defer if (kitty_scroll) |*state| state.end();
+    if (comptime build_options.kitty_graphics) {
+        if (self.screens.active.kitty_images.placements.count() != 0) {
+            @branchHint(.unlikely);
+            const region_height: usize =
+                @as(usize, self.scrolling_region.bottom - self.scrolling_region.top) + 1;
+            kitty_scroll = self.kittyScrollMarginsBegin(
+                @intCast(@min(count, region_height)),
+                .in_place,
+            );
+        }
+    }
+
     // Move to the top of the scroll region
     self.screens.active.cursorAbsolute(self.scrolling_region.left, self.scrolling_region.top);
     self.insertLines(count);
@@ -2296,6 +2624,35 @@ pub fn scrollUp(self: *Terminal, count: usize) !void {
     defer {
         self.screens.active.cursorAbsolute(old_x, old_y);
         self.screens.active.cursor.pending_wrap = old_wrap;
+    }
+
+    // If margins are set and kitty image placements exist, they need
+    // adjusting around the scroll. Note this wraps scrollUp and NOT
+    // deleteLines: kitty scrolls images for SU/IND but leaves them
+    // alone for IL/DL.
+    var kitty_scroll: ?KittyScrollMargins = null;
+    defer if (kitty_scroll) |*state| state.end();
+    if (comptime build_options.kitty_graphics) {
+        if (self.screens.active.kitty_images.placements.count() != 0) {
+            @branchHint(.unlikely);
+
+            // The op must mirror the branch below: the scrollback path
+            // shifts the active window while the deleteLines path
+            // moves rows in place.
+            const region_height: usize =
+                @as(usize, self.scrolling_region.bottom - self.scrolling_region.top) + 1;
+            kitty_scroll = self.kittyScrollMarginsBegin(
+                -@as(isize, @intCast(@min(count, region_height))),
+                if (self.scrolling_region.top == 0 and
+                    self.scrolling_region.left == 0 and
+                    self.scrolling_region.right == self.cols - 1 and
+                    (!self.screens.active.no_scrollback or
+                        self.scrolling_region.bottom == self.rows - 1))
+                    .window_shift
+                else
+                    .in_place,
+            );
+        }
     }
 
     // If our scroll region is at the top and we have no left/right
@@ -2367,7 +2724,7 @@ pub const ScrollViewport = union(Tag) {
         @This(),
         // Padding: largest variant is isize (8 bytes on 64-bit).
         // Use [2]u64 (16 bytes) for future expansion.
-        [2]u64,
+        .{ .padding = [2]u64 },
     );
     pub const C = c_union.C;
     pub const CValue = c_union.CValue;
@@ -2496,7 +2853,7 @@ fn rowWillBeShifted(
             page.clearGrapheme(wide_cell);
             page.updateRowGraphemeFlag(row);
         }
-        wide_cell.content.codepoint = 0;
+        wide_cell.content.codepoint = .{ .data = 0 };
         wide_cell.wide = .narrow;
         left_cell.wide = .narrow;
     }
@@ -2507,7 +2864,7 @@ fn rowWillBeShifted(
             page.clearGrapheme(right_cell);
             page.updateRowGraphemeFlag(row);
         }
-        right_cell.content.codepoint = 0;
+        right_cell.content.codepoint.data = 0;
         right_cell.wide = .narrow;
         tail_cell.wide = .narrow;
     }
@@ -3104,9 +3461,14 @@ pub fn eraseLine(
             break :left .{ 0, x + 1 };
         },
 
-        // Note that it seems like complete should reset the soft-wrap
-        // state of the line but in xterm it does not.
-        .complete => .{ 0, self.cols },
+        .complete => complete: {
+            // Xterm preserves this flag for EL2, but it also doesn't reflow
+            // rows when resizing. Since we do, the erased row must no longer
+            // continue onto the next row.
+            self.screens.active.cursorResetWrap();
+
+            break :complete .{ 0, self.cols };
+        },
 
         else => {
             log.err("unimplemented erase line mode: {}", .{mode});
@@ -3173,11 +3535,12 @@ pub fn eraseDisplay(
             self.screens.active.cursor.pending_wrap = false;
 
             if (comptime build_options.kitty_graphics) {
-                // Clear all Kitty graphics state for this screen
-                self.screens.active.kitty_images.delete(
+                // Clear only placements still visible after moving the active
+                // area into scrollback.
+                self.screens.active.kitty_images.clearScreen(
+                    self.io(),
                     self.screens.active.alloc,
                     self,
-                    .{ .all = true },
                 );
             }
         },
@@ -3230,11 +3593,12 @@ pub fn eraseDisplay(
             self.screens.active.cursor.pending_wrap = false;
 
             if (comptime build_options.kitty_graphics) {
-                // Clear all Kitty graphics state for this screen
-                self.screens.active.kitty_images.delete(
+                // ED2 clears visible placements but preserves graphics that
+                // are wholly in scrollback.
+                self.screens.active.kitty_images.clearScreen(
+                    self.io(),
                     self.screens.active.alloc,
                     self,
-                    .{ .all = true },
                 );
             }
 
@@ -3324,7 +3688,7 @@ pub fn decaln(self: *Terminal) !void {
         const cells = cells_multi[0..page.size.cols];
         @memset(cells, .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = 'E' },
+            .content = .{ .codepoint = .{ .data = 'E' } },
             .style_id = self.screens.active.cursor.style_id,
 
             // DECALN does not respect protected state. Verified with xterm.
@@ -3362,10 +3726,11 @@ pub fn decaln(self: *Terminal) !void {
 /// undefined.
 pub fn kittyGraphics(
     self: *Terminal,
+    io_impl: std.Io,
     alloc: Allocator,
     cmd: *kitty.graphics.Command,
 ) ?kitty.graphics.Response {
-    return kitty.graphics.execute(alloc, self, cmd);
+    return kitty.graphics.execute(io_impl, alloc, self, cmd);
 }
 
 /// Execute a Glyph Protocol APC command against this terminal's per-session
@@ -3389,12 +3754,12 @@ pub fn setKittyGraphicsSizeLimit(
     self: *Terminal,
     alloc: Allocator,
     limit: usize,
-) !void {
+) void {
     if (comptime !build_options.kitty_graphics) return;
     var it = self.screens.all.iterator();
     while (it.next()) |entry| {
         const screen: *Screen = entry.value.*;
-        try screen.kitty_images.setLimit(alloc, screen, limit);
+        screen.kitty_images.setLimit(self.io(), alloc, screen, limit);
     }
 }
 
@@ -3423,58 +3788,69 @@ pub fn setAttribute(self: *Terminal, attr: sgr.Attribute) !void {
 /// Boolean attributes are printed first, followed by foreground color, then
 /// background color. Each attribute is separated by a semicolon.
 pub fn printAttributes(self: *Terminal, buf: []u8) ![]const u8 {
-    var stream = std.io.fixedBufferStream(buf);
-    const writer = stream.writer();
+    var writer: std.Io.Writer = .fixed(buf);
 
     // The SGR response always starts with a 0. See https://vt100.net/docs/vt510-rm/DECRPSS
     try writer.writeByte('0');
 
     const pen = self.screens.active.cursor.style;
-    var attrs: [8]u8 = @splat(0);
+    var attrs: [9]u8 = @splat(0);
     var i: usize = 0;
 
     if (pen.flags.bold) {
-        attrs[i] = '1';
+        attrs[i] = 1;
         i += 1;
     }
 
     if (pen.flags.faint) {
-        attrs[i] = '2';
+        attrs[i] = 2;
         i += 1;
     }
 
     if (pen.flags.italic) {
-        attrs[i] = '3';
+        attrs[i] = 3;
         i += 1;
     }
 
     if (pen.flags.underline != .none) {
-        attrs[i] = '4';
+        attrs[i] = 4;
+        i += 1;
+    }
+
+    if (pen.flags.overline) {
+        attrs[i] = 53;
         i += 1;
     }
 
     if (pen.flags.blink) {
-        attrs[i] = '5';
+        attrs[i] = 5;
         i += 1;
     }
 
     if (pen.flags.inverse) {
-        attrs[i] = '7';
+        attrs[i] = 7;
         i += 1;
     }
 
     if (pen.flags.invisible) {
-        attrs[i] = '8';
+        attrs[i] = 8;
         i += 1;
     }
 
     if (pen.flags.strikethrough) {
-        attrs[i] = '9';
+        attrs[i] = 9;
         i += 1;
     }
 
-    for (attrs[0..i]) |c| {
-        try writer.print(";{c}", .{c});
+    for (attrs[0..i]) |attr| {
+        // Preserve underline styles. Kind of a hack to special case 4
+        // here but its easier than changing how we do all attributes.
+        if (attr == 4 and pen.flags.underline != .single) {
+            try writer.print(";4:{}", .{@intFromEnum(pen.flags.underline)});
+            continue;
+        }
+
+        try writer.print(";{}", .{attr});
     }
 
     switch (pen.fg_color) {
@@ -3499,7 +3875,7 @@ pub fn printAttributes(self: *Terminal, buf: []u8) ![]const u8 {
         .rgb => |rgb| try writer.print(";48:2::{[r]}:{[g]}:{[b]}", rgb),
     }
 
-    return stream.getWritten();
+    return writer.buffered();
 }
 
 /// The modes for DECCOLM.
@@ -3697,18 +4073,23 @@ pub fn resize(
         // we just go back to the primary screen. Not great, but best
         // we can do.
         tw.check(.alternate_screen_init) catch break :alt;
-        const replacement = self.screens.getInit(alloc, .alternate, .{
-            .cols = opts.cols,
-            .rows = opts.rows,
-            .max_scrollback = 0,
-            .kitty_image_storage_limit = if (comptime build_options.kitty_graphics)
-                primary.kitty_images.total_limit
-            else
-                0,
-            .kitty_image_loading_limits = if (comptime build_options.kitty_graphics)
-                primary.kitty_images.image_limits
-            else {},
-        }) catch |init_err| {
+        const replacement = self.screens.getInit(
+            self.io(),
+            alloc,
+            .alternate,
+            .{
+                .cols = opts.cols,
+                .rows = opts.rows,
+                .max_scrollback_bytes = 0,
+                .kitty_image_storage_limit = if (comptime build_options.kitty_graphics)
+                    primary.kitty_images.total_limit
+                else
+                    0,
+                .kitty_image_loading_limits = if (comptime build_options.kitty_graphics)
+                    primary.kitty_images.image_limits
+                else {},
+            },
+        ) catch |init_err| {
             log.warn(
                 "alternate screen replacement failed, falling back to primary err={}",
                 .{init_err},
@@ -3747,9 +4128,154 @@ pub fn resize(
     };
 }
 
+test "Terminal forwards optional scrollback limits" {
+    const max_lines: usize = 123;
+    var t = try init(testing.io, testing.allocator, .{
+        .cols = 80,
+        .rows = 24,
+        .max_scrollback_bytes = null,
+        .max_scrollback_lines = max_lines,
+    });
+    defer t.deinit(testing.allocator);
+
+    try testing.expectEqual(
+        std.math.maxInt(usize),
+        t.screens.active.pages.limits.bytes.explicit,
+    );
+    try testing.expectEqual(
+        max_lines,
+        t.screens.active.pages.limits.lines.explicit,
+    );
+}
+
+test "Terminal setScrollbackMaxBytes" {
+    var t = try init(testing.io, testing.allocator, .{
+        .cols = 80,
+        .rows = 3,
+        .max_scrollback_bytes = null,
+    });
+    defer t.deinit(testing.allocator);
+
+    const primary = t.screens.get(.primary).?;
+    const page_rows: usize = primary.pages.pages.first.?.capacity().rows;
+
+    // Build several complete pages of history so lowering the byte limit has
+    // existing allocations to prune immediately.
+    for (0..4 * page_rows) |_| try t.linefeed();
+    const old_page_size = primary.pages.page_size;
+    t.setScrollbackMaxBytes(1);
+    try testing.expectEqual(@as(usize, 1), primary.pages.limits.bytes.explicit);
+    try testing.expect(primary.pages.page_size < old_page_size);
+    try testing.expect(
+        primary.pages.page_size <= primary.pages.limits.max(.bytes),
+    );
+    try testing.expect(!primary.no_scrollback);
+
+    // Zero switches Screen behavior as well as PageList accounting, discards
+    // all retained history, and prevents future linefeeds from recreating it.
+    t.setScrollbackMaxBytes(0);
+    try testing.expectEqual(@as(usize, 0), primary.pages.limits.bytes.explicit);
+    try testing.expect(primary.no_scrollback);
+    try testing.expectEqual(
+        @as(usize, primary.pages.rows),
+        primary.pages.total_rows,
+    );
+    try testing.expect(primary.pages.viewport == .active);
+
+    for (0..page_rows) |_| try t.linefeed();
+    try testing.expectEqual(
+        @as(usize, primary.pages.rows),
+        primary.pages.total_rows,
+    );
+
+    // Re-enabling unlimited scrollback affects subsequent output.
+    t.setScrollbackMaxBytes(null);
+    try testing.expectEqual(
+        std.math.maxInt(usize),
+        primary.pages.limits.bytes.explicit,
+    );
+    try testing.expect(!primary.no_scrollback);
+    for (0..page_rows) |_| try t.linefeed();
+    try testing.expect(primary.pages.total_rows > primary.pages.rows);
+}
+
+test "Terminal setScrollbackMaxLines" {
+    var t = try init(testing.io, testing.allocator, .{
+        .cols = 80,
+        .rows = 3,
+        .max_scrollback_bytes = null,
+        .max_scrollback_lines = null,
+    });
+    defer t.deinit(testing.allocator);
+
+    const primary = t.screens.get(.primary).?;
+    const page_rows: usize = primary.pages.pages.first.?.capacity().rows;
+
+    for (0..4 * page_rows) |_| try t.linefeed();
+    const old_total_rows = primary.pages.total_rows;
+    t.setScrollbackMaxLines(page_rows);
+    try testing.expectEqual(
+        page_rows,
+        primary.pages.limits.lines.explicit,
+    );
+    try testing.expect(primary.pages.total_rows < old_total_rows);
+    try testing.expect(
+        !primary.pages.limits.exceeded(&primary.pages, .lines),
+    );
+
+    const limited_total_rows = primary.pages.total_rows;
+    t.setScrollbackMaxLines(null);
+    try testing.expectEqual(
+        std.math.maxInt(usize),
+        primary.pages.limits.lines.explicit,
+    );
+    try testing.expectEqual(limited_total_rows, primary.pages.total_rows);
+    for (0..3 * page_rows) |_| try t.linefeed();
+    try testing.expect(
+        primary.pages.total_rows - primary.pages.rows > page_rows,
+    );
+}
+
+test "Terminal setScrollback only affects primary screen" {
+    var t = try init(testing.io, testing.allocator, .{
+        .cols = 80,
+        .rows = 3,
+    });
+    defer t.deinit(testing.allocator);
+
+    _ = try t.switchScreen(.alternate);
+    const primary = t.screens.get(.primary).?;
+    const alternate = t.screens.get(.alternate).?;
+
+    t.setScrollbackMaxBytes(123);
+    t.setScrollbackMaxLines(456);
+
+    try testing.expectEqual(
+        @as(usize, 123),
+        primary.pages.limits.bytes.explicit,
+    );
+    try testing.expectEqual(
+        @as(usize, 456),
+        primary.pages.limits.lines.explicit,
+    );
+    try testing.expect(!primary.no_scrollback);
+
+    try testing.expectEqual(
+        @as(usize, 0),
+        alternate.pages.limits.bytes.explicit,
+    );
+    try testing.expectEqual(
+        std.math.maxInt(usize),
+        alternate.pages.limits.lines.explicit,
+    );
+    try testing.expect(alternate.no_scrollback);
+    try testing.expectEqual(alternate, t.screens.active);
+}
+
 test "Terminal: resize resets synchronized output" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.synchronized_output, true);
@@ -3759,7 +4285,8 @@ test "Terminal: resize resets synchronized output" {
 
 test "Terminal: resize rejects zero dimensions before mutation" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     t.width_px = 100;
@@ -3786,7 +4313,8 @@ test "Terminal: resize rejects zero dimensions before mutation" {
 
 test "Terminal: resize preserves pixel dimensions when omitted" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     t.width_px = 90;
@@ -3799,7 +4327,8 @@ test "Terminal: resize preserves pixel dimensions when omitted" {
 
 test "Terminal: resize updates pixels without changing cell dimensions" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     try t.resize(alloc, .{
@@ -3814,7 +4343,8 @@ test "Terminal: resize updates pixels without changing cell dimensions" {
 
 test "Terminal: resize pixel dimensions saturate" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 3 });
     defer t.deinit(alloc);
 
     try t.resize(alloc, .{
@@ -3833,7 +4363,8 @@ test "Terminal: resize pixel dimensions saturate" {
 test "Terminal: resize preserves tabstops on allocation failure" {
     var failing = testing.FailingAllocator.init(testing.allocator, .{});
     const alloc = failing.allocator();
-    var t = try init(alloc, .{ .cols = 10, .rows = 1 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 1 });
     defer t.deinit(alloc);
 
     failing.fail_index = failing.alloc_index;
@@ -3848,6 +4379,7 @@ test "Terminal: resize preserves tabstops on allocation failure" {
 
 test "Terminal: resize failure paths preserve consistent state" {
     const alloc = testing.allocator;
+    const io_impl = testing.io;
 
     for ([_]resize_tw.FailPoint{
         .tabstops,
@@ -3857,7 +4389,7 @@ test "Terminal: resize failure paths preserve consistent state" {
         const tw = resize_tw;
         defer tw.end(.reset) catch unreachable;
 
-        var t = try init(alloc, .{ .cols = 10, .rows = 3 });
+        var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 3 });
         defer t.deinit(alloc);
 
         try t.printString("primary");
@@ -3984,10 +4516,11 @@ test "Terminal: resize failure paths preserve consistent state" {
 
 test "Terminal: alternate resize failure replaces active alternate screen" {
     const alloc = testing.allocator;
+    const io_impl = testing.io;
     const tw = resize_tw;
     defer tw.end(.reset) catch unreachable;
 
-    var t = try init(alloc, .{ .cols = 10, .rows = 3 });
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 3 });
     defer t.deinit(alloc);
 
     _ = try t.switchScreen(.alternate);
@@ -4011,10 +4544,11 @@ test "Terminal: alternate resize failure replaces active alternate screen" {
 
 test "Terminal: alternate resize replacement failure falls back to primary" {
     const alloc = testing.allocator;
+    const io_impl = testing.io;
     const tw = resize_tw;
     defer tw.end(.reset) catch unreachable;
 
-    var t = try init(alloc, .{ .cols = 10, .rows = 3 });
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 3 });
     defer t.deinit(alloc);
 
     _ = try t.switchScreen(.alternate);
@@ -4056,7 +4590,8 @@ pub fn getPwd(self: *const Terminal) ?[:0]const u8 {
 test "Terminal: setPwd preserves a sentinel on allocation failure" {
     var failing = testing.FailingAllocator.init(testing.allocator, .{});
     const alloc = failing.allocator();
-    var t = try init(alloc, .{ .cols = 5, .rows = 1 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 1 });
     defer t.deinit(alloc);
 
     try t.pwd.ensureTotalCapacityPrecise(alloc, 3);
@@ -4066,7 +4601,7 @@ test "Terminal: setPwd preserves a sentinel on allocation failure" {
 }
 
 test "Terminal: setPwd accepts its current value" {
-    var t = try init(testing.allocator, .{ .cols = 5, .rows = 1 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 5, .rows = 1 });
     defer t.deinit(testing.allocator);
 
     try t.setPwd("file:///tmp");
@@ -4100,7 +4635,8 @@ pub fn getTitle(self: *const Terminal) ?[:0]const u8 {
 test "Terminal: setTitle preserves a sentinel on allocation failure" {
     var failing = testing.FailingAllocator.init(testing.allocator, .{});
     const alloc = failing.allocator();
-    var t = try init(alloc, .{ .cols = 5, .rows = 1 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 1 });
     defer t.deinit(alloc);
 
     try t.title.ensureTotalCapacityPrecise(alloc, 5);
@@ -4110,7 +4646,7 @@ test "Terminal: setTitle preserves a sentinel on allocation failure" {
 }
 
 test "Terminal: setTitle accepts its current value" {
-    var t = try init(testing.allocator, .{ .cols = 5, .rows = 1 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 5, .rows = 1 });
     defer t.deinit(testing.allocator);
 
     try t.setTitle("Ghostty");
@@ -4146,13 +4682,14 @@ pub fn switchScreen(self: *Terminal, key: ScreenSet.Key) !?*Screen {
     const new = self.screens.get(key) orelse new: {
         const primary = self.screens.get(.primary).?;
         break :new try self.screens.getInit(
+            old.io,
             old.alloc,
             key,
             .{
                 .cols = self.cols,
                 .rows = self.rows,
-                .max_scrollback = switch (key) {
-                    .primary => primary.pages.explicit_max_size,
+                .max_scrollback_bytes = switch (key) {
+                    .primary => primary.pages.limits.bytes.explicit,
                     .alternate => 0,
                 },
 
@@ -4325,8 +4862,13 @@ pub fn fullReset(self: *Terminal) void {
     self.screens.active.reset();
 
     // Rest our basic state
+    const visible = self.flags.visible;
     self.modes.reset();
-    self.flags = .{};
+    self.flags = .{
+        // Visibility belongs to the view rather than terminal state, so a
+        // terminal reset must not make a hidden view potentially visible.
+        .visible = visible,
+    };
     self.tabstops.reset(TABSTOP_INTERVAL);
     self.previous_char = null;
     self.pwd.clearRetainingCapacity();
@@ -4357,7 +4899,8 @@ fn clearDirty(t: *Terminal) void {
 
 test "Terminal: setCursorPos saturates overflowing origin offsets" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     t.scrolling_region = .{
@@ -4375,7 +4918,8 @@ test "Terminal: setCursorPos saturates overflowing origin offsets" {
 
 test "Terminal: input with no control characters" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 40, .rows = 40 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 40, .rows = 40 });
     defer t.deinit(alloc);
 
     // Basic grid writing
@@ -4395,7 +4939,8 @@ test "Terminal: input with no control characters" {
 
 test "Terminal: input with basic wraparound" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 40 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 40 });
     defer t.deinit(alloc);
 
     // Basic grid writing
@@ -4412,7 +4957,8 @@ test "Terminal: input with basic wraparound" {
 
 test "Terminal: input with basic wraparound dirty" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 40 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 40 });
     defer t.deinit(alloc);
 
     for ("hello") |c| try t.print(c);
@@ -4427,7 +4973,8 @@ test "Terminal: input with basic wraparound dirty" {
 
 test "Terminal: input that forces scroll" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 1, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 1, .rows = 5 });
     defer t.deinit(alloc);
 
     // Basic grid writing
@@ -4443,7 +4990,8 @@ test "Terminal: input that forces scroll" {
 
 test "Terminal: input unique style per cell" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 30, .rows = 30 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 30, .rows = 30 });
     defer t.deinit(alloc);
 
     for (0..t.rows) |y| {
@@ -4462,7 +5010,8 @@ test "Terminal: input unique style per cell" {
 test "Terminal: input glitch text" {
     const glitch = @embedFile("res/glitch.txt");
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 30, .rows = 30 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 30, .rows = 30 });
     defer t.deinit(alloc);
 
     // Get our initial grapheme capacity.
@@ -4484,7 +5033,7 @@ test "Terminal: input glitch text" {
 }
 
 test "Terminal: zero-width character at start" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // This used to crash the terminal. This is not allowed so we should
@@ -4500,7 +5049,7 @@ test "Terminal: zero-width character at start" {
 
 // https://github.com/ghostty-org/ghostty/pull/12581
 test "Terminal: zero-width character attaches to pending wrap cell" {
-    var t = try init(testing.allocator, .{ .cols = 2, .rows = 2 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 2, .rows = 2 });
     defer t.deinit(testing.allocator);
 
     // Disable grapheme clustering to exercise the fallback path.
@@ -4515,9 +5064,32 @@ test "Terminal: zero-width character attaches to pending wrap cell" {
     try testing.expectEqualStrings("xå̲", str);
 }
 
+test "Terminal: caps zero-width codepoints attached to one cell" {
+    var t = try init(testing.io, testing.allocator, .{ .cols = 2, .rows = 2 });
+    defer t.deinit(testing.allocator);
+
+    t.modes.set(.grapheme_cluster, false);
+    try t.print('A');
+
+    const initial_capacity = t.screens.active.cursor.page_pin.node.capacity().grapheme_bytes;
+    for (0..pagepkg.grapheme_max_len * 4) |_| try t.print(0x0301);
+
+    const list_cell = t.screens.active.pages.getCell(.{
+        .screen = .{ .x = 0, .y = 0 },
+    }).?;
+    try testing.expectEqual(
+        @as(usize, pagepkg.grapheme_max_len),
+        list_cell.node.page().lookupGrapheme(list_cell.cell).?.len,
+    );
+    try testing.expectEqual(
+        initial_capacity,
+        list_cell.node.capacity().grapheme_bytes,
+    );
+}
+
 // https://github.com/mitchellh/ghostty/issues/1400
 test "Terminal: print single very long line" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // This would crash for issue 1400. So the assertion here is
@@ -4526,7 +5098,7 @@ test "Terminal: print single very long line" {
 }
 
 test "Terminal: print wide char" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     try t.print(0x1F600); // Smiley face
@@ -4536,7 +5108,7 @@ test "Terminal: print wide char" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x1F600), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x1F600), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
     }
     {
@@ -4549,7 +5121,7 @@ test "Terminal: print wide char" {
 }
 
 test "Terminal: print wide char at edge creates spacer head" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
 
     t.setCursorPos(1, 10);
@@ -4565,7 +5137,7 @@ test "Terminal: print wide char at edge creates spacer head" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 1 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x1F600), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x1F600), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
     }
     {
@@ -4584,7 +5156,8 @@ test "Terminal: print wide char at edge creates spacer head" {
 
 test "Terminal: print wide char with 1-column width" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 1, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 1, .rows = 2 });
     defer t.deinit(alloc);
 
     try t.print('😀'); // 0x1F600
@@ -4594,7 +5167,7 @@ test "Terminal: print wide char with 1-column width" {
 }
 
 test "Terminal: print wide char in single-width terminal" {
-    var t = try init(testing.allocator, .{ .cols = 1, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 1, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     try t.print(0x1F600); // Smiley face
@@ -4605,7 +5178,7 @@ test "Terminal: print wide char in single-width terminal" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 
@@ -4613,7 +5186,7 @@ test "Terminal: print wide char in single-width terminal" {
 }
 
 test "Terminal: print over wide char at 0,0" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     try t.print(0x1F600); // Smiley face
@@ -4626,13 +5199,13 @@ test "Terminal: print over wide char at 0,0" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'A'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'A'), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 
@@ -4648,7 +5221,8 @@ test "Terminal: print over wide char at col 0 corrupts previous row" {
     // when that cell is a .spacer_tail rather than a .spacer_head. This
     // orphans the .wide cell at cols-2.
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 3 });
     defer t.deinit(alloc);
 
     // Fill rows 0 and 1 with wide chars (5 per row on a 10-col terminal).
@@ -4679,7 +5253,7 @@ test "Terminal: print over wide char at col 0 corrupts previous row" {
 }
 
 test "Terminal: print over wide spacer tail" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     try t.print('橋');
@@ -4689,13 +5263,13 @@ test "Terminal: print over wide spacer tail" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'X'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'X'), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 
@@ -4709,7 +5283,7 @@ test "Terminal: print over wide spacer tail" {
 }
 
 test "Terminal: print over wide char with bold" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     try t.setAttribute(.{ .bold = {} });
@@ -4735,7 +5309,7 @@ test "Terminal: print over wide char with bold" {
 }
 
 test "Terminal: print over wide char with bg color" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     try t.setAttribute(.{ .direct_color_bg = .{
@@ -4765,7 +5339,7 @@ test "Terminal: print over wide char with bg color" {
 }
 
 test "Terminal: print multicodepoint grapheme, disabled mode 2027" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // https://github.com/mitchellh/ghostty/issues/289
@@ -4785,7 +5359,7 @@ test "Terminal: print multicodepoint grapheme, disabled mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x1F468), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x1F468), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
         const cps = list_cell.node.page().lookupGrapheme(cell).?;
@@ -4794,7 +5368,7 @@ test "Terminal: print multicodepoint grapheme, disabled mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.spacer_tail, cell.wide);
         try testing.expect(list_cell.node.page().lookupGrapheme(cell) == null);
@@ -4802,7 +5376,7 @@ test "Terminal: print multicodepoint grapheme, disabled mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 2, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x1F469), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x1F469), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
         const cps = list_cell.node.page().lookupGrapheme(cell).?;
@@ -4811,7 +5385,7 @@ test "Terminal: print multicodepoint grapheme, disabled mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 3, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.spacer_tail, cell.wide);
         try testing.expect(list_cell.node.page().lookupGrapheme(cell) == null);
@@ -4819,7 +5393,7 @@ test "Terminal: print multicodepoint grapheme, disabled mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 4, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x1F467), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x1F467), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
         try testing.expect(list_cell.node.page().lookupGrapheme(cell) == null);
@@ -4827,7 +5401,7 @@ test "Terminal: print multicodepoint grapheme, disabled mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 5, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.spacer_tail, cell.wide);
         try testing.expect(list_cell.node.page().lookupGrapheme(cell) == null);
@@ -4837,7 +5411,7 @@ test "Terminal: print multicodepoint grapheme, disabled mode 2027" {
 }
 
 test "Terminal: enabling grapheme mode handles stored breaks" {
-    var t = try init(testing.allocator, .{ .cols = 5, .rows = 1 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 5, .rows = 1 });
     defer t.deinit(testing.allocator);
 
     t.modes.set(.grapheme_cluster, false);
@@ -4857,7 +5431,7 @@ test "Terminal: enabling grapheme mode handles stored breaks" {
 // cluster or string end. This keeps the streaming printer's cursor advance
 // in sync with the buffered measurement API for representative clusters.
 fn expectGraphemeWidthParity(cps: []const u21) !void {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 5 });
     defer t.deinit(testing.allocator);
 
     t.modes.set(.grapheme_cluster, true);
@@ -4891,7 +5465,7 @@ test "Terminal: graphemeWidth parity" {
 }
 
 test "Terminal: VS16 doesn't make character with 2027 disabled" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // Disable grapheme clustering
@@ -4909,7 +5483,7 @@ test "Terminal: VS16 doesn't make character with 2027 disabled" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x2764), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x2764), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
         const cps = list_cell.node.page().lookupGrapheme(cell).?;
@@ -4918,7 +5492,7 @@ test "Terminal: VS16 doesn't make character with 2027 disabled" {
 }
 
 test "Terminal: ignored VS16 doesn't mark dirty" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // Disable grapheme clustering
@@ -4933,7 +5507,7 @@ test "Terminal: ignored VS16 doesn't mark dirty" {
 }
 
 test "Terminal: print invalid VS16 non-grapheme" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // https://github.com/mitchellh/ghostty/issues/1482
@@ -4949,19 +5523,19 @@ test "Terminal: print invalid VS16 non-grapheme" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'x'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'x'), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
     }
 }
 
 test "Terminal: invalid VS16 doesn't mark dirty" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // Disable grapheme clustering
@@ -4977,7 +5551,7 @@ test "Terminal: invalid VS16 doesn't mark dirty" {
 
 // https://github.com/ghostty-org/ghostty/pull/12596
 test "Terminal: variation selectors apply to preceding codepoint" {
-    var t = try init(testing.allocator, .{ .cols = 5, .rows = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 5, .rows = 5 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -4991,13 +5565,13 @@ test "Terminal: variation selectors apply to preceding codepoint" {
 
     const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
     const cell = list_cell.cell;
-    try testing.expectEqual(@as(u21, 0x1F3F4), cell.content.codepoint);
+    try testing.expectEqual(@as(u21, 0x1F3F4), cell.content.codepoint.data);
     try testing.expect(cell.hasGrapheme());
     try testing.expectEqualSlices(u21, &.{ 0x200D, 0x2620, 0xFE0F }, list_cell.node.page().lookupGrapheme(cell).?);
 }
 
 test "Terminal: print multicodepoint grapheme, mode 2027" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5023,7 +5597,7 @@ test "Terminal: print multicodepoint grapheme, mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x1F468), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x1F468), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
         const cps = list_cell.node.page().lookupGrapheme(cell).?;
@@ -5032,14 +5606,14 @@ test "Terminal: print multicodepoint grapheme, mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.spacer_tail, cell.wide);
     }
 }
 
 test "Terminal: keypad sequence VS15" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5061,14 +5635,14 @@ test "Terminal: keypad sequence VS15" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x23), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x23), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 }
 
 test "Terminal: keypad sequence VS16" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5090,14 +5664,14 @@ test "Terminal: keypad sequence VS16" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x23), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x23), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
     }
 }
 
 test "Terminal: Fitzpatrick skin tone next valid base" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5119,14 +5693,14 @@ test "Terminal: Fitzpatrick skin tone next valid base" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x1F44B), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x1F44B), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
     }
 }
 
 test "Terminal: Fitzpatrick skin tone next to non-base" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5150,28 +5724,28 @@ test "Terminal: Fitzpatrick skin tone next to non-base" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x22), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x22), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x1F3FF), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x1F3FF), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
     }
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 3, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x22), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x22), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 }
 
 test "Terminal: multicodepoint grapheme marks dirty on every codepoint" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5200,7 +5774,7 @@ test "Terminal: multicodepoint grapheme marks dirty on every codepoint" {
 }
 
 test "Terminal: VS15 to make narrow character" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5231,7 +5805,7 @@ test "Terminal: VS15 to make narrow character" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x2614), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x2614), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
         const cps = list_cell.node.page().lookupGrapheme(cell).?;
@@ -5240,7 +5814,7 @@ test "Terminal: VS15 to make narrow character" {
 }
 
 test "Terminal: VS15 on already narrow emoji" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5266,7 +5840,7 @@ test "Terminal: VS15 on already narrow emoji" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x26C8), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x26C8), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
         const cps = list_cell.node.page().lookupGrapheme(cell).?;
@@ -5275,7 +5849,7 @@ test "Terminal: VS15 on already narrow emoji" {
 }
 
 test "Terminal: print invalid VS15 following emoji is wide" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5293,20 +5867,20 @@ test "Terminal: print invalid VS15 following emoji is wide" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, '\u{1F9E0}'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, '\u{1F9E0}'), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
     }
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.spacer_tail, cell.wide);
     }
 }
 
 test "Terminal: print invalid VS15 in emoji ZWJ sequence" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5326,7 +5900,7 @@ test "Terminal: print invalid VS15 in emoji ZWJ sequence" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, '\u{1F469}'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, '\u{1F469}'), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{ '\u{200D}', '\u{1F466}' }, list_cell.node.page().lookupGrapheme(cell).?);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
@@ -5334,13 +5908,13 @@ test "Terminal: print invalid VS15 in emoji ZWJ sequence" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.spacer_tail, cell.wide);
     }
 }
 
 test "Terminal: VS15 to make narrow character with pending wrap" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 4 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 4 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5377,7 +5951,7 @@ test "Terminal: VS15 to make narrow character with pending wrap" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 2, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x2614), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x2614), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
         const cps = list_cell.node.page().lookupGrapheme(cell).?;
@@ -5387,16 +5961,78 @@ test "Terminal: VS15 to make narrow character with pending wrap" {
     // VS15 should not affect the previous grapheme
     {
         const lemon_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?.cell;
-        try testing.expectEqual(@as(u21, 0x1F34B), lemon_cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x1F34B), lemon_cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.wide, lemon_cell.wide);
         const spacer_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?.cell;
-        try testing.expectEqual(@as(u21, 0), spacer_cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), spacer_cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.spacer_tail, spacer_cell.wide);
     }
 }
 
+test "Terminal: VS15 narrows wide cell under cursor with wraparound disabled" {
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(testing.allocator);
+
+    t.modes.set(.grapheme_cluster, true);
+    t.modes.set(.wraparound, false);
+
+    // First create a wide cell spanning columns 4 and 5.
+    t.setCursorPos(1, 4);
+    try t.print(0x2614);
+
+    // Make column 4 the right margin and put the cursor on the wide base.
+    // With wraparound disabled, grapheme lookup selects the cell under the
+    // cursor when it has content.
+    t.modes.set(.enable_left_and_right_margin, true);
+    t.setLeftAndRightMargin(1, 4);
+    t.setCursorPos(1, 4);
+    try t.print(0xFE0E);
+
+    try testing.expectEqual(@as(usize, 3), t.screens.active.cursor.x);
+    try testing.expect(!t.screens.active.cursor.pending_wrap);
+    const base = t.screens.active.pages.getCell(.{ .screen = .{ .x = 3, .y = 0 } }).?.cell;
+    try testing.expectEqual(Cell.Wide.narrow, base.wide);
+    try testing.expect(base.hasGrapheme());
+    const tail = t.screens.active.pages.getCell(.{ .screen = .{ .x = 4, .y = 0 } }).?.cell;
+    try testing.expectEqual(Cell.Wide.narrow, tail.wide);
+}
+
+test "Terminal: VS15 narrows wide cell under restored pending cursor" {
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(testing.allocator);
+
+    t.modes.set(.grapheme_cluster, true);
+    t.modes.set(.enable_left_and_right_margin, true);
+    t.setLeftAndRightMargin(1, 4);
+
+    // Save a pending-wrap cursor at column 4.
+    t.setCursorPos(1, 4);
+    try t.print('X');
+    try testing.expect(t.screens.active.cursor.pending_wrap);
+    t.saveCursor();
+
+    // Widen the margin and replace that cell with a wide character.
+    t.setLeftAndRightMargin(1, 5);
+    t.setCursorPos(1, 4);
+    try t.print(0x2614);
+
+    // Restoring also restores pending_wrap, so grapheme lookup selects the
+    // wide base under the cursor rather than its spacer tail.
+    t.restoreCursor();
+    try testing.expect(t.screens.active.cursor.pending_wrap);
+    try t.print(0xFE0E);
+
+    try testing.expectEqual(@as(usize, 4), t.screens.active.cursor.x);
+    try testing.expect(!t.screens.active.cursor.pending_wrap);
+    const base = t.screens.active.pages.getCell(.{ .screen = .{ .x = 3, .y = 0 } }).?.cell;
+    try testing.expectEqual(Cell.Wide.narrow, base.wide);
+    try testing.expect(base.hasGrapheme());
+    const tail = t.screens.active.pages.getCell(.{ .screen = .{ .x = 4, .y = 0 } }).?.cell;
+    try testing.expectEqual(Cell.Wide.narrow, tail.wide);
+}
+
 test "Terminal: VS16 to make wide character on next line" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 3 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 3 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5421,7 +6057,7 @@ test "Terminal: VS16 to make wide character on next line" {
         // Previous cell turns into spacer_head
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 2, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.spacer_head, cell.wide);
     }
@@ -5429,7 +6065,7 @@ test "Terminal: VS16 to make wide character on next line" {
         // '#' cell is wide
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 1 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, '#'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, '#'), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{0xFE0F}, list_cell.node.page().lookupGrapheme(cell).?);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
@@ -5438,7 +6074,7 @@ test "Terminal: VS16 to make wide character on next line" {
         // spacer_tail
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 1 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.spacer_tail, cell.wide);
     }
@@ -5447,7 +6083,7 @@ test "Terminal: VS16 to make wide character on next line" {
 test "Terminal: VS16 to make wide character on next line with hyperlink" {
     // Regression test for the crash fixed in print's grapheme `.wide` path:
     // writing a spacer_head at the screen edge before row.wrap was set.
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 3 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 3 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering and activate a hyperlink so printCell
@@ -5471,7 +6107,7 @@ test "Terminal: VS16 to make wide character on next line with hyperlink" {
         // Previous cell turns into spacer_head and remains hyperlinked.
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 2, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.spacer_head, cell.wide);
         try testing.expect(cell.hyperlink);
         try testing.expect(list_cell.row.wrap);
@@ -5480,7 +6116,7 @@ test "Terminal: VS16 to make wide character on next line with hyperlink" {
         // '#' cell is now wide and still hyperlinked.
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 1 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, '#'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, '#'), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{0xFE0F}, list_cell.node.page().lookupGrapheme(cell).?);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
@@ -5490,14 +6126,14 @@ test "Terminal: VS16 to make wide character on next line with hyperlink" {
         // spacer_tail inherits hyperlink as part of the same grapheme cell.
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 1 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.spacer_tail, cell.wide);
         try testing.expect(cell.hyperlink);
     }
 }
 
 test "Terminal: VS16 to make wide character with pending wrap" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 3 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 3 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5518,7 +6154,7 @@ test "Terminal: VS16 to make wide character with pending wrap" {
         // '#' cell is wide
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, '#'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, '#'), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{0xFE0F}, list_cell.node.page().lookupGrapheme(cell).?);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
@@ -5527,14 +6163,14 @@ test "Terminal: VS16 to make wide character with pending wrap" {
         // spacer_tail
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 2, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.spacer_tail, cell.wide);
     }
 }
 
 test "Terminal: VS16 to make wide character with mode 2027" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5556,7 +6192,7 @@ test "Terminal: VS16 to make wide character with mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x2764), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x2764), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
         const cps = list_cell.node.page().lookupGrapheme(cell).?;
@@ -5565,7 +6201,7 @@ test "Terminal: VS16 to make wide character with mode 2027" {
 }
 
 test "Terminal: VS16 repeated with mode 2027" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5587,7 +6223,7 @@ test "Terminal: VS16 repeated with mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x2764), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x2764), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
         const cps = list_cell.node.page().lookupGrapheme(cell).?;
@@ -5596,7 +6232,7 @@ test "Terminal: VS16 repeated with mode 2027" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 2, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x2764), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x2764), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
         const cps = list_cell.node.page().lookupGrapheme(cell).?;
@@ -5605,7 +6241,7 @@ test "Terminal: VS16 repeated with mode 2027" {
 }
 
 test "Terminal: print invalid VS16 grapheme" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5624,20 +6260,20 @@ test "Terminal: print invalid VS16 grapheme" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'x'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'x'), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 }
 
 test "Terminal: print invalid VS16 with second char" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5657,7 +6293,7 @@ test "Terminal: print invalid VS16 with second char" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'x'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'x'), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
@@ -5665,14 +6301,14 @@ test "Terminal: print invalid VS16 with second char" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'y'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'y'), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 }
 
 test "Terminal: print grapheme ò (o with nonspacing mark) should be narrow" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5690,7 +6326,7 @@ test "Terminal: print grapheme ò (o with nonspacing mark) should be narrow" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'o'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'o'), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{0x0300}, list_cell.node.page().lookupGrapheme(cell).?);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
@@ -5698,7 +6334,7 @@ test "Terminal: print grapheme ò (o with nonspacing mark) should be narrow" {
 }
 
 test "Terminal: print Devanagari grapheme should be wide" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5719,7 +6355,7 @@ test "Terminal: print Devanagari grapheme should be wide" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x0915), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x0915), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{ 0x094D, 0x200D, 0x0937 }, list_cell.node.page().lookupGrapheme(cell).?);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
@@ -5732,7 +6368,7 @@ test "Terminal: print Devanagari grapheme should be wide" {
 }
 
 test "Terminal: print Devanagari grapheme should be wide on next line" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 3 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 3 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5759,7 +6395,7 @@ test "Terminal: print Devanagari grapheme should be wide on next line" {
         // Previous cell turns into spacer_head
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 2, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.spacer_head, cell.wide);
     }
@@ -5767,7 +6403,7 @@ test "Terminal: print Devanagari grapheme should be wide on next line" {
         // Devanagari grapheme is wide
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 1 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x0915), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x0915), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{ 0x094D, 0x200D, 0x0937 }, list_cell.node.page().lookupGrapheme(cell).?);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
@@ -5782,7 +6418,7 @@ test "Terminal: print Devanagari grapheme should be wide on next line" {
 test "Terminal: print Devanagari grapheme should be wide on next page" {
     const rows = pagepkg.std_capacity.rows;
     const cols = pagepkg.std_capacity.cols;
-    var t = try init(testing.allocator, .{ .rows = rows, .cols = cols });
+    var t = try init(testing.io, testing.allocator, .{ .rows = rows, .cols = cols });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5818,7 +6454,7 @@ test "Terminal: print Devanagari grapheme should be wide on next page" {
         // Previous cell turns into spacer_head
         const list_cell = t.screens.active.pages.getCell(.{ .active = .{ .x = cols - 1, .y = rows - 2 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.spacer_head, cell.wide);
     }
@@ -5826,7 +6462,7 @@ test "Terminal: print Devanagari grapheme should be wide on next page" {
         // Devanagari grapheme is wide
         const list_cell = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = rows - 1 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x0915), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x0915), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{ 0x094D, 0x200D, 0x0937 }, list_cell.node.page().lookupGrapheme(cell).?);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
@@ -5839,7 +6475,7 @@ test "Terminal: print Devanagari grapheme should be wide on next page" {
 }
 
 test "Terminal: print invalid VS16 with second char (combining)" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5859,7 +6495,7 @@ test "Terminal: print invalid VS16 with second char (combining)" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'n'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'n'), cell.content.codepoint.data);
         try testing.expect(cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{'\u{0303}'}, list_cell.node.page().lookupGrapheme(cell).?);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
@@ -5867,13 +6503,13 @@ test "Terminal: print invalid VS16 with second char (combining)" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 }
 
 test "Terminal: overwrite grapheme should clear grapheme data" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5897,14 +6533,14 @@ test "Terminal: overwrite grapheme should clear grapheme data" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'A'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'A'), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 }
 
 test "Terminal: overwrite multicodepoint grapheme clears grapheme data" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5944,7 +6580,7 @@ test "Terminal: overwrite multicodepoint grapheme clears grapheme data" {
 }
 
 test "Terminal: overwrite multicodepoint grapheme tail clears grapheme data" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
 
     // Enable grapheme clustering
@@ -5983,7 +6619,8 @@ test "Terminal: overwrite multicodepoint grapheme tail clears grapheme data" {
 
 test "Terminal: print breaks valid grapheme cluster with Prepend + ASCII for speed" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
     t.modes.set(.grapheme_cluster, true);
 
@@ -6010,7 +6647,7 @@ test "Terminal: print breaks valid grapheme cluster with Prepend + ASCII for spe
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x0600), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x0600), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         // This is what we'd expect if we did break correctly:
         //try testing.expect(cell.hasGrapheme());
@@ -6020,16 +6657,16 @@ test "Terminal: print breaks valid grapheme cluster with Prepend + ASCII for spe
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 2, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, '1'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, '1'), cell.content.codepoint.data);
         // This is what we'd expect if we did break correctly:
-        //try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        //try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expect(!cell.hasGrapheme());
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 }
 
 test "Terminal: print writes to bottom if scrolled" {
-    var t = try init(testing.allocator, .{ .cols = 5, .rows = 2 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 5, .rows = 2 });
     defer t.deinit(testing.allocator);
 
     // Basic grid writing
@@ -6071,7 +6708,7 @@ test "Terminal: print writes to bottom if scrolled" {
 }
 
 test "Terminal: print charset" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // G1 should have no effect
@@ -6100,7 +6737,7 @@ test "Terminal: print charset" {
 }
 
 test "Terminal: print charset outside of ASCII" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // G1 should have no effect
@@ -6125,7 +6762,7 @@ test "Terminal: print charset outside of ASCII" {
 }
 
 test "Terminal: print invoke charset" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     t.configureCharset(.G1, .dec_special);
@@ -6149,7 +6786,7 @@ test "Terminal: print invoke charset" {
 }
 
 test "Terminal: print invoke charset single" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     t.configureCharset(.G1, .dec_special);
@@ -6169,7 +6806,7 @@ test "Terminal: print invoke charset single" {
 test "Terminal: print kitty unicode placeholder" {
     if (comptime !build_options.kitty_graphics) return error.SkipZigTest;
 
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
 
     try t.print(kitty.graphics.unicode.placeholder);
@@ -6179,7 +6816,7 @@ test "Terminal: print kitty unicode placeholder" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, kitty.graphics.unicode.placeholder), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, kitty.graphics.unicode.placeholder), cell.content.codepoint.data);
         try testing.expect(list_cell.row.kitty_virtual_placeholder);
     }
 
@@ -6187,7 +6824,7 @@ test "Terminal: print kitty unicode placeholder" {
 }
 
 test "Terminal: soft wrap" {
-    var t = try init(testing.allocator, .{ .cols = 3, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 3, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Basic grid writing
@@ -6202,7 +6839,7 @@ test "Terminal: soft wrap" {
 }
 
 test "Terminal: soft wrap with semantic prompt" {
-    var t = try init(testing.allocator, .{ .cols = 3, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 3, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Mark our prompt.
@@ -6223,7 +6860,7 @@ test "Terminal: soft wrap with semantic prompt" {
 }
 
 test "Terminal: disabled wraparound with wide char and one space" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     t.modes.set(.wraparound, false);
@@ -6246,7 +6883,7 @@ test "Terminal: disabled wraparound with wide char and one space" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 4, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 
@@ -6255,7 +6892,7 @@ test "Terminal: disabled wraparound with wide char and one space" {
 }
 
 test "Terminal: disabled wraparound with wide char and no space" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     t.modes.set(.wraparound, false);
@@ -6277,7 +6914,7 @@ test "Terminal: disabled wraparound with wide char and no space" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 4, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'A'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'A'), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 
@@ -6286,7 +6923,7 @@ test "Terminal: disabled wraparound with wide char and no space" {
 }
 
 test "Terminal: disabled wraparound with wide grapheme and half space" {
-    var t = try init(testing.allocator, .{ .rows = 5, .cols = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .rows = 5, .cols = 5 });
     defer t.deinit(testing.allocator);
 
     t.modes.set(.grapheme_cluster, true);
@@ -6310,7 +6947,7 @@ test "Terminal: disabled wraparound with wide grapheme and half space" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 4, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, '❤'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, '❤'), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 
@@ -6319,7 +6956,7 @@ test "Terminal: disabled wraparound with wide grapheme and half space" {
 }
 
 test "Terminal: print right margin wrap" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 5 });
     defer t.deinit(testing.allocator);
 
     try t.printString("123456789");
@@ -6342,7 +6979,7 @@ test "Terminal: print right margin wrap" {
 }
 
 test "Terminal: print right margin wrap dirty tracking" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 5 });
     defer t.deinit(testing.allocator);
 
     try t.printString("123456789");
@@ -6371,7 +7008,7 @@ test "Terminal: print right margin wrap dirty tracking" {
 }
 
 test "Terminal: print right margin outside" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 5 });
     defer t.deinit(testing.allocator);
 
     try t.printString("123456789");
@@ -6391,7 +7028,7 @@ test "Terminal: print right margin outside" {
 }
 
 test "Terminal: print right margin outside wrap" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 5 });
     defer t.deinit(testing.allocator);
 
     try t.printString("123456789");
@@ -6408,7 +7045,7 @@ test "Terminal: print right margin outside wrap" {
 }
 
 test "Terminal: print wide char at right margin does not create spacer head" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
 
     t.modes.set(.enable_left_and_right_margin, true);
@@ -6425,7 +7062,7 @@ test "Terminal: print wide char at right margin does not create spacer head" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 4, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
 
         const row = list_cell.row;
@@ -6434,7 +7071,7 @@ test "Terminal: print wide char at right margin does not create spacer head" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 2, .y = 1 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x1F600), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x1F600), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
     }
     {
@@ -6445,7 +7082,7 @@ test "Terminal: print wide char at right margin does not create spacer head" {
 }
 
 test "Terminal: print with hyperlink" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Setup our hyperlink and print
@@ -6470,7 +7107,7 @@ test "Terminal: print with hyperlink" {
 }
 
 test "Terminal: print over cell with same hyperlink" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Setup our hyperlink and print
@@ -6497,7 +7134,7 @@ test "Terminal: print over cell with same hyperlink" {
 }
 
 test "Terminal: print and end hyperlink" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Setup our hyperlink and print
@@ -6534,7 +7171,7 @@ test "Terminal: print and end hyperlink" {
 }
 
 test "Terminal: print and change hyperlink" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Setup our hyperlink and print
@@ -6569,7 +7206,7 @@ test "Terminal: print and change hyperlink" {
 }
 
 test "Terminal: overwrite hyperlink" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Setup our hyperlink and print
@@ -6602,7 +7239,7 @@ test "Terminal: overwrite hyperlink" {
 // flag. The integrity check inside setHyperlink (or increaseCapacity)
 // sees the unwrapped spacer head and panics. Found via fuzzing.
 test "Terminal: print wide char at right edge with hyperlink" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 5 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 5 });
     defer t.deinit(testing.allocator);
 
     try t.screens.active.startHyperlink("http://example.com", null);
@@ -6629,7 +7266,7 @@ test "Terminal: print wide char at right edge with hyperlink" {
     // Row 1, col 0: the wide char with hyperlink
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 1 } }).?;
-        try testing.expectEqual(@as(u21, 0x4E2D), list_cell.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x4E2D), list_cell.cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.wide, list_cell.cell.wide);
         try testing.expect(list_cell.cell.hyperlink);
     }
@@ -6642,7 +7279,7 @@ test "Terminal: print wide char at right edge with hyperlink" {
 }
 
 test "Terminal: linefeed and carriage return" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Print and CR.
@@ -6670,7 +7307,7 @@ test "Terminal: linefeed and carriage return" {
 }
 
 test "Terminal: linefeed unsets pending wrap" {
-    var t = try init(testing.allocator, .{ .cols = 5, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 5, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Basic grid writing
@@ -6684,7 +7321,7 @@ test "Terminal: linefeed unsets pending wrap" {
 }
 
 test "Terminal: linefeed mode automatic carriage return" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
 
     // Basic grid writing
@@ -6700,7 +7337,7 @@ test "Terminal: linefeed mode automatic carriage return" {
 }
 
 test "Terminal: carriage return unsets pending wrap" {
-    var t = try init(testing.allocator, .{ .cols = 5, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 5, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Basic grid writing
@@ -6711,7 +7348,7 @@ test "Terminal: carriage return unsets pending wrap" {
 }
 
 test "Terminal: carriage return origin mode moves to left margin" {
-    var t = try init(testing.allocator, .{ .cols = 5, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 5, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     t.modes.set(.origin, true);
@@ -6722,7 +7359,7 @@ test "Terminal: carriage return origin mode moves to left margin" {
 }
 
 test "Terminal: carriage return left of left margin moves to zero" {
-    var t = try init(testing.allocator, .{ .cols = 5, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 5, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     t.screens.active.cursor.x = 1;
@@ -6732,7 +7369,7 @@ test "Terminal: carriage return left of left margin moves to zero" {
 }
 
 test "Terminal: carriage return right of left margin moves to left margin" {
-    var t = try init(testing.allocator, .{ .cols = 5, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 5, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     t.screens.active.cursor.x = 3;
@@ -6742,7 +7379,7 @@ test "Terminal: carriage return right of left margin moves to left margin" {
 }
 
 test "Terminal: backspace" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // BS
@@ -6760,7 +7397,8 @@ test "Terminal: backspace" {
 
 test "Terminal: horizontal tabs" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 20, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 20, .rows = 5 });
     defer t.deinit(alloc);
 
     // HT
@@ -6781,7 +7419,8 @@ test "Terminal: horizontal tabs" {
 
 test "Terminal: horizontal tabs starting on tabstop" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 20, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 20, .rows = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(t.screens.active.cursor.y, 9);
@@ -6799,7 +7438,8 @@ test "Terminal: horizontal tabs starting on tabstop" {
 
 test "Terminal: horizontal tabs with right margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 20, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 20, .rows = 5 });
     defer t.deinit(alloc);
 
     t.scrolling_region.left = 2;
@@ -6818,7 +7458,8 @@ test "Terminal: horizontal tabs with right margin" {
 
 test "Terminal: horizontal tabs back" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 20, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 20, .rows = 5 });
     defer t.deinit(alloc);
 
     // Edge of screen
@@ -6841,7 +7482,8 @@ test "Terminal: horizontal tabs back" {
 
 test "Terminal: horizontal tabs back starting on tabstop" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 20, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 20, .rows = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(t.screens.active.cursor.y, 9);
@@ -6859,7 +7501,8 @@ test "Terminal: horizontal tabs back starting on tabstop" {
 
 test "Terminal: horizontal tabs with left margin in origin mode" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 20, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 20, .rows = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.origin, true);
@@ -6879,7 +7522,8 @@ test "Terminal: horizontal tabs with left margin in origin mode" {
 
 test "Terminal: horizontal tab back with cursor before left margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 20, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 20, .rows = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.origin, true);
@@ -6899,7 +7543,8 @@ test "Terminal: horizontal tab back with cursor before left margin" {
 
 test "Terminal: cursorPos resets wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -6917,7 +7562,8 @@ test "Terminal: cursorPos resets wrap" {
 
 test "Terminal: cursorPos off the screen" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(500, 500);
@@ -6932,7 +7578,8 @@ test "Terminal: cursorPos off the screen" {
 
 test "Terminal: cursorPos relative to origin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.scrolling_region.top = 2;
@@ -6950,7 +7597,8 @@ test "Terminal: cursorPos relative to origin" {
 
 test "Terminal: cursorPos relative to origin with left/right" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.scrolling_region.top = 2;
@@ -6970,7 +7618,8 @@ test "Terminal: cursorPos relative to origin with left/right" {
 
 test "Terminal: cursorPos limits with full scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.scrolling_region.top = 2;
@@ -6990,7 +7639,7 @@ test "Terminal: cursorPos limits with full scroll region" {
 
 // Probably outdated, but dates back to the original terminal implementation.
 test "Terminal: setCursorPos (original test)" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 0), t.screens.active.cursor.x);
@@ -7043,7 +7692,8 @@ test "Terminal: setCursorPos (original test)" {
 
 test "Terminal: setTopAndBottomMargin simple" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7073,7 +7723,8 @@ test "Terminal: setTopAndBottomMargin simple" {
 
 test "Terminal: setTopAndBottomMargin top only" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7103,7 +7754,8 @@ test "Terminal: setTopAndBottomMargin top only" {
 
 test "Terminal: setTopAndBottomMargin top and bottom" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7131,7 +7783,8 @@ test "Terminal: setTopAndBottomMargin top and bottom" {
 
 test "Terminal: setTopAndBottomMargin top equal to bottom" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7160,7 +7813,8 @@ test "Terminal: setTopAndBottomMargin top equal to bottom" {
 
 test "Terminal: setLeftAndRightMargin simple" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7188,7 +7842,8 @@ test "Terminal: setLeftAndRightMargin simple" {
 
 test "Terminal: setLeftAndRightMargin left only" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7221,7 +7876,8 @@ test "Terminal: setLeftAndRightMargin left only" {
 
 test "Terminal: setLeftAndRightMargin left and right" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7252,7 +7908,8 @@ test "Terminal: setLeftAndRightMargin left and right" {
 
 test "Terminal: setLeftAndRightMargin left equal right" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7283,7 +7940,8 @@ test "Terminal: setLeftAndRightMargin left equal right" {
 
 test "Terminal: setLeftAndRightMargin mode 69 unset" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7314,7 +7972,8 @@ test "Terminal: setLeftAndRightMargin mode 69 unset" {
 
 test "Terminal: insertLines simple" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7346,7 +8005,8 @@ test "Terminal: insertLines simple" {
 
 test "Terminal: insertLines colors with bg color" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7387,7 +8047,8 @@ test "Terminal: insertLines colors with bg color" {
 
 test "Terminal: insertLines handles style refs" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 3 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7421,7 +8082,8 @@ test "Terminal: insertLines handles style refs" {
 
 test "Terminal: insertLines outside of scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7450,7 +8112,8 @@ test "Terminal: insertLines outside of scroll region" {
 
 test "Terminal: insertLines top/bottom scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7483,7 +8146,8 @@ test "Terminal: insertLines top/bottom scroll region" {
 
 test "Terminal: insertLines across page boundary marks all shifted rows dirty" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 10, .max_scrollback = 1024 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 10, .max_scrollback_bytes = 1024 });
     defer t.deinit(alloc);
 
     const first_page = t.screens.active.pages.pages.first.?;
@@ -7537,7 +8201,8 @@ test "Terminal: insertLines hyperlink-dense row crosses page boundary" {
     // page's hyperlink capacity, the copy must increase the destination
     // page's capacity and retry rather than corrupting the page list.
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 10, .max_scrollback = 1024 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 10, .max_scrollback_bytes = 1024 });
     defer t.deinit(alloc);
 
     const pages = &t.screens.active.pages;
@@ -7618,7 +8283,8 @@ test "Terminal: insertLines hyperlink-dense row crosses page boundary" {
 
 test "Terminal: insertLines (legacy test)" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -7651,7 +8317,8 @@ test "Terminal: insertLines (legacy test)" {
 
 test "Terminal: insertLines zero" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     // This should do nothing
@@ -7661,7 +8328,8 @@ test "Terminal: insertLines zero" {
 
 test "Terminal: insertLines with scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 6 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 6 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -7700,7 +8368,8 @@ test "Terminal: insertLines with scroll region" {
 
 test "Terminal: insertLines more than remaining" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -7738,7 +8407,8 @@ test "Terminal: insertLines more than remaining" {
 
 test "Terminal: insertLines resets pending wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -7756,7 +8426,8 @@ test "Terminal: insertLines resets pending wrap" {
 
 test "Terminal: insertLines resets wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 3, .cols = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 3, .cols = 3 });
     defer t.deinit(alloc);
 
     try t.print('1');
@@ -7782,7 +8453,8 @@ test "Terminal: insertLines resets wrap" {
 
 test "Terminal: insertLines multi-codepoint graphemes" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     // Disable grapheme clustering
@@ -7814,7 +8486,8 @@ test "Terminal: insertLines multi-codepoint graphemes" {
 
 test "Terminal: insertLines left/right scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -7845,7 +8518,8 @@ test "Terminal: insertLines left/right scroll region" {
 
 test "Terminal: scrollUp simple" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7878,7 +8552,8 @@ test "Terminal: scrollUp simple" {
 
 test "Terminal: scrollUp moves hyperlink" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7929,7 +8604,8 @@ test "Terminal: scrollUp moves hyperlink" {
 
 test "Terminal: scrollUp clears hyperlink" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.screens.active.startHyperlink("http://example.com", null);
@@ -7966,7 +8642,8 @@ test "Terminal: scrollUp clears hyperlink" {
 
 test "Terminal: scrollUp top/bottom scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -7996,7 +8673,8 @@ test "Terminal: scrollUp top/bottom scroll region" {
 
 test "Terminal: scrollUp left/right scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -8029,7 +8707,8 @@ test "Terminal: scrollUp left/right scroll region" {
 
 test "Terminal: scrollUp left/right scroll region hyperlink" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -8135,7 +8814,8 @@ test "Terminal: scrollUp left/right scroll region hyperlink" {
 
 test "Terminal: scrollUp preserves pending wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(1, 5);
@@ -8156,7 +8836,8 @@ test "Terminal: scrollUp preserves pending wrap" {
 
 test "Terminal: scrollUp full top/bottom region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("top");
@@ -8180,7 +8861,8 @@ test "Terminal: scrollUp full top/bottom region" {
 
 test "Terminal: scrollUp full top/bottomleft/right scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("top");
@@ -8211,7 +8893,8 @@ test "Terminal: scrollUp creates scrollback in primary screen" {
     // When in primary screen with full-width scroll region at top,
     // scrollUp (CSI S) should push lines into scrollback like xterm.
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5, .max_scrollback = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5, .max_scrollback_bytes = 10 });
     defer t.deinit(alloc);
 
     // Fill the screen with content
@@ -8254,10 +8937,11 @@ test "Terminal: scrollUp creates scrollback in primary screen" {
     }
 }
 
-test "Terminal: scrollUp with max_scrollback zero" {
-    // When max_scrollback is 0, scrollUp should still work but not retain history
+test "Terminal: scrollUp with max_scrollback_bytes zero" {
+    // When max_scrollback_bytes is 0, scrollUp should still work but not retain history
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5, .max_scrollback = 0 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5, .max_scrollback_bytes = 0 });
     defer t.deinit(alloc);
 
     try t.printString("AAAAA");
@@ -8286,10 +8970,11 @@ test "Terminal: scrollUp with max_scrollback zero" {
     }
 }
 
-test "Terminal: scrollUp with max_scrollback zero and top margin" {
-    // When max_scrollback is 0 and top margin is set, should use deleteLines path
+test "Terminal: scrollUp with max_scrollback_bytes zero and top margin" {
+    // When max_scrollback_bytes is 0 and top margin is set, should use deleteLines path
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5, .max_scrollback = 0 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5, .max_scrollback_bytes = 0 });
     defer t.deinit(alloc);
 
     try t.printString("AAAAA");
@@ -8316,10 +9001,11 @@ test "Terminal: scrollUp with max_scrollback zero and top margin" {
     }
 }
 
-test "Terminal: scrollUp with max_scrollback zero and left/right margin" {
-    // When max_scrollback is 0 with left/right margins, uses deleteLines path
+test "Terminal: scrollUp with max_scrollback_bytes zero and left/right margin" {
+    // When max_scrollback_bytes is 0 with left/right margins, uses deleteLines path
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 10, .max_scrollback = 0 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 10, .max_scrollback_bytes = 0 });
     defer t.deinit(alloc);
 
     try t.printString("AAAAABBBBB");
@@ -8346,7 +9032,8 @@ test "Terminal: scrollUp with max_scrollback zero and left/right margin" {
 
 test "Terminal: scrollDown simple" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -8378,7 +9065,8 @@ test "Terminal: scrollDown simple" {
 
 test "Terminal: scrollDown hyperlink moves" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.screens.active.startHyperlink("http://example.com", null);
@@ -8429,7 +9117,8 @@ test "Terminal: scrollDown hyperlink moves" {
 
 test "Terminal: scrollDown outside of scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -8464,7 +9153,8 @@ test "Terminal: scrollDown outside of scroll region" {
 
 test "Terminal: scrollDown left/right scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -8498,7 +9188,8 @@ test "Terminal: scrollDown left/right scroll region" {
 
 test "Terminal: scrollDown left/right scroll region hyperlink" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.screens.active.startHyperlink("http://example.com", null);
@@ -8604,7 +9295,8 @@ test "Terminal: scrollDown left/right scroll region hyperlink" {
 
 test "Terminal: scrollDown outside of left/right scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -8638,7 +9330,8 @@ test "Terminal: scrollDown outside of left/right scroll region" {
 
 test "Terminal: scrollDown preserves pending wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 10 });
     defer t.deinit(alloc);
 
     t.setCursorPos(1, 5);
@@ -8659,7 +9352,8 @@ test "Terminal: scrollDown preserves pending wrap" {
 
 test "Terminal: eraseChars simple operation" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABC") |c| try t.print(c);
@@ -8680,7 +9374,8 @@ test "Terminal: eraseChars simple operation" {
 
 test "Terminal: eraseChars minimum one" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABC") |c| try t.print(c);
@@ -8699,7 +9394,8 @@ test "Terminal: eraseChars minimum one" {
 
 test "Terminal: eraseChars beyond screen edge" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("  ABC") |c| try t.print(c);
@@ -8715,7 +9411,8 @@ test "Terminal: eraseChars beyond screen edge" {
 
 test "Terminal: eraseChars wide character" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.print('橋');
@@ -8733,7 +9430,8 @@ test "Terminal: eraseChars wide character" {
 
 test "Terminal: eraseChars resets pending wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -8751,7 +9449,8 @@ test "Terminal: eraseChars resets pending wrap" {
 
 test "Terminal: eraseChars resets wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE123") |c| try t.print(c);
@@ -8781,7 +9480,8 @@ test "Terminal: eraseChars resets wrap" {
 
 test "Terminal: eraseChars preserves background sgr" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     for ("ABC") |c| try t.print(c);
@@ -8820,7 +9520,8 @@ test "Terminal: eraseChars preserves background sgr" {
 
 test "Terminal: eraseChars handles refcounted styles" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.setAttribute(.{ .bold = {} });
@@ -8842,7 +9543,8 @@ test "Terminal: eraseChars handles refcounted styles" {
 
 test "Terminal: eraseChars protected attributes respected with iso" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -8859,7 +9561,8 @@ test "Terminal: eraseChars protected attributes respected with iso" {
 
 test "Terminal: eraseChars protected attributes ignored with dec most recent" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -8878,7 +9581,8 @@ test "Terminal: eraseChars protected attributes ignored with dec most recent" {
 
 test "Terminal: eraseChars protected attributes ignored with dec set" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.dec);
@@ -8895,7 +9599,8 @@ test "Terminal: eraseChars protected attributes ignored with dec set" {
 
 test "Terminal: eraseChars wide char boundary conditions" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 1, .cols = 8 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 1, .cols = 8 });
     defer t.deinit(alloc);
 
     try t.printString("😀a😀b😀");
@@ -8918,7 +9623,8 @@ test "Terminal: eraseChars wide char boundary conditions" {
 
 test "Terminal: eraseChars wide char splits proper cell boundaries" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 1, .cols = 30 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 1, .cols = 30 });
     defer t.deinit(alloc);
 
     // This is a test for a bug: https://github.com/ghostty-org/ghostty/issues/2817
@@ -8948,7 +9654,8 @@ test "Terminal: eraseChars wide char splits proper cell boundaries" {
 
 test "Terminal: eraseChars wide char wrap boundary conditions" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 3, .cols = 8 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 3, .cols = 8 });
     defer t.deinit(alloc);
 
     try t.printString(".......😀abcde😀......");
@@ -8979,7 +9686,8 @@ test "Terminal: eraseChars wide char wrap boundary conditions" {
 
 test "Terminal: reverseIndex" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -9006,7 +9714,8 @@ test "Terminal: reverseIndex" {
 
 test "Terminal: reverseIndex from the top" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -9039,7 +9748,8 @@ test "Terminal: reverseIndex from the top" {
 
 test "Terminal: reverseIndex top of scrolling region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 10 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -9072,7 +9782,8 @@ test "Terminal: reverseIndex top of scrolling region" {
 
 test "Terminal: reverseIndex top of screen" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -9093,7 +9804,8 @@ test "Terminal: reverseIndex top of screen" {
 
 test "Terminal: reverseIndex not top of screen" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -9114,7 +9826,8 @@ test "Terminal: reverseIndex not top of screen" {
 
 test "Terminal: reverseIndex top/bottom margins" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -9135,7 +9848,8 @@ test "Terminal: reverseIndex top/bottom margins" {
 
 test "Terminal: reverseIndex outside top/bottom margins" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -9156,7 +9870,8 @@ test "Terminal: reverseIndex outside top/bottom margins" {
 
 test "Terminal: reverseIndex left/right margins" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -9178,7 +9893,8 @@ test "Terminal: reverseIndex left/right margins" {
 
 test "Terminal: reverseIndex outside left/right margins" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -9200,7 +9916,8 @@ test "Terminal: reverseIndex outside left/right margins" {
 
 test "Terminal: index" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     try t.index();
@@ -9218,7 +9935,8 @@ test "Terminal: index" {
 
 test "Terminal: index from the bottom" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(5, 1);
@@ -9241,7 +9959,8 @@ test "Terminal: index from the bottom" {
 
 test "Terminal: index scrolling with hyperlink" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(5, 1);
@@ -9286,7 +10005,8 @@ test "Terminal: index scrolling with hyperlink" {
 
 test "Terminal: index outside of scrolling region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     try testing.expectEqual(@as(usize, 0), t.screens.active.cursor.y);
@@ -9297,7 +10017,8 @@ test "Terminal: index outside of scrolling region" {
 
 test "Terminal: index from the bottom outside of scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 2);
@@ -9317,7 +10038,8 @@ test "Terminal: index from the bottom outside of scroll region" {
 
 test "Terminal: index no scroll region, top of screen" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -9337,7 +10059,8 @@ test "Terminal: index no scroll region, top of screen" {
 
 test "Terminal: index bottom of primary screen" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(5, 1);
@@ -9358,7 +10081,8 @@ test "Terminal: index bottom of primary screen" {
 
 test "Terminal: index bottom of primary screen background sgr" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(5, 1);
@@ -9391,7 +10115,8 @@ test "Terminal: index bottom of primary screen background sgr" {
 
 test "Terminal: index inside scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 3);
@@ -9412,7 +10137,8 @@ test "Terminal: index inside scroll region" {
 
 test "Terminal: index bottom of scroll region with hyperlinks" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 2);
@@ -9460,7 +10186,8 @@ test "Terminal: index bottom of scroll region with hyperlinks" {
 
 test "Terminal: index bottom of scroll region clear hyperlinks" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5, .max_scrollback = 0 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5, .max_scrollback_bytes = 0 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(2, 3);
@@ -9499,7 +10226,8 @@ test "Terminal: index bottom of scroll region clear hyperlinks" {
 
 test "Terminal: index bottom of scroll region with background SGR" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 3);
@@ -9536,7 +10264,8 @@ test "Terminal: index bottom of scroll region with background SGR" {
 
 test "Terminal: index bottom of primary screen with scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 3);
@@ -9564,7 +10293,8 @@ test "Terminal: index bottom of primary screen with scroll region" {
 
 test "Terminal: index outside left/right margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 3);
@@ -9588,7 +10318,8 @@ test "Terminal: index outside left/right margin" {
 
 test "Terminal: index inside left/right margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     try t.printString("AAAAAA");
@@ -9622,7 +10353,8 @@ test "Terminal: index inside left/right margin" {
 
 test "Terminal: index bottom of scroll region creates scrollback" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 3);
@@ -9647,7 +10379,8 @@ test "Terminal: index bottom of scroll region creates scrollback" {
 
 test "Terminal: index bottom of scroll region no scrollback" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5, .max_scrollback = 0 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5, .max_scrollback_bytes = 0 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 3);
@@ -9668,7 +10401,8 @@ test "Terminal: index bottom of scroll region no scrollback" {
 
 test "Terminal: index bottom of scroll region blank line preserves SGR" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 3);
@@ -9709,7 +10443,8 @@ test "Terminal: index bottom of scroll region blank line preserves SGR" {
 
 test "Terminal: index bottom of scroll region with top margin and background SGR" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("1\n2\n3\n4\n5");
@@ -9749,7 +10484,8 @@ test "Terminal: index bottom of scroll region with top margin and background SGR
 
 test "Terminal: index bottom of alt screen full region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 3, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 3, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.switchScreenMode(.@"1049", true);
@@ -9782,7 +10518,8 @@ test "Terminal: index bottom of alt screen full region" {
 
 test "Terminal: index bottom of alt screen top region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.switchScreenMode(.@"1049", true);
@@ -9809,7 +10546,8 @@ test "Terminal: index bottom of alt screen top region" {
 
 test "Terminal: scrollUp top region no scrollback" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5, .max_scrollback = 0 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5, .max_scrollback_bytes = 0 });
     defer t.deinit(alloc);
 
     try t.printString("A\nB\nC\nD\nE");
@@ -9831,7 +10569,8 @@ test "Terminal: scrollUp top region no scrollback" {
 
 test "Terminal: cursorUp basic" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(3, 1);
@@ -9848,7 +10587,8 @@ test "Terminal: cursorUp basic" {
 
 test "Terminal: cursorUp below top scroll margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(2, 4);
@@ -9866,7 +10606,8 @@ test "Terminal: cursorUp below top scroll margin" {
 
 test "Terminal: cursorUp above top scroll margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(3, 5);
@@ -9885,7 +10626,8 @@ test "Terminal: cursorUp above top scroll margin" {
 
 test "Terminal: cursorUp resets wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -9903,7 +10645,8 @@ test "Terminal: cursorUp resets wrap" {
 
 test "Terminal: cursorLeft no wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -9921,7 +10664,8 @@ test "Terminal: cursorLeft no wrap" {
 
 test "Terminal: cursorLeft unsets pending wrap state" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -9939,7 +10683,8 @@ test "Terminal: cursorLeft unsets pending wrap state" {
 
 test "Terminal: cursorLeft unsets pending wrap state with longer jump" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -9957,7 +10702,8 @@ test "Terminal: cursorLeft unsets pending wrap state with longer jump" {
 
 test "Terminal: cursorLeft reverse wrap with pending wrap state" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -9978,7 +10724,8 @@ test "Terminal: cursorLeft reverse wrap with pending wrap state" {
 
 test "Terminal: cursorLeft reverse wrap extended with pending wrap state" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -9999,7 +10746,8 @@ test "Terminal: cursorLeft reverse wrap extended with pending wrap state" {
 
 test "Terminal: cursorLeft reverse wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -10019,7 +10767,8 @@ test "Terminal: cursorLeft reverse wrap" {
 
 test "Terminal: cursorLeft reverse wrap with no soft wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -10041,7 +10790,8 @@ test "Terminal: cursorLeft reverse wrap with no soft wrap" {
 
 test "Terminal: cursorLeft reverse wrap before left margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -10059,7 +10809,8 @@ test "Terminal: cursorLeft reverse wrap before left margin" {
 
 test "Terminal: cursorLeft extended reverse wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -10081,7 +10832,8 @@ test "Terminal: cursorLeft extended reverse wrap" {
 
 test "Terminal: cursorLeft extended reverse wrap bottom wraparound" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 3 });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -10103,7 +10855,8 @@ test "Terminal: cursorLeft extended reverse wrap bottom wraparound" {
 
 test "Terminal: cursorLeft extended reverse wrap is priority if both set" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 3 });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -10126,7 +10879,8 @@ test "Terminal: cursorLeft extended reverse wrap is priority if both set" {
 
 test "Terminal: cursorLeft extended reverse wrap above top scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -10142,7 +10896,8 @@ test "Terminal: cursorLeft extended reverse wrap above top scroll region" {
 
 test "Terminal: cursorLeft reverse wrap on first row" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -10158,7 +10913,8 @@ test "Terminal: cursorLeft reverse wrap on first row" {
 
 test "Terminal: cursorDown basic" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -10174,7 +10930,8 @@ test "Terminal: cursorDown basic" {
 
 test "Terminal: cursorDown above bottom scroll margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 3);
@@ -10191,7 +10948,8 @@ test "Terminal: cursorDown above bottom scroll margin" {
 
 test "Terminal: cursorDown below bottom scroll margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setTopAndBottomMargin(1, 3);
@@ -10209,7 +10967,8 @@ test "Terminal: cursorDown below bottom scroll margin" {
 
 test "Terminal: cursorDown resets wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -10227,7 +10986,8 @@ test "Terminal: cursorDown resets wrap" {
 
 test "Terminal: cursorRight resets wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -10245,7 +11005,8 @@ test "Terminal: cursorRight resets wrap" {
 
 test "Terminal: cursorRight to the edge of screen" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.cursorRight(100);
@@ -10260,7 +11021,8 @@ test "Terminal: cursorRight to the edge of screen" {
 
 test "Terminal: cursorRight left of right margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.scrolling_region.right = 2;
@@ -10276,7 +11038,8 @@ test "Terminal: cursorRight left of right margin" {
 
 test "Terminal: cursorRight right of right margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.scrolling_region.right = 2;
@@ -10293,7 +11056,8 @@ test "Terminal: cursorRight right of right margin" {
 
 test "Terminal: deleteLines simple" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -10325,7 +11089,8 @@ test "Terminal: deleteLines simple" {
 
 test "Terminal: deleteLines colors with bg color" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("ABC");
@@ -10366,7 +11131,8 @@ test "Terminal: deleteLines colors with bg color" {
 
 test "Terminal: deleteLines across page boundary marks all shifted rows dirty" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 10, .max_scrollback = 1024 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 10, .max_scrollback_bytes = 1024 });
     defer t.deinit(alloc);
 
     const first_page = t.screens.active.pages.pages.first.?;
@@ -10425,7 +11191,8 @@ test "Terminal: deleteLines hyperlink-dense row crosses page boundary" {
     // the first page, which also happens to be the cursor's page so
     // this exercises the cursor accounting of the capacity increase.
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 10, .max_scrollback = 1024 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 10, .max_scrollback_bytes = 1024 });
     defer t.deinit(alloc);
 
     const pages = &t.screens.active.pages;
@@ -10506,7 +11273,8 @@ test "Terminal: deleteLines hyperlink-dense row crosses page boundary" {
 
 test "Terminal: deleteLines (legacy)" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 80, .rows = 80 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 80, .rows = 80 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -10541,7 +11309,8 @@ test "Terminal: deleteLines (legacy)" {
 
 test "Terminal: deleteLines with scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 80, .rows = 80 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 80, .rows = 80 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -10584,7 +11353,8 @@ test "Terminal: deleteLines with scroll region" {
 
 test "Terminal: deleteLines with scroll region, large count" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 80, .rows = 80 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 80, .rows = 80 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -10627,7 +11397,8 @@ test "Terminal: deleteLines with scroll region, large count" {
 
 test "Terminal: deleteLines with scroll region, cursor outside of region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 80, .rows = 80 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 80, .rows = 80 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -10662,7 +11433,8 @@ test "Terminal: deleteLines with scroll region, cursor outside of region" {
 
 test "Terminal: deleteLines resets pending wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -10680,7 +11452,8 @@ test "Terminal: deleteLines resets pending wrap" {
 
 test "Terminal: deleteLines resets wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 3, .cols = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 3, .cols = 3 });
     defer t.deinit(alloc);
 
     try t.print('1');
@@ -10711,7 +11484,8 @@ test "Terminal: deleteLines resets wrap" {
 
 test "Terminal: deleteLines left/right scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -10743,7 +11517,8 @@ test "Terminal: deleteLines left/right scroll region" {
 
 test "Terminal: deleteLines left/right scroll region from top" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -10774,7 +11549,8 @@ test "Terminal: deleteLines left/right scroll region from top" {
 
 test "Terminal: deleteLines left/right scroll region high count" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -10806,7 +11582,8 @@ test "Terminal: deleteLines left/right scroll region high count" {
 
 test "Terminal: deleteLines wide character spacer head" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 3 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -10842,7 +11619,8 @@ test "Terminal: deleteLines wide character spacer head" {
 
 test "Terminal: deleteLines wide character spacer head left scroll margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 3 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -10883,7 +11661,8 @@ test "Terminal: deleteLines wide character spacer head left scroll margin" {
 
 test "Terminal: deleteLines wide character spacer head right scroll margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 3 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -10924,7 +11703,8 @@ test "Terminal: deleteLines wide character spacer head right scroll margin" {
 
 test "Terminal: deleteLines wide character spacer head left and right scroll margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 3 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -10966,7 +11746,8 @@ test "Terminal: deleteLines wide character spacer head left and right scroll mar
 
 test "Terminal: deleteLines wide character spacer head left (< 2) and right scroll margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 3 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -11008,7 +11789,8 @@ test "Terminal: deleteLines wide character spacer head left (< 2) and right scro
 
 test "Terminal: deleteLines wide characters split by left/right scroll region boundaries" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 2 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -11043,7 +11825,8 @@ test "Terminal: deleteLines wide characters split by left/right scroll region bo
 
 test "Terminal: deleteLines zero" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 5 });
     defer t.deinit(alloc);
 
     // This should do nothing
@@ -11053,7 +11836,8 @@ test "Terminal: deleteLines zero" {
 
 test "Terminal: default style is empty" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -11061,14 +11845,15 @@ test "Terminal: default style is empty" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'A'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'A'), cell.content.codepoint.data);
         try testing.expectEqual(@as(style.Id, 0), cell.style_id);
     }
 }
 
 test "Terminal: bold style" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.setAttribute(.{ .bold = {} });
@@ -11077,7 +11862,7 @@ test "Terminal: bold style" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'A'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'A'), cell.content.codepoint.data);
         try testing.expect(cell.style_id != 0);
         const page = t.screens.active.cursor.page_pin.node.page();
         try testing.expect(page.styles.refCount(page.memory, t.screens.active.cursor.style_id) > 1);
@@ -11086,7 +11871,8 @@ test "Terminal: bold style" {
 
 test "Terminal: garbage collect overwritten" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.setAttribute(.{ .bold = {} });
@@ -11098,7 +11884,7 @@ test "Terminal: garbage collect overwritten" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'B'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'B'), cell.content.codepoint.data);
         try testing.expect(cell.style_id == 0);
     }
 
@@ -11109,7 +11895,8 @@ test "Terminal: garbage collect overwritten" {
 
 test "Terminal: do not garbage collect old styles in use" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.setAttribute(.{ .bold = {} });
@@ -11120,7 +11907,7 @@ test "Terminal: do not garbage collect old styles in use" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 'B'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 'B'), cell.content.codepoint.data);
         try testing.expect(cell.style_id == 0);
     }
 
@@ -11131,7 +11918,8 @@ test "Terminal: do not garbage collect old styles in use" {
 
 test "Terminal: print with style marks the row as styled" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.setAttribute(.{ .bold = {} });
@@ -11147,7 +11935,8 @@ test "Terminal: print with style marks the row as styled" {
 
 test "Terminal: DECALN" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 2 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -11174,7 +11963,8 @@ test "Terminal: DECALN" {
 
 test "Terminal: decaln reset margins" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 3 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -11192,7 +11982,8 @@ test "Terminal: decaln reset margins" {
 
 test "Terminal: decaln preserves color" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 3 });
     defer t.deinit(alloc);
 
     // Initial value
@@ -11221,7 +12012,8 @@ test "Terminal: decaln preserves color" {
 
 test "Terminal: DECALN resets graphemes with protected mode" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 3 });
     defer t.deinit(alloc);
 
     // Add protected mode. A previous version of DECALN accidentally preserved
@@ -11257,7 +12049,8 @@ test "Terminal: DECALN resets graphemes with protected mode" {
 
 test "Terminal: insertBlanks zero" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 2 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -11278,7 +12071,8 @@ test "Terminal: insertBlanks" {
     // NOTE: this is not verified with conformance tests, so these
     // tests might actually be verifying wrong behavior.
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 2 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -11302,7 +12096,8 @@ test "Terminal: insertBlanks pushes off end" {
     // NOTE: this is not verified with conformance tests, so these
     // tests might actually be verifying wrong behavior.
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 2 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -11325,7 +12120,8 @@ test "Terminal: insertBlanks more than size" {
     // NOTE: this is not verified with conformance tests, so these
     // tests might actually be verifying wrong behavior.
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 2 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -11346,7 +12142,8 @@ test "Terminal: insertBlanks more than size" {
 
 test "Terminal: insertBlanks no scroll region, fits" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     for ("ABC") |c| try t.print(c);
@@ -11365,7 +12162,8 @@ test "Terminal: insertBlanks no scroll region, fits" {
 
 test "Terminal: insertBlanks preserves background sgr" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     for ("ABC") |c| try t.print(c);
@@ -11395,7 +12193,8 @@ test "Terminal: insertBlanks preserves background sgr" {
 
 test "Terminal: insertBlanks shift off screen" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 10 });
     defer t.deinit(alloc);
 
     for ("  ABC") |c| try t.print(c);
@@ -11414,7 +12213,8 @@ test "Terminal: insertBlanks shift off screen" {
 
 test "Terminal: insertBlanks split multi-cell character" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 10 });
     defer t.deinit(alloc);
 
     for ("123") |c| try t.print(c);
@@ -11433,7 +12233,8 @@ test "Terminal: insertBlanks split multi-cell character" {
 
 test "Terminal: insertBlanks inside left/right scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     t.scrolling_region.left = 2;
@@ -11456,7 +12257,8 @@ test "Terminal: insertBlanks inside left/right scroll region" {
 
 test "Terminal: insertBlanks outside left/right scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 6, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 6, .rows = 10 });
     defer t.deinit(alloc);
 
     t.setCursorPos(1, 4);
@@ -11479,7 +12281,8 @@ test "Terminal: insertBlanks outside left/right scroll region" {
 
 test "Terminal: insertBlanks left/right scroll region large count" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     t.modes.set(.origin, true);
@@ -11500,7 +12303,8 @@ test "Terminal: insertBlanks left/right scroll region large count" {
 
 test "Terminal: insertBlanks deleting graphemes" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     // Disable grapheme clustering
@@ -11536,7 +12340,8 @@ test "Terminal: insertBlanks deleting graphemes" {
 
 test "Terminal: insertBlanks shift graphemes" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     // Enable grapheme clustering
@@ -11572,7 +12377,8 @@ test "Terminal: insertBlanks shift graphemes" {
 
 test "Terminal: insertBlanks split multi-cell character from tail" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("橋123");
@@ -11596,7 +12402,8 @@ test "Terminal: insertBlanks shifts hyperlinks" {
     // link should be preserved, blanks should not be linked
 
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 2 });
     defer t.deinit(alloc);
 
     try t.screens.active.startHyperlink("http://example.com", null);
@@ -11637,7 +12444,8 @@ test "Terminal: insertBlanks shifts hyperlinks" {
 
 test "Terminal: insertBlanks pushes hyperlink off end completely" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 2 });
     defer t.deinit(alloc);
 
     try t.screens.active.startHyperlink("http://example.com", null);
@@ -11673,7 +12481,8 @@ test "Terminal: insertBlanks wide char straddling right margin" {
     // away via swapCells but leaves the orphaned spacer_tail in place,
     // causing a page integrity violation.
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Fill row: A B C D 橋 _ _ _ _ _
@@ -11708,7 +12517,8 @@ test "Terminal: insertBlanks wide char spacer_tail orphaned beyond right margin"
     // is left behind, causing a page integrity violation:
     //   "spacer tail not following wide"
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Fill cols 0–9 with wide chars: 中中中中中
@@ -11738,7 +12548,8 @@ test "Terminal: insertBlanks wide char spacer_tail orphaned beyond right margin"
 
 test "Terminal: insert mode with space" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 2 });
     defer t.deinit(alloc);
 
     for ("hello") |c| try t.print(c);
@@ -11755,7 +12566,8 @@ test "Terminal: insert mode with space" {
 
 test "Terminal: insert mode doesn't wrap pushed characters" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 2 });
     defer t.deinit(alloc);
 
     for ("hello") |c| try t.print(c);
@@ -11772,7 +12584,8 @@ test "Terminal: insert mode doesn't wrap pushed characters" {
 
 test "Terminal: insert mode does nothing at the end of the line" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 2 });
     defer t.deinit(alloc);
 
     for ("hello") |c| try t.print(c);
@@ -11788,7 +12601,8 @@ test "Terminal: insert mode does nothing at the end of the line" {
 
 test "Terminal: insert mode with wide characters" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 2 });
     defer t.deinit(alloc);
 
     for ("hello") |c| try t.print(c);
@@ -11805,7 +12619,8 @@ test "Terminal: insert mode with wide characters" {
 
 test "Terminal: insert mode with wide characters at end" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 2 });
     defer t.deinit(alloc);
 
     for ("well") |c| try t.print(c);
@@ -11821,7 +12636,8 @@ test "Terminal: insert mode with wide characters at end" {
 
 test "Terminal: insert mode pushing off wide character" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 2 });
     defer t.deinit(alloc);
 
     for ("123") |c| try t.print(c);
@@ -11839,7 +12655,8 @@ test "Terminal: insert mode pushing off wide character" {
 
 test "Terminal: deleteChars" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -11858,7 +12675,8 @@ test "Terminal: deleteChars" {
 
 test "Terminal: deleteChars zero count" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -11877,7 +12695,8 @@ test "Terminal: deleteChars zero count" {
 
 test "Terminal: deleteChars more than half" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -11896,7 +12715,8 @@ test "Terminal: deleteChars more than half" {
 
 test "Terminal: deleteChars more than line width" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -11915,7 +12735,8 @@ test "Terminal: deleteChars more than line width" {
 
 test "Terminal: deleteChars should shift left" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -11934,7 +12755,8 @@ test "Terminal: deleteChars should shift left" {
 
 test "Terminal: deleteChars resets pending wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -11952,7 +12774,8 @@ test "Terminal: deleteChars resets pending wrap" {
 
 test "Terminal: deleteChars resets wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE123") |c| try t.print(c);
@@ -11981,7 +12804,8 @@ test "Terminal: deleteChars resets wrap" {
 
 test "Terminal: deleteChars simple operation" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -12000,7 +12824,8 @@ test "Terminal: deleteChars simple operation" {
 
 test "Terminal: deleteChars preserves background sgr" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 10 });
     defer t.deinit(alloc);
 
     for ("ABC123") |c| try t.print(c);
@@ -12033,7 +12858,8 @@ test "Terminal: deleteChars preserves background sgr" {
 
 test "Terminal: deleteChars outside scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 6, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 6, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -12054,7 +12880,8 @@ test "Terminal: deleteChars outside scroll region" {
 
 test "Terminal: deleteChars inside scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 6, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 6, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("ABC123");
@@ -12075,7 +12902,8 @@ test "Terminal: deleteChars inside scroll region" {
 
 test "Terminal: deleteChars split wide character from spacer tail" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 6, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 6, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("A橋123");
@@ -12091,7 +12919,8 @@ test "Terminal: deleteChars split wide character from spacer tail" {
 
 test "Terminal: deleteChars split wide character from wide" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 6, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 6, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("橋123");
@@ -12101,20 +12930,21 @@ test "Terminal: deleteChars split wide character from wide" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, '1'), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, '1'), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 }
 
 test "Terminal: deleteChars split wide character from end" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 6, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 6, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("A橋123");
@@ -12124,20 +12954,21 @@ test "Terminal: deleteChars split wide character from end" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 0, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0x6A4B), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0x6A4B), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.wide, cell.wide);
     }
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 1, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.spacer_tail, cell.wide);
     }
 }
 
 test "Terminal: deleteChars with a spacer head at the end" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 10 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 10 });
     defer t.deinit(alloc);
 
     try t.printString("0123橋123");
@@ -12155,14 +12986,15 @@ test "Terminal: deleteChars with a spacer head at the end" {
     {
         const list_cell = t.screens.active.pages.getCell(.{ .screen = .{ .x = 3, .y = 0 } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u21, 0), cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), cell.content.codepoint.data);
         try testing.expectEqual(Cell.Wide.narrow, cell.wide);
     }
 }
 
 test "Terminal: deleteChars split wide character tail" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(1, t.cols - 1);
@@ -12180,7 +13012,8 @@ test "Terminal: deleteChars split wide character tail" {
 
 test "Terminal: deleteChars wide char boundary conditions" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 1, .cols = 8 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 1, .cols = 8 });
     defer t.deinit(alloc);
 
     // EXPLANATION(qwerasd):
@@ -12244,7 +13077,8 @@ test "Terminal: deleteChars wide char boundary conditions" {
 
 test "Terminal: deleteChars wide char wrap boundary conditions" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 3, .cols = 8 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 3, .cols = 8 });
     defer t.deinit(alloc);
 
     // EXPLANATION(qwerasd):
@@ -12300,7 +13134,8 @@ test "Terminal: deleteChars wide char wrap boundary conditions" {
 
 test "Terminal: deleteChars wide char across right margin" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 3, .cols = 8 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 3, .cols = 8 });
     defer t.deinit(alloc);
 
     // scroll region
@@ -12343,7 +13178,8 @@ test "Terminal: deleteChars wide char across right margin" {
 
 test "Terminal: saveCursor" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 3 });
     defer t.deinit(alloc);
 
     try t.setAttribute(.{ .bold = {} });
@@ -12361,7 +13197,8 @@ test "Terminal: saveCursor" {
 
 test "Terminal: saveCursor position" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(1, 5);
@@ -12381,7 +13218,8 @@ test "Terminal: saveCursor position" {
 
 test "Terminal: saveCursor pending wrap state" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(1, 5);
@@ -12401,7 +13239,8 @@ test "Terminal: saveCursor pending wrap state" {
 
 test "Terminal: saveCursor origin mode" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.origin, true);
@@ -12421,7 +13260,8 @@ test "Terminal: saveCursor origin mode" {
 
 test "Terminal: saveCursor resize" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     t.setCursorPos(1, 10);
@@ -12439,7 +13279,8 @@ test "Terminal: saveCursor resize" {
 
 test "Terminal: saveCursor protected pen" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -12454,7 +13295,8 @@ test "Terminal: saveCursor protected pen" {
 
 test "Terminal: saveCursor doesn't modify hyperlink state" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 3 });
     defer t.deinit(alloc);
 
     try t.screens.active.startHyperlink("http://example.com", null);
@@ -12470,9 +13312,10 @@ test "Terminal: restoreCursor uses default style on OutOfSpace" {
     // manualStyleUpdate fails with OutOfSpace (can't split a 1-row page
     // and styles are at max capacity).
     const alloc = testing.allocator;
+    const io_impl = testing.io;
 
     // Use a single row so the page can't be split
-    var t = try init(alloc, .{ .cols = 10, .rows = 1 });
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 1 });
     defer t.deinit(alloc);
 
     // Set a style and save the cursor
@@ -12524,7 +13367,8 @@ test "Terminal: restoreCursor uses default style on OutOfSpace" {
 
 test "Terminal: setProtectedMode" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 3 });
     defer t.deinit(alloc);
 
     try testing.expect(!t.screens.active.cursor.protected);
@@ -12540,7 +13384,8 @@ test "Terminal: setProtectedMode" {
 
 test "Terminal: eraseLine simple erase right" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -12558,7 +13403,8 @@ test "Terminal: eraseLine simple erase right" {
 
 test "Terminal: eraseLine resets pending wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -12576,7 +13422,8 @@ test "Terminal: eraseLine resets pending wrap" {
 
 test "Terminal: eraseLine resets wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE123") |c| try t.print(c);
@@ -12603,7 +13450,8 @@ test "Terminal: eraseLine resets wrap" {
 
 test "Terminal: eraseLine right preserves background sgr" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -12636,7 +13484,8 @@ test "Terminal: eraseLine right preserves background sgr" {
 
 test "Terminal: eraseLine right wide character" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     for ("AB") |c| try t.print(c);
@@ -12656,7 +13505,8 @@ test "Terminal: eraseLine right wide character" {
 
 test "Terminal: eraseLine right protected attributes respected with iso" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -12675,7 +13525,8 @@ test "Terminal: eraseLine right protected attributes respected with iso" {
 
 test "Terminal: eraseLine right protected attributes ignored with dec most recent" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -12696,7 +13547,8 @@ test "Terminal: eraseLine right protected attributes ignored with dec most recen
 
 test "Terminal: eraseLine right protected attributes ignored with dec set" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.dec);
@@ -12715,7 +13567,8 @@ test "Terminal: eraseLine right protected attributes ignored with dec set" {
 
 test "Terminal: eraseLine right protected requested" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     for ("12345678") |c| try t.print(c);
@@ -12736,7 +13589,8 @@ test "Terminal: eraseLine right protected requested" {
 
 test "Terminal: eraseLine simple erase left" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -12754,7 +13608,8 @@ test "Terminal: eraseLine simple erase left" {
 
 test "Terminal: eraseLine left resets wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -12774,7 +13629,8 @@ test "Terminal: eraseLine left resets wrap" {
 
 test "Terminal: eraseLine left preserves background sgr" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -12807,7 +13663,8 @@ test "Terminal: eraseLine left preserves background sgr" {
 
 test "Terminal: eraseLine left wide character" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     for ("AB") |c| try t.print(c);
@@ -12827,7 +13684,8 @@ test "Terminal: eraseLine left wide character" {
 
 test "Terminal: eraseLine left protected attributes respected with iso" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -12846,7 +13704,8 @@ test "Terminal: eraseLine left protected attributes respected with iso" {
 
 test "Terminal: eraseLine left protected attributes ignored with dec most recent" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -12867,7 +13726,8 @@ test "Terminal: eraseLine left protected attributes ignored with dec most recent
 
 test "Terminal: eraseLine left protected attributes ignored with dec set" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.dec);
@@ -12886,7 +13746,8 @@ test "Terminal: eraseLine left protected attributes ignored with dec set" {
 
 test "Terminal: eraseLine left protected requested" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     for ("123456789") |c| try t.print(c);
@@ -12907,7 +13768,8 @@ test "Terminal: eraseLine left protected requested" {
 
 test "Terminal: eraseLine complete preserves background sgr" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -12938,9 +13800,39 @@ test "Terminal: eraseLine complete preserves background sgr" {
     }
 }
 
+test "Terminal: eraseLine complete resets wrap" {
+    const alloc = testing.allocator;
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+
+    for ("ABCDE123") |c| try t.print(c);
+    {
+        const list_cell = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 0 } }).?;
+        try testing.expect(list_cell.row.wrap);
+    }
+
+    t.setCursorPos(1, 1);
+    t.eraseLine(.complete, false);
+
+    {
+        const list_cell = t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 0 } }).?;
+        try testing.expect(!list_cell.row.wrap);
+    }
+    try t.print('X');
+    try t.resize(alloc, .{ .rows = 5, .cols = 10 });
+
+    {
+        const str = try t.plainString(testing.allocator);
+        defer testing.allocator.free(str);
+        try testing.expectEqualStrings("X\n123", str);
+    }
+}
+
 test "Terminal: eraseLine complete protected attributes respected with iso" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -12959,7 +13851,8 @@ test "Terminal: eraseLine complete protected attributes respected with iso" {
 
 test "Terminal: eraseLine complete protected attributes ignored with dec most recent" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -12980,7 +13873,8 @@ test "Terminal: eraseLine complete protected attributes ignored with dec most re
 
 test "Terminal: eraseLine complete protected attributes ignored with dec set" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.dec);
@@ -12999,7 +13893,8 @@ test "Terminal: eraseLine complete protected attributes ignored with dec set" {
 
 test "Terminal: eraseLine complete protected requested" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     for ("123456789") |c| try t.print(c);
@@ -13020,7 +13915,8 @@ test "Terminal: eraseLine complete protected requested" {
 
 test "Terminal: tabClear single" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 30, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 30, .rows = 5 });
     defer t.deinit(alloc);
 
     t.horizontalTab();
@@ -13033,7 +13929,8 @@ test "Terminal: tabClear single" {
 
 test "Terminal: tabClear all" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 30, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 30, .rows = 5 });
     defer t.deinit(alloc);
 
     t.tabClear(.all);
@@ -13045,7 +13942,8 @@ test "Terminal: tabClear all" {
 
 test "Terminal: printRepeat simple" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("A");
@@ -13061,7 +13959,8 @@ test "Terminal: printRepeat simple" {
 
 test "Terminal: printRepeat wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("    A");
@@ -13077,7 +13976,8 @@ test "Terminal: printRepeat wrap" {
 
 test "Terminal: printRepeat no previous character" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printRepeat(1);
@@ -13092,7 +13992,8 @@ test "Terminal: printRepeat no previous character" {
 
 test "Terminal: printSlice simple ascii" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 3 });
     defer t.deinit(alloc);
 
     try t.printSlice(&.{ 'h', 'e', 'l', 'l', 'o' });
@@ -13109,7 +14010,8 @@ test "Terminal: printSlice simple ascii" {
 
 test "Terminal: printSlice wraps and scrolls" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 2 });
     defer t.deinit(alloc);
 
     // 12 chars: fills row 1 (5), row 2 (5), wraps+scrolls, 2 more.
@@ -13126,7 +14028,8 @@ test "Terminal: printSlice wraps and scrolls" {
 
 test "Terminal: printSlice pending wrap state" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 5, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 5, .rows = 2 });
     defer t.deinit(alloc);
 
     try t.printSlice(&.{ 'a', 'b', 'c', 'd', 'e' });
@@ -13145,18 +14048,19 @@ test "Terminal: printSlice pending wrap state" {
 /// the other using printSlice() with random chunking, verifying that
 /// the results are identical.
 fn testPrintSliceDifferential(
+    io_impl: std.Io,
     alloc: Allocator,
     rand: std.Random,
     ops: usize,
     cols: size.CellCountInt,
     rows: size.CellCountInt,
 ) !void {
-    var t1 = try init(alloc, .{
+    var t1 = try init(io_impl, alloc, .{
         .cols = cols,
         .rows = rows,
     });
     defer t1.deinit(alloc);
-    var t2 = try init(alloc, .{
+    var t2 = try init(io_impl, alloc, .{
         .cols = cols,
         .rows = rows,
     });
@@ -13165,11 +14069,12 @@ fn testPrintSliceDifferential(
     // Alphabet of interesting codepoints: ascii, latin-1, combining
     // marks, CJK (wide), emoji (wide), ZWJ, variation selectors.
     const alphabet = [_]u21{
-        'a',     'b',     'Z',     '0',    ' ',    0x10,    0x1F,   0x7F,
-        'é',    0xFF,    0x301,   0x4E00, 0x4E01, 0x1F600, 0x200D, 0xFE0F,
-        'x',     'y',     0x1F9D1, 0x0308, 0xAD,   0x3042,  0xAC00, 'q',
-        'r',     's',     't',     'u',    'v',    'w',     '1',    '2',
-        0x1F1E6, 0x1F1E7, 0x1100,  0x1161, 0x11A8, 0x200C,  0x0430, 0x03B1,
+        'a',     'b',     'Z',    '0',    ' ',     0x10,   0x1F,   0x7F,
+        'é',
+        0xFF,    0x301,   0x4E00, 0x4E01, 0x1F600, 0x200D, 0xFE0F, 'x',
+        'y',     0x1F9D1, 0x0308, 0xAD,   0x3042,  0xAC00, 'q',    'r',
+        's',     't',     'u',    'v',    'w',     '1',    '2',    0x1F1E6,
+        0x1F1E7, 0x1100,  0x1161, 0x11A8, 0x200C,  0x0430, 0x03B1,
     };
 
     var cps_buf: [64]u32 = undefined;
@@ -13307,20 +14212,22 @@ fn testPrintSliceDifferential(
 
 test "Terminal: printSlice differential fuzz vs print" {
     const alloc = testing.allocator;
+    const io_impl = testing.io;
 
     // Multiple seeds and terminal sizes for coverage, including a
     // tiny terminal to stress wrap/scroll edge cases.
     var prng = std.Random.DefaultPrng.init(0xC0FFEE);
     const rand = prng.random();
-    try testPrintSliceDifferential(alloc, rand, 500, 80, 24);
-    try testPrintSliceDifferential(alloc, rand, 500, 10, 4);
-    try testPrintSliceDifferential(alloc, rand, 500, 5, 2);
-    try testPrintSliceDifferential(alloc, rand, 200, 2, 2);
+    try testPrintSliceDifferential(io_impl, alloc, rand, 500, 80, 24);
+    try testPrintSliceDifferential(io_impl, alloc, rand, 500, 10, 4);
+    try testPrintSliceDifferential(io_impl, alloc, rand, 500, 5, 2);
+    try testPrintSliceDifferential(io_impl, alloc, rand, 200, 2, 2);
 }
 
 test "Terminal: printAttributes" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     var storage: [64]u8 = undefined;
@@ -13349,20 +14256,31 @@ test "Terminal: printAttributes" {
         try t.setAttribute(.inverse);
         try t.setAttribute(.invisible);
         try t.setAttribute(.strikethrough);
+        try t.setAttribute(.overline);
         try t.setAttribute(.{ .direct_color_fg = .{ .r = 100, .g = 200, .b = 255 } });
         try t.setAttribute(.{ .direct_color_bg = .{ .r = 101, .g = 102, .b = 103 } });
         defer t.setAttribute(.unset) catch unreachable;
         const buf = try t.printAttributes(&storage);
-        try testing.expectEqualStrings("0;1;2;3;4;5;7;8;9;38:2::100:200:255;48:2::101:102:103", buf);
+        try testing.expectEqualStrings("0;1;2;3;4;53;5;7;8;9;38:2::100:200:255;48:2::101:102:103", buf);
     }
 
-    {
-        try t.setAttribute(.{ .underline = .single });
-        defer t.setAttribute(.unset) catch unreachable;
+    const Case = struct {
+        underline: sgr.Attribute.Underline,
+        expected: []const u8,
+    };
+    for ([_]Case{
+        .{ .underline = .single, .expected = "0;4" },
+        .{ .underline = .double, .expected = "0;4:2" },
+        .{ .underline = .curly, .expected = "0;4:3" },
+        .{ .underline = .dotted, .expected = "0;4:4" },
+        .{ .underline = .dashed, .expected = "0;4:5" },
+    }) |case| {
+        try t.setAttribute(.{ .underline = case.underline });
         const buf = try t.printAttributes(&storage);
-        try testing.expectEqualStrings("0;4", buf);
+        try testing.expectEqualStrings(case.expected, buf);
     }
 
+    try t.setAttribute(.unset);
     {
         const buf = try t.printAttributes(&storage);
         try testing.expectEqualStrings("0", buf);
@@ -13371,7 +14289,8 @@ test "Terminal: printAttributes" {
 
 test "Terminal: eraseDisplay simple erase below" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABC") |c| try t.print(c);
@@ -13399,7 +14318,8 @@ test "Terminal: eraseDisplay simple erase below" {
 
 test "Terminal: eraseDisplay erase below preserves SGR bg" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABC") |c| try t.print(c);
@@ -13439,7 +14359,8 @@ test "Terminal: eraseDisplay erase below preserves SGR bg" {
 
 test "Terminal: eraseDisplay below split multi-cell" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("AB橋C");
@@ -13461,7 +14382,8 @@ test "Terminal: eraseDisplay below split multi-cell" {
 
 test "Terminal: eraseDisplay below protected attributes respected with iso" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -13484,7 +14406,8 @@ test "Terminal: eraseDisplay below protected attributes respected with iso" {
 
 test "Terminal: eraseDisplay below protected attributes ignored with dec most recent" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -13509,7 +14432,8 @@ test "Terminal: eraseDisplay below protected attributes ignored with dec most re
 
 test "Terminal: eraseDisplay below protected attributes ignored with dec set" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.dec);
@@ -13532,7 +14456,8 @@ test "Terminal: eraseDisplay below protected attributes ignored with dec set" {
 
 test "Terminal: eraseDisplay below protected attributes respected with force" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.dec);
@@ -13555,7 +14480,8 @@ test "Terminal: eraseDisplay below protected attributes respected with force" {
 
 test "Terminal: eraseDisplay simple erase above" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABC") |c| try t.print(c);
@@ -13582,7 +14508,8 @@ test "Terminal: eraseDisplay simple erase above" {
 
 test "Terminal: eraseDisplay erase above preserves SGR bg" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABC") |c| try t.print(c);
@@ -13622,7 +14549,8 @@ test "Terminal: eraseDisplay erase above preserves SGR bg" {
 
 test "Terminal: eraseDisplay above split multi-cell" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.printString("AB橋C");
@@ -13644,7 +14572,8 @@ test "Terminal: eraseDisplay above split multi-cell" {
 
 test "Terminal: eraseDisplay above protected attributes respected with iso" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -13667,7 +14596,8 @@ test "Terminal: eraseDisplay above protected attributes respected with iso" {
 
 test "Terminal: eraseDisplay above protected attributes ignored with dec most recent" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.iso);
@@ -13692,7 +14622,8 @@ test "Terminal: eraseDisplay above protected attributes ignored with dec most re
 
 test "Terminal: eraseDisplay above protected attributes ignored with dec set" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.dec);
@@ -13715,7 +14646,8 @@ test "Terminal: eraseDisplay above protected attributes ignored with dec set" {
 
 test "Terminal: eraseDisplay above protected attributes respected with force" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.setProtectedMode(.dec);
@@ -13738,7 +14670,8 @@ test "Terminal: eraseDisplay above protected attributes respected with force" {
 
 test "Terminal: eraseDisplay protected complete" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -13766,7 +14699,8 @@ test "Terminal: eraseDisplay protected complete" {
 
 test "Terminal: eraseDisplay protected below" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -13788,7 +14722,8 @@ test "Terminal: eraseDisplay protected below" {
 
 test "Terminal: eraseDisplay scroll complete" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -13805,7 +14740,8 @@ test "Terminal: eraseDisplay scroll complete" {
 
 test "Terminal: eraseDisplay protected above" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 3 });
     defer t.deinit(alloc);
 
     try t.print('A');
@@ -13827,7 +14763,8 @@ test "Terminal: eraseDisplay protected above" {
 
 test "Terminal: eraseDisplay complete preserves cursor" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     // Set our cursur
@@ -13844,7 +14781,8 @@ test "Terminal: eraseDisplay complete preserves cursor" {
 
 test "Terminal: semantic prompt" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Prompt
@@ -13888,7 +14826,8 @@ test "Terminal: semantic prompt" {
 
 test "Terminal: semantic prompt continuations" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Prompt
@@ -13938,7 +14877,8 @@ test "Terminal: index in prompt mode marks new row as prompt continuation" {
     // a newline, assume the new row is a prompt continuation (since Fish
     // doesn't emit OSC133 k=s markers for continuation lines).
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Start a prompt
@@ -13975,7 +14915,8 @@ test "Terminal: index in input mode does not mark new row as prompt" {
     // Input mode should NOT trigger prompt continuation on newline
     // (only prompt mode does, not input mode)
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Start a prompt then switch to input
@@ -14004,7 +14945,8 @@ test "Terminal: index in input mode does not mark new row as prompt" {
 test "Terminal: index in output mode does not mark new row as prompt" {
     // Output mode should NOT trigger prompt continuation
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Complete prompt cycle: prompt -> input -> output
@@ -14033,7 +14975,8 @@ test "Terminal: OSC133C at x=0 on prompt row clears prompt mark" {
     // then immediately sends OSC133C (start output) at column 0, we
     // should clear the prompt continuation mark we just set.
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Start a prompt
@@ -14070,7 +15013,8 @@ test "Terminal: OSC133C at x=0 on prompt row clears prompt mark" {
 test "Terminal: OSC133C at x>0 on prompt row does not clear prompt mark" {
     // If we're not at column 0, we shouldn't clear the prompt mark
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Start a prompt on a row
@@ -14112,7 +15056,8 @@ test "Terminal: OSC133C at x>0 on prompt row does not clear prompt mark" {
 test "Terminal: multiple newlines in prompt mode marks all rows" {
     // Multiple newlines should each mark their row as prompt continuation
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Start a prompt
@@ -14155,7 +15100,8 @@ test "Terminal: multiple newlines in prompt mode marks all rows" {
 
 test "Terminal: OSC133A click_events=1 sets click to click_events" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Verify default state is none
@@ -14172,7 +15118,8 @@ test "Terminal: OSC133A click_events=1 sets click to click_events" {
 
 test "Terminal: OSC133A click_events=2 sets click to click_events (relative)" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // Verify default state is none
@@ -14189,7 +15136,8 @@ test "Terminal: OSC133A click_events=2 sets click to click_events (relative)" {
 
 test "Terminal: OSC133A click_events=0 does not set click_events" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // OSC 133;A with click_events=0
@@ -14204,7 +15152,8 @@ test "Terminal: OSC133A click_events=0 does not set click_events" {
 
 test "Terminal: OSC133A cl option sets click to cl value" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // OSC 133;A with cl=m (multiple)
@@ -14218,7 +15167,8 @@ test "Terminal: OSC133A cl option sets click to cl value" {
 
 test "Terminal: OSC133A cl=line sets click to line" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     try t.semanticPrompt(.{
@@ -14231,7 +15181,8 @@ test "Terminal: OSC133A cl=line sets click to line" {
 
 test "Terminal: OSC133A click_events=1 takes priority over cl" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // OSC 133;A with both click_events=1 and cl=m
@@ -14246,7 +15197,8 @@ test "Terminal: OSC133A click_events=1 takes priority over cl" {
 
 test "Terminal: OSC133A click_events=0 falls back to cl" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // OSC 133;A with click_events=0 and cl=v
@@ -14261,7 +15213,8 @@ test "Terminal: OSC133A click_events=0 falls back to cl" {
 
 test "Terminal: OSC133A no click options leaves click as none" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 5 });
     defer t.deinit(alloc);
 
     // OSC 133;A with no click-related options
@@ -14275,7 +15228,8 @@ test "Terminal: OSC133A no click options leaves click as none" {
 
 test "Terminal: cursorIsAtPrompt" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 10, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 10, .rows = 3 });
     defer t.deinit(alloc);
 
     try testing.expect(!t.cursorIsAtPrompt());
@@ -14304,7 +15258,8 @@ test "Terminal: cursorIsAtPrompt" {
 
 test "Terminal: cursorIsAtPrompt alternate screen" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 2 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 2 });
     defer t.deinit(alloc);
 
     try testing.expect(!t.cursorIsAtPrompt());
@@ -14319,7 +15274,7 @@ test "Terminal: cursorIsAtPrompt alternate screen" {
 }
 
 test "Terminal: cursor defaults update current default cursor" {
-    var t = try init(testing.allocator, .{
+    var t = try init(testing.io, testing.allocator, .{
         .cols = 10,
         .rows = 10,
         .default_cursor_style = .bar,
@@ -14346,7 +15301,7 @@ test "Terminal: cursor defaults update current default cursor" {
 }
 
 test "Terminal: cursor defaults do not override explicit cursor" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
 
     t.setCursorStyle(.blinking_bar);
@@ -14377,7 +15332,7 @@ test "Terminal: cursor defaults do not override explicit cursor" {
 }
 
 test "Terminal: fullReset with a non-empty pen" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     try t.setAttribute(.{ .direct_color_fg = .{ .r = 0xFF, .g = 0, .b = 0x7F } });
@@ -14399,7 +15354,7 @@ test "Terminal: fullReset with a non-empty pen" {
 }
 
 test "Terminal: fullReset hyperlink" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     try t.screens.active.startHyperlink("http://example.com", null);
@@ -14408,7 +15363,7 @@ test "Terminal: fullReset hyperlink" {
 }
 
 test "Terminal: fullReset with a non-empty saved cursor" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     try t.setAttribute(.{ .direct_color_fg = .{ .r = 0xFF, .g = 0, .b = 0x7F } });
@@ -14429,7 +15384,7 @@ test "Terminal: fullReset with a non-empty saved cursor" {
 }
 
 test "Terminal: fullReset origin mode" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
 
     t.setCursorPos(3, 5);
@@ -14443,7 +15398,7 @@ test "Terminal: fullReset origin mode" {
 }
 
 test "Terminal: fullReset status display" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
 
     t.status_display = .status_line;
@@ -14453,7 +15408,7 @@ test "Terminal: fullReset status display" {
 
 // https://github.com/mitchellh/ghostty/issues/1607
 test "Terminal: fullReset clears alt screen kitty keyboard state" {
-    var t = try init(testing.allocator, .{ .cols = 10, .rows = 10 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);
 
     try t.switchScreenMode(.@"1049", true);
@@ -14471,7 +15426,7 @@ test "Terminal: fullReset clears alt screen kitty keyboard state" {
 }
 
 test "Terminal: fullReset default modes" {
-    var t = try init(testing.allocator, .{
+    var t = try init(testing.io, testing.allocator, .{
         .cols = 10,
         .rows = 10,
         .default_modes = .{ .grapheme_cluster = true },
@@ -14483,7 +15438,7 @@ test "Terminal: fullReset default modes" {
 }
 
 test "Terminal: fullReset tracked pins" {
-    var t = try init(testing.allocator, .{ .cols = 80, .rows = 80 });
+    var t = try init(testing.io, testing.allocator, .{ .cols = 80, .rows = 80 });
     defer t.deinit(testing.allocator);
 
     // Create a tracked pin
@@ -14497,7 +15452,8 @@ test "Terminal: fullReset tracked pins" {
 // this test around to ensure we don't regress at multiple layers.
 test "Terminal: resize less cols with wide char then print" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 3, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 3, .rows = 3 });
     defer t.deinit(alloc);
 
     try t.print('x');
@@ -14511,9 +15467,10 @@ test "Terminal: resize less cols with wide char then print" {
 // This was found via fuzzing so its highly specific.
 test "Terminal: resize with left and right margin set" {
     const alloc = testing.allocator;
+    const io_impl = testing.io;
     const cols = 70;
     const rows = 23;
-    var t = try init(alloc, .{ .cols = cols, .rows = rows });
+    var t = try init(io_impl, alloc, .{ .cols = cols, .rows = rows });
     defer t.deinit(alloc);
 
     t.modes.set(.enable_left_and_right_margin, true);
@@ -14529,9 +15486,10 @@ test "Terminal: resize with left and right margin set" {
 // https://github.com/mitchellh/ghostty/issues/1343
 test "Terminal: resize with wraparound off" {
     const alloc = testing.allocator;
+    const io_impl = testing.io;
     const cols = 4;
     const rows = 2;
-    var t = try init(alloc, .{ .cols = cols, .rows = rows });
+    var t = try init(io_impl, alloc, .{ .cols = cols, .rows = rows });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, false);
@@ -14549,9 +15507,10 @@ test "Terminal: resize with wraparound off" {
 
 test "Terminal: resize with wraparound on" {
     const alloc = testing.allocator;
+    const io_impl = testing.io;
     const cols = 4;
     const rows = 2;
-    var t = try init(alloc, .{ .cols = cols, .rows = rows });
+    var t = try init(io_impl, alloc, .{ .cols = cols, .rows = rows });
     defer t.deinit(alloc);
 
     t.modes.set(.wraparound, true);
@@ -14569,7 +15528,8 @@ test "Terminal: resize with wraparound on" {
 
 test "Terminal: resize with high unique style per cell" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 30, .rows = 30 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 30, .rows = 30 });
     defer t.deinit(alloc);
 
     for (0..t.rows) |y| {
@@ -14589,7 +15549,8 @@ test "Terminal: resize with high unique style per cell" {
 
 test "Terminal: resize with high unique style per cell with wrapping" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 30, .rows = 30 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 30, .rows = 30 });
     defer t.deinit(alloc);
 
     const cell_count: u16 = @intCast(t.rows * t.cols);
@@ -14610,7 +15571,8 @@ test "Terminal: resize with high unique style per cell with wrapping" {
 
 test "Terminal: resize with reflow and saved cursor" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 3 });
     defer t.deinit(alloc);
     try t.printString("1A2B");
     t.setCursorPos(2, 2);
@@ -14620,7 +15582,7 @@ test "Terminal: resize with reflow and saved cursor" {
             .y = t.screens.active.cursor.y,
         } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u32, 'B'), cell.content.codepoint);
+        try testing.expectEqual(@as(u32, 'B'), cell.content.codepoint.data);
     }
 
     {
@@ -14646,13 +15608,14 @@ test "Terminal: resize with reflow and saved cursor" {
             .y = t.screens.active.cursor.y,
         } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u32, 'B'), cell.content.codepoint);
+        try testing.expectEqual(@as(u32, 'B'), cell.content.codepoint.data);
     }
 }
 
 test "Terminal: resize with reflow and saved cursor pending wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 2, .rows = 3 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 2, .rows = 3 });
     defer t.deinit(alloc);
     try t.printString("1A2B");
     {
@@ -14661,7 +15624,7 @@ test "Terminal: resize with reflow and saved cursor pending wrap" {
             .y = t.screens.active.cursor.y,
         } }).?;
         const cell = list_cell.cell;
-        try testing.expectEqual(@as(u32, 'B'), cell.content.codepoint);
+        try testing.expectEqual(@as(u32, 'B'), cell.content.codepoint.data);
     }
 
     {
@@ -14691,7 +15654,8 @@ test "Terminal: resize with reflow and saved cursor pending wrap" {
 
 test "Terminal: DECCOLM without DEC mode 40" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.@"132_column", true);
@@ -14703,7 +15667,8 @@ test "Terminal: DECCOLM without DEC mode 40" {
 
 test "Terminal: DECCOLM unset" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.enable_mode_3, true);
@@ -14714,7 +15679,8 @@ test "Terminal: DECCOLM unset" {
 
 test "Terminal: DECCOLM resets pending wrap" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     for ("ABCDE") |c| try t.print(c);
@@ -14729,7 +15695,8 @@ test "Terminal: DECCOLM resets pending wrap" {
 
 test "Terminal: DECCOLM preserves SGR bg" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     try t.setAttribute(.{ .direct_color_bg = .{
@@ -14753,7 +15720,8 @@ test "Terminal: DECCOLM preserves SGR bg" {
 
 test "Terminal: DECCOLM resets scroll region" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     t.modes.set(.enable_left_and_right_margin, true);
@@ -14772,7 +15740,8 @@ test "Terminal: DECCOLM resets scroll region" {
 
 test "Terminal: mode 47 alt screen plain" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     // Print on primary screen
@@ -14823,7 +15792,8 @@ test "Terminal: mode 47 alt screen plain" {
 
 test "Terminal: mode 47 copies cursor both directions" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     // Color our cursor red
@@ -14859,7 +15829,8 @@ test "Terminal: mode 47 copies cursor both directions" {
 
 test "Terminal: mode 1047 alt screen plain" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     // Print on primary screen
@@ -14910,7 +15881,8 @@ test "Terminal: mode 1047 alt screen plain" {
 
 test "Terminal: mode 1047 copies cursor both directions" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     // Color our cursor red
@@ -14946,7 +15918,8 @@ test "Terminal: mode 1047 copies cursor both directions" {
 
 test "Terminal: mode 1049 alt screen plain" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .rows = 5, .cols = 5 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .rows = 5, .cols = 5 });
     defer t.deinit(alloc);
 
     // Print on primary screen
@@ -15011,7 +15984,8 @@ test "Terminal: mode 1049 alt screen plain" {
 // characters straddling the right margin boundary leave orphaned spacer_tails.
 test "Terminal: deleteLines wide char at right margin with full clear" {
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 80, .rows = 24 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 80, .rows = 24 });
     defer t.deinit(alloc);
 
     // Place a wide character at col 39 (1-indexed) on several rows.
@@ -15033,8 +16007,11 @@ test "Terminal: deleteLines wide char at right margin with full clear" {
 }
 
 test "Terminal: glyph APC stores session glossary entries" {
+    if (comptime !build_options.glyph_protocol) return error.SkipZigTest;
+
     const alloc = testing.allocator;
-    var t = try init(alloc, .{ .cols = 80, .rows = 24 });
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 80, .rows = 24 });
     defer t.deinit(alloc);
 
     var register_parser = glyph.CommandParser.init(alloc, 1024 * 1024);

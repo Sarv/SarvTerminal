@@ -11,6 +11,7 @@ const Allocator = std.mem.Allocator;
 const objc = @import("objc");
 const apprt = @import("../apprt.zig");
 const font = @import("../font/main.zig");
+const global = @import("../global.zig");
 const input = @import("../input.zig");
 const internal_os = @import("../os/main.zig");
 const renderer = @import("../renderer.zig");
@@ -119,7 +120,13 @@ pub const App = struct {
 
     core_app: *CoreApp,
     opts: Options,
-    keymap: input.Keymap,
+
+    /// The keyboard layout keymap. This is lazily initialized on first
+    /// use because creating it requires talking to the text input
+    /// system (TIS on macOS), and the first such call in a process is
+    /// slow (multiple milliseconds). It is only needed once keyboard
+    /// events start flowing, at which point the system is warm.
+    keymap: ?input.Keymap,
 
     /// The configuration for the app. This is owned by this structure.
     config: Config,
@@ -135,19 +142,16 @@ pub const App = struct {
         var config_clone = try config.clone(alloc);
         errdefer config_clone.deinit();
 
-        var keymap = try input.Keymap.init();
-        errdefer keymap.deinit();
-
         self.* = .{
             .core_app = core_app,
             .config = config_clone,
             .opts = opts,
-            .keymap = keymap,
+            .keymap = null,
         };
     }
 
     pub fn terminate(self: *App) void {
-        self.keymap.deinit();
+        if (self.keymap) |*v| v.deinit();
         self.config.deinit();
     }
 
@@ -207,8 +211,10 @@ pub const App = struct {
 
     /// This should be called whenever the keyboard layout was changed.
     pub fn reloadKeymap(self: *App) !void {
-        // Reload the keymap
-        try self.keymap.reload();
+        // Reload the keymap. If it was never initialized we don't need
+        // to do anything since lazy initialization will pick up the
+        // current layout.
+        if (self.keymap) |*v| try v.reload();
     }
 
     /// Loads the keyboard layout.
@@ -216,13 +222,25 @@ pub const App = struct {
     /// Kind of expensive so this should be avoided if possible. When I say
     /// "kind of expensive" I mean that its not something you probably want
     /// to run on every keypress.
-    pub fn keyboardLayout(self: *const App) input.KeyboardLayout {
+    pub fn keyboardLayout(self: *App) input.KeyboardLayout {
         // We only support keyboard layout detection on macOS.
         if (comptime builtin.os.tag != .macos) return .unknown;
 
+        // Lazily initialize the keymap.
+        const keymap: *input.Keymap = keymap: {
+            if (self.keymap == null) {
+                self.keymap = input.Keymap.init() catch |err| {
+                    log.warn("error initializing keymap err={}", .{err});
+                    return .unknown;
+                };
+            }
+
+            break :keymap &self.keymap.?;
+        };
+
         // Any layout larger than this is not something we can handle.
         var buf: [256]u8 = undefined;
-        const id = self.keymap.sourceId(&buf) catch |err| {
+        const id = keymap.sourceId(&buf) catch |err| {
             comptime assert(@TypeOf(err) == error{OutOfMemory});
             return .unknown;
         };
@@ -333,9 +351,10 @@ pub const App = struct {
         _: apprt.ipc.Target,
         comptime action: apprt.ipc.Action.Key,
         _: apprt.ipc.Action.Value(action),
-    ) (Allocator.Error || std.posix.WriteError || apprt.ipc.Errors)!bool {
+    ) (Allocator.Error || apprt.ipc.Errors)!bool {
         switch (action) {
             .new_window => return false,
+            .new_tab => return false,
             .toggle_quick_terminal => return false,
         }
     }
@@ -372,7 +391,7 @@ pub const Platform = union(PlatformTag) {
 
     /// Initialize a Platform a tag and configuration from the C ABI.
     pub fn init(tag_int: c_int, c_platform: C) !Platform {
-        const tag = try std.meta.intToEnum(PlatformTag, tag_int);
+        const tag = std.enums.fromInt(PlatformTag, tag_int) orelse return error.InvalidEnumTag;
         return switch (tag) {
             .macos => if (MacOS != void) macos: {
                 const config = c_platform.macos;
@@ -490,16 +509,16 @@ pub const Surface = struct {
         if (opts.working_directory) |c_wd| {
             const wd = std.mem.sliceTo(c_wd, 0);
             if (wd.len > 0) wd: {
-                var dir = std.fs.openDirAbsolute(wd, .{}) catch |err| {
+                var dir = std.Io.Dir.openDirAbsolute(global.io(), wd, .{}) catch |err| {
                     log.warn(
                         "error opening requested working directory dir={s} err={}",
                         .{ wd, err },
                     );
                     break :wd;
                 };
-                defer dir.close();
+                defer dir.close(global.io());
 
-                const stat = dir.stat() catch |err| {
+                const stat = dir.stat(global.io()) catch |err| {
                     log.warn(
                         "failed to stat requested working directory dir={s} err={}",
                         .{ wd, err },
@@ -950,32 +969,32 @@ pub const Surface = struct {
         };
     }
 
-    pub fn defaultTermioEnv(self: *const Surface) !std.process.EnvMap {
-        const alloc = self.app.core_app.alloc;
-        var env = try internal_os.getEnvMap(alloc);
+    pub fn defaultTermioEnv(self: *const Surface) !std.process.Environ.Map {
+        _ = self;
+        var env = try global.environMap();
         errdefer env.deinit();
 
         if (comptime builtin.target.os.tag.isDarwin()) {
             if (env.get("__XCODE_BUILT_PRODUCTS_DIR_PATHS") != null) {
-                env.remove("__XCODE_BUILT_PRODUCTS_DIR_PATHS");
-                env.remove("__XPC_DYLD_LIBRARY_PATH");
-                env.remove("DYLD_FRAMEWORK_PATH");
-                env.remove("DYLD_INSERT_LIBRARIES");
-                env.remove("DYLD_LIBRARY_PATH");
-                env.remove("LD_LIBRARY_PATH");
-                env.remove("SECURITYSESSIONID");
-                env.remove("XPC_SERVICE_NAME");
+                _ = env.orderedRemove("__XCODE_BUILT_PRODUCTS_DIR_PATHS");
+                _ = env.orderedRemove("__XPC_DYLD_LIBRARY_PATH");
+                _ = env.orderedRemove("DYLD_FRAMEWORK_PATH");
+                _ = env.orderedRemove("DYLD_INSERT_LIBRARIES");
+                _ = env.orderedRemove("DYLD_LIBRARY_PATH");
+                _ = env.orderedRemove("LD_LIBRARY_PATH");
+                _ = env.orderedRemove("SECURITYSESSIONID");
+                _ = env.orderedRemove("XPC_SERVICE_NAME");
             }
 
             // Remove this so that running `ghostty` within Ghostty works.
-            env.remove("GHOSTTY_MAC_LAUNCH_SOURCE");
+            _ = env.orderedRemove("GHOSTTY_MAC_LAUNCH_SOURCE");
 
             // If we were launched from the desktop then we want to
             // remove the LANGUAGE env var so that we don't inherit
             // our translation settings for Ghostty. If we aren't from
             // the desktop then we didn't set our LANGUAGE var so we
             // don't need to remove it.
-            if (internal_os.launchedFromDesktop()) env.remove("LANGUAGE");
+            if (internal_os.launchedFromDesktop()) _ = env.orderedRemove("LANGUAGE");
         }
 
         return env;
@@ -1000,7 +1019,7 @@ pub const Inspector = struct {
     content_scale: f64 = 1,
 
     /// Our previous instant used to calculate delta time for animations.
-    instant: ?std.time.Instant = null,
+    instant: ?std.Io.Timestamp = null,
 
     const Backend = enum {
         metal,
@@ -1229,9 +1248,9 @@ pub const Inspector = struct {
         const io: *cimgui.c.ImGuiIO = cimgui.c.ImGui_GetIO();
 
         // Determine our delta time
-        const now = try std.time.Instant.now();
+        const now: std.Io.Timestamp = .now(global.io(), .awake);
         io.DeltaTime = if (self.instant) |prev| delta: {
-            const since_ns: f64 = @floatFromInt(now.since(prev));
+            const since_ns: f64 = @floatFromInt(prev.durationTo(now).toNanoseconds());
             const ns_per_s: f64 = @floatFromInt(std.time.ns_per_s);
             const since_s: f32 = @floatCast(since_ns / ns_per_s);
             break :delta @max(0.00001, since_s);
@@ -1242,8 +1261,6 @@ pub const Inspector = struct {
 
 // C API
 pub const CAPI = struct {
-    const global = &@import("../global.zig").state;
-
     /// This is the same as Surface.KeyEvent but this is the raw C API version.
     const KeyEvent = extern struct {
         action: input.Action,
@@ -1300,7 +1317,7 @@ pub const CAPI = struct {
 
         pub fn deinit(self: *Text) void {
             if (self.text) |ptr| {
-                global.alloc.free(ptr[0..self.text_len :0]);
+                global.alloc().free(ptr[0..self.text_len :0]);
             }
         }
     };
@@ -1410,12 +1427,12 @@ pub const CAPI = struct {
         opts: *const apprt.runtime.App.Options,
         config: *const Config,
     ) !*App {
-        const core_app = try CoreApp.create(global.alloc);
+        const core_app = try CoreApp.create(global.alloc());
         errdefer core_app.destroy();
 
         // Create our runtime app
-        var app = try global.alloc.create(App);
-        errdefer global.alloc.destroy(app);
+        var app = try global.alloc().create(App);
+        errdefer global.alloc().destroy(app);
         try app.init(core_app, config, opts.*);
         errdefer app.terminate();
 
@@ -1438,7 +1455,7 @@ pub const CAPI = struct {
     export fn ghostty_app_free(v: *App) void {
         const core_app = v.core_app;
         v.terminate();
-        global.alloc.destroy(v);
+        global.alloc().destroy(v);
         core_app.destroy();
     }
 
@@ -1490,7 +1507,7 @@ pub const CAPI = struct {
 
     /// Open the configuration.
     export fn ghostty_app_open_config(v: *App) void {
-        _ = v.performAction(.app, .open_config, {}) catch |err| {
+        _ = v.performAction(.app, .open_config, .new_window) catch |err| {
             log.err("error reloading config err={}", .{err});
             return;
         };
@@ -1520,13 +1537,7 @@ pub const CAPI = struct {
 
     /// Update the color scheme of the app.
     export fn ghostty_app_set_color_scheme(v: *App, scheme_raw: c_int) void {
-        const scheme = std.meta.intToEnum(apprt.ColorScheme, scheme_raw) catch {
-            log.warn(
-                "invalid color scheme to ghostty_surface_set_color_scheme value={}",
-                .{scheme_raw},
-            );
-            return;
-        };
+        const scheme = std.enums.fromInt(apprt.ColorScheme, scheme_raw) orelse return;
 
         v.core_app.colorSchemeEvent(v, scheme) catch |err| {
             log.err("error setting color scheme err={}", .{err});
@@ -1612,8 +1623,8 @@ pub const CAPI = struct {
         result: *Text,
     ) bool {
         const core_surface = &surface.core_surface;
-        core_surface.renderer_state.mutex.lock();
-        defer core_surface.renderer_state.mutex.unlock();
+        core_surface.renderer_state.mutex.lockUncancelable(global.io());
+        defer core_surface.renderer_state.mutex.unlock(global.io());
 
         // If we don't have a selection, do nothing.
         const core_sel = core_surface.io.terminal.screens.active.selection orelse return false;
@@ -1632,8 +1643,8 @@ pub const CAPI = struct {
         sel: Selection,
         result: *Text,
     ) bool {
-        surface.core_surface.renderer_state.mutex.lock();
-        defer surface.core_surface.renderer_state.mutex.unlock();
+        surface.core_surface.renderer_state.mutex.lockUncancelable(global.io());
+        defer surface.core_surface.renderer_state.mutex.unlock(global.io());
 
         const core_sel = sel.core(
             surface.core_surface.renderer_state.terminal.screens.active,
@@ -1651,7 +1662,7 @@ pub const CAPI = struct {
 
         // Get our text directly from the core surface.
         const text = core_surface.dumpTextLocked(
-            global.alloc,
+            global.alloc(),
             core_sel,
         ) catch |err| {
             log.warn("error reading text err={}", .{err});
@@ -1730,14 +1741,7 @@ pub const CAPI = struct {
 
     /// Update the color scheme of the surface.
     export fn ghostty_surface_set_color_scheme(surface: *Surface, scheme_raw: c_int) void {
-        const scheme = std.meta.intToEnum(apprt.ColorScheme, scheme_raw) catch {
-            log.warn(
-                "invalid color scheme to ghostty_surface_set_color_scheme value={}",
-                .{scheme_raw},
-            );
-            return;
-        };
-
+        const scheme = std.enums.fromInt(apprt.ColorScheme, scheme_raw) orelse return;
         surface.colorSchemeCallback(scheme);
     }
 
@@ -1891,17 +1895,7 @@ pub const CAPI = struct {
         stage_raw: u32,
         pressure: f64,
     ) void {
-        const stage = std.meta.intToEnum(
-            input.MousePressureStage,
-            stage_raw,
-        ) catch {
-            log.warn(
-                "invalid mouse pressure stage value={}",
-                .{stage_raw},
-            );
-            return;
-        };
-
+        const stage = std.enums.fromInt(input.MousePressureStage, stage_raw) orelse return;
         surface.mousePressureCallback(stage, pressure);
     }
 
@@ -2134,6 +2128,7 @@ pub const CAPI = struct {
         export fn ghostty_surface_set_display_id(ptr: *Surface, display_id: u32) void {
             const surface = &ptr.core_surface;
             _ = surface.renderer_thread.mailbox.push(
+                global.io(),
                 .{ .macos_display_id = display_id },
                 .{ .forever = {} },
             );
@@ -2157,8 +2152,8 @@ pub const CAPI = struct {
             // read the font face. It should not be deferred since
             // we're loading the primary face.
             const grid = ptr.core_surface.renderer.font_grid;
-            grid.lock.lockShared();
-            defer grid.lock.unlockShared();
+            grid.lock.lockSharedUncancelable(global.io());
+            defer grid.lock.unlockShared(global.io());
 
             const collection = &grid.resolver.collection;
             const face = collection.getFace(.{}) catch return null;
@@ -2195,8 +2190,8 @@ pub const CAPI = struct {
             result: *Text,
         ) bool {
             const surface = &ptr.core_surface;
-            surface.renderer_state.mutex.lock();
-            defer surface.renderer_state.mutex.unlock();
+            surface.renderer_state.mutex.lockUncancelable(global.io());
+            defer surface.renderer_state.mutex.unlock(global.io());
 
             // Get our word selection
             const sel = sel: {

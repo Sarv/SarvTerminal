@@ -1,25 +1,61 @@
 const std = @import("std");
 const assert = @import("../../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
 const simd = @import("../../simd/main.zig");
 const lib = @import("../lib.zig");
 
 const log = std.log.scoped(.kitty_gfx);
 
 /// The key-value pairs for the control information for a command. The
-/// keys are always single characters and the values are either single
-/// characters or 32-bit unsigned integers.
+/// recognized keys are always single ASCII letters and the values are either
+/// single characters or 32-bit unsigned integers. Unknown non-letter keys are
+/// ignored, matching how unknown letter keys are ignored when building a
+/// command.
 ///
-/// For the value of this: if the value is a single printable ASCII character
-/// it is the ASCII code. Otherwise, it is parsed as a 32-bit unsigned integer.
-const KV = std.AutoHashMapUnmanaged(u8, u32);
+/// This is deliberately a dense value table plus a presence bitmap. There are
+/// only 52 possible keys(technically KIP has fever than 52 possible .. at the moment of writing), so a lookup is one machine-word bit test followed by
+/// an indexed load. The values are undefined until their presence bit is set.
+///
+/// Other alternatives were considered and should probably be revisited in the
+/// future. Some of them were:
+/// A `[52]?u32` table is 416 bytes versus 216 bytes for this layout, and
+/// its larger copies erased the smaller lookup code.
+/// `std.EnumMap` added optional-return lowering,
+/// `std.StaticBitSet(52)` kept the same size but generated larger code
+/// for the packed mask. Passing the table by pointer removed the copies
+/// but did not improve end-to-end throughput. Keep this representation
+/// unless a new benchmark shows an improvement in the zig compilers codegen.
+///
+/// For the value itself: if it is a single printable ASCII character it is the
+/// ASCII code. Otherwise, it is parsed as a 32-bit unsigned integer.
+const KV = struct {
+    values: [52]u32 = undefined,
+    present: u64 = 0,
+
+    fn index(key: u8) ?u6 {
+        return switch (key) {
+            'a'...'z' => @intCast(key - 'a'),
+            'A'...'Z' => @intCast(26 + key - 'A'),
+            else => null,
+        };
+    }
+
+    fn get(self: *const KV, key: u8) ?u32 {
+        const idx = index(key) orelse return null;
+        if (self.present & (@as(u64, 1) << idx) == 0) return null;
+        return self.values[idx];
+    }
+
+    fn put(self: *KV, key: u8, value: u32) void {
+        const idx = index(key) orelse return;
+        self.values[idx] = value;
+        self.present |= @as(u64, 1) << idx;
+    }
+};
 
 /// Command parser parses the Kitty graphics protocol escape sequence.
 pub const Parser = struct {
-    /// The memory used by the parser is stored in an arena because it is
-    /// all freed at the end of the command.
-    arena: ArenaAllocator,
+    alloc: Allocator,
 
     /// This is the list of KV pairs that we're building up.
     kv: KV,
@@ -60,10 +96,8 @@ pub const Parser = struct {
     /// Initialize the parser. The allocator given will be used for both
     /// temporary data and long-lived values such as the final image blob.
     pub fn init(alloc: Allocator, max_bytes: usize) Parser {
-        var arena = ArenaAllocator.init(alloc);
-        errdefer arena.deinit();
         var result: Parser = .{
-            .arena = arena,
+            .alloc = alloc,
             .data = .empty,
             .kv = .{},
             .kv_temp_len = 0,
@@ -82,9 +116,7 @@ pub const Parser = struct {
     }
 
     pub fn deinit(self: *Parser) void {
-        // We don't free the hash map because its in the arena
-        self.data.deinit(self.arena.child_allocator);
-        self.arena.deinit();
+        self.data.deinit(self.alloc);
     }
 
     /// Parse a complete command string.
@@ -144,7 +176,7 @@ pub const Parser = struct {
 
             .data => {
                 if (self.data.items.len >= self.max_bytes) return error.OutOfMemory;
-                try self.data.append(self.arena.child_allocator, c);
+                try self.data.append(self.alloc, c);
             },
         }
     }
@@ -160,7 +192,7 @@ pub const Parser = struct {
                 if (self.data.items.len + rem.len > self.max_bytes) {
                     return error.OutOfMemory;
                 }
-                try self.data.appendSlice(self.arena.child_allocator, rem);
+                try self.data.appendSlice(self.alloc, rem);
                 return;
             }
 
@@ -210,13 +242,13 @@ pub const Parser = struct {
             else => return error.InvalidFormat,
         };
 
-        // Determine our quiet value
+        // Determine our quiet value. The spec specifies 0 and 1 but Kitty
+        // allows anything greater than 1 to suppress.
         const quiet: Command.Quiet = if (self.kv.get('q')) |v| quiet: {
             break :quiet switch (v) {
                 0 => .no,
                 1 => .ok,
-                2 => .failures,
-                else => return error.InvalidFormat,
+                else => .failures,
             };
         } else .no;
 
@@ -269,8 +301,6 @@ pub const Parser = struct {
     }
 
     fn finishValue(self: *Parser, next_state: State) !void {
-        const alloc = self.arena.allocator();
-
         // We can move states right away, we don't use it.
         self.state = next_state;
 
@@ -278,7 +308,7 @@ pub const Parser = struct {
         if (self.kv_temp_len == 1) {
             const c = self.kv_temp[0];
             if (c < '0' or c > '9') {
-                try self.kv.put(alloc, self.kv_current, @intCast(c));
+                self.kv.put(self.kv_current, @intCast(c));
                 self.kv_temp_len = 0;
                 return;
             }
@@ -291,7 +321,7 @@ pub const Parser = struct {
             'z', 'H', 'V' => @bitCast(try std.fmt.parseInt(i32, self.kv_temp[0..self.kv_temp_len], 10)),
             else => try std.fmt.parseInt(u32, self.kv_temp[0..self.kv_temp_len], 10),
         };
-        try self.kv.put(alloc, self.kv_current, v);
+        self.kv.put(self.kv_current, v);
 
         // Clear our temp buffer
         self.kv_temp_len = 0;
@@ -376,6 +406,53 @@ pub const Command = struct {
         transmit_animation_frame: AnimationFrameLoading,
         control_animation: AnimationControl,
         compose_animation: AnimationFrameComposition,
+
+        pub const Identifiers = struct {
+            image_id: u32 = 0,
+            image_number: u32 = 0,
+            placement_id: u32 = 0,
+        };
+
+        /// Returns the image and placement identifiers for any action.
+        pub fn identifiers(self: Control) Identifiers {
+            return switch (self) {
+                .query, .transmit => |t| .{
+                    .image_id = t.image_id,
+                    .image_number = t.image_number,
+                    .placement_id = t.placement_id,
+                },
+                .transmit_and_display => |t| .{
+                    .image_id = t.transmission.image_id,
+                    .image_number = t.transmission.image_number,
+                    .placement_id = t.transmission.placement_id,
+                },
+                .display => |d| .{
+                    .image_id = d.image_id,
+                    .image_number = d.image_number,
+                    .placement_id = d.placement_id,
+                },
+                .delete => |d| .{
+                    .image_id = d.image_id,
+                    .image_number = d.image_number,
+                    .placement_id = d.placement_id,
+                },
+                .transmit_animation_frame => |f| .{
+                    .image_id = f.image_id,
+                    .image_number = f.image_number,
+                    .placement_id = f.placement_id,
+                },
+                .control_animation => |a| .{
+                    .image_id = a.image_id,
+                    .image_number = a.image_number,
+                    .placement_id = a.placement_id,
+                },
+                .compose_animation => |c| .{
+                    .image_id = c.image_id,
+                    .image_number = c.image_number,
+                    .placement_id = c.placement_id,
+                },
+            };
+        }
     };
 
     /// Take ownership over the data in this command. If the returned value
@@ -412,6 +489,11 @@ pub const Command = struct {
 
 pub const Transmission = struct {
     format: Format = .rgba, // f
+    /// Set when "f" carried a value we don't recognize. Kitty rejects these
+    /// while handling the command so the EINVAL response can carry the image
+    /// id, so we defer to `LoadingImage.init`. `format` is meaningless when
+    /// this is set.
+    format_unknown: bool = false,
     medium: Medium = .direct, // t
     width: u32 = 0, // s
     height: u32 = 0, // v
@@ -475,9 +557,13 @@ pub const Transmission = struct {
         if (kv.get('f')) |v| {
             result.format = switch (v) {
                 24 => .rgb,
-                32 => .rgba,
+                0, 32 => .rgba,
                 100 => .png,
-                else => return error.InvalidFormat,
+                else => unknown: {
+                    // Defer returning an error until the image is processed.
+                    result.format_unknown = true;
+                    break :unknown .rgba;
+                },
             };
         }
 
@@ -624,19 +710,13 @@ pub const Display = struct {
         }
 
         if (kv.get('C')) |v| {
-            result.cursor_movement = switch (v) {
-                0 => .after,
-                1 => .none,
-                else => return error.InvalidFormat,
-            };
+            // Kitty only tests this against 1 so any other value moves the cursor.
+            result.cursor_movement = if (v == 1) .none else .after;
         }
 
         if (kv.get('U')) |v| {
-            result.virtual_placement = switch (v) {
-                0 => false,
-                1 => true,
-                else => return error.InvalidFormat,
-            };
+            // Kitty stores this in a bool, so any non-zero value is virtual.
+            result.virtual_placement = v != 0;
         }
 
         if (kv.get('z')) |v| {
@@ -667,6 +747,9 @@ pub const Display = struct {
 };
 
 pub const AnimationFrameLoading = struct {
+    image_id: u32 = 0, // i
+    image_number: u32 = 0, // I
+    placement_id: u32 = 0, // p
     x: u32 = 0, // x
     y: u32 = 0, // y
     create_frame: u32 = 0, // c
@@ -684,6 +767,18 @@ pub const AnimationFrameLoading = struct {
 
     fn parse(kv: KV) !AnimationFrameLoading {
         var result: AnimationFrameLoading = .{};
+
+        if (kv.get('i')) |v| {
+            result.image_id = v;
+        }
+
+        if (kv.get('I')) |v| {
+            result.image_number = v;
+        }
+
+        if (kv.get('p')) |v| {
+            result.placement_id = v;
+        }
 
         if (kv.get('x')) |v| {
             result.x = v;
@@ -706,11 +801,8 @@ pub const AnimationFrameLoading = struct {
         }
 
         if (kv.get('X')) |v| {
-            result.composition_mode = switch (v) {
-                0 => .alpha_blend,
-                1 => .overwrite,
-                else => return error.InvalidFormat,
-            };
+            // Kitty tests this only against 1
+            result.composition_mode = if (v == 1) .overwrite else .alpha_blend;
         }
 
         if (kv.get('Y')) |v| {
@@ -722,6 +814,9 @@ pub const AnimationFrameLoading = struct {
 };
 
 pub const AnimationFrameComposition = struct {
+    image_id: u32 = 0, // i
+    image_number: u32 = 0, // I
+    placement_id: u32 = 0, // p
     frame: u32 = 0, // c
     edit_frame: u32 = 0, // r
     x: u32 = 0, // x
@@ -734,6 +829,18 @@ pub const AnimationFrameComposition = struct {
 
     fn parse(kv: KV) !AnimationFrameComposition {
         var result: AnimationFrameComposition = .{};
+
+        if (kv.get('i')) |v| {
+            result.image_id = v;
+        }
+
+        if (kv.get('I')) |v| {
+            result.image_number = v;
+        }
+
+        if (kv.get('p')) |v| {
+            result.placement_id = v;
+        }
 
         if (kv.get('c')) |v| {
             result.frame = v;
@@ -768,11 +875,8 @@ pub const AnimationFrameComposition = struct {
         }
 
         if (kv.get('C')) |v| {
-            result.composition_mode = switch (v) {
-                0 => .alpha_blend,
-                1 => .overwrite,
-                else => return error.InvalidFormat,
-            };
+            // Kitty tests this against zero for compose so any non-zero overwrites
+            result.composition_mode = if (v == 0) .alpha_blend else .overwrite;
         }
 
         return result;
@@ -780,6 +884,9 @@ pub const AnimationFrameComposition = struct {
 };
 
 pub const AnimationControl = struct {
+    image_id: u32 = 0, // i
+    image_number: u32 = 0, // I
+    placement_id: u32 = 0, // p
     action: AnimationAction = .invalid, // s
     frame: u32 = 0, // r
     gap_ms: u32 = 0, // z
@@ -796,13 +903,26 @@ pub const AnimationControl = struct {
     fn parse(kv: KV) !AnimationControl {
         var result: AnimationControl = .{};
 
+        if (kv.get('i')) |v| {
+            result.image_id = v;
+        }
+
+        if (kv.get('I')) |v| {
+            result.image_number = v;
+        }
+
+        if (kv.get('p')) |v| {
+            result.placement_id = v;
+        }
+
         if (kv.get('s')) |v| {
+            // Kitty ignores values it doesn't know, leaving the animation
+            // state untouched, which is what `.invalid` means here.
             result.action = switch (v) {
-                0 => .invalid,
                 1 => .stop,
                 2 => .run_wait,
                 3 => .run,
-                else => return error.InvalidFormat,
+                else => .invalid,
             };
         }
 
@@ -826,180 +946,198 @@ pub const AnimationControl = struct {
     }
 };
 
-pub const Delete = union(enum) {
-    // a/A
-    all: bool,
-
-    // i/I
-    id: struct {
-        delete: bool = false, // uppercase
-        image_id: u32 = 0, // i
-        placement_id: u32 = 0, // p
-    },
-
-    // n/N
-    newest: struct {
-        delete: bool = false, // uppercase
-        image_number: u32 = 0, // I
-        placement_id: u32 = 0, // p
-    },
-
-    // c/C,
-    intersect_cursor: bool,
-
-    // f/F
-    animation_frames: bool,
-
-    // p/P
-    intersect_cell: struct {
-        delete: bool = false, // uppercase
-        x: u32 = 0, // x
-        y: u32 = 0, // y
-    },
-
-    // q/Q
-    intersect_cell_z: struct {
-        delete: bool = false, // uppercase
-        x: u32 = 0, // x
-        y: u32 = 0, // y
-        z: i32 = 0, // z
-    },
-
-    // r/R
-    range: struct {
-        delete: bool = false, // uppercase
-        first: u32 = 0, // x
-        last: u32 = 0, // y
-    },
-
-    // x/X
-    column: struct {
-        delete: bool = false, // uppercase
-        x: u32 = 0, // x
-    },
-
-    // y/Y
-    row: struct {
-        delete: bool = false, // uppercase
-        y: u32 = 0, // y
-    },
-
-    // z/Z
-    z: struct {
-        delete: bool = false, // uppercase
-        z: i32 = 0, // z
-    },
+pub const Delete = struct {
+    image_id: u32 = 0, // i
+    image_number: u32 = 0, // I
+    placement_id: u32 = 0, // p
+    action: Action,
 
     fn parse(kv: KV) !Delete {
-        const what: u8 = what: {
-            const value = kv.get('d') orelse break :what 'a';
-            const c = std.math.cast(u8, value) orelse return error.InvalidFormat;
-            break :what c;
-        };
-
-        return switch (what) {
-            'a', 'A' => .{ .all = what == 'A' },
-
-            'i', 'I' => blk: {
-                var result: Delete = .{ .id = .{ .delete = what == 'I' } };
-                if (kv.get('i')) |v| {
-                    result.id.image_id = v;
-                }
-                if (kv.get('p')) |v| {
-                    result.id.placement_id = v;
-                }
-
-                break :blk result;
-            },
-
-            'n', 'N' => blk: {
-                var result: Delete = .{ .newest = .{ .delete = what == 'N' } };
-                if (kv.get('I')) |v| {
-                    result.newest.image_number = v;
-                }
-                if (kv.get('p')) |v| {
-                    result.newest.placement_id = v;
-                }
-
-                break :blk result;
-            },
-
-            'c', 'C' => .{ .intersect_cursor = what == 'C' },
-
-            'f', 'F' => .{ .animation_frames = what == 'F' },
-
-            'p', 'P' => blk: {
-                var result: Delete = .{ .intersect_cell = .{ .delete = what == 'P' } };
-                if (kv.get('x')) |v| {
-                    result.intersect_cell.x = v;
-                }
-                if (kv.get('y')) |v| {
-                    result.intersect_cell.y = v;
-                }
-
-                break :blk result;
-            },
-
-            'q', 'Q' => blk: {
-                var result: Delete = .{ .intersect_cell_z = .{ .delete = what == 'Q' } };
-                if (kv.get('x')) |v| {
-                    result.intersect_cell_z.x = v;
-                }
-                if (kv.get('y')) |v| {
-                    result.intersect_cell_z.y = v;
-                }
-                if (kv.get('z')) |v| {
-                    // We can bitcast here because of how we parse it earlier.
-                    result.intersect_cell_z.z = @bitCast(v);
-                }
-
-                break :blk result;
-            },
-
-            'r', 'R' => blk: {
-                const x = kv.get('x') orelse return error.InvalidFormat;
-                const y = kv.get('y') orelse return error.InvalidFormat;
-                if (x > y) return error.InvalidFormat;
-                break :blk .{
-                    .range = .{
-                        .delete = what == 'R',
-                        .first = x,
-                        .last = y,
-                    },
-                };
-            },
-
-            'x', 'X' => blk: {
-                var result: Delete = .{ .column = .{ .delete = what == 'X' } };
-                if (kv.get('x')) |v| {
-                    result.column.x = v;
-                }
-
-                break :blk result;
-            },
-
-            'y', 'Y' => blk: {
-                var result: Delete = .{ .row = .{ .delete = what == 'Y' } };
-                if (kv.get('y')) |v| {
-                    result.row.y = v;
-                }
-
-                break :blk result;
-            },
-
-            'z', 'Z' => blk: {
-                var result: Delete = .{ .z = .{ .delete = what == 'Z' } };
-                if (kv.get('z')) |v| {
-                    // We can bitcast here because of how we parse it earlier.
-                    result.z.z = @bitCast(v);
-                }
-
-                break :blk result;
-            },
-
-            else => return error.InvalidFormat,
+        return .{
+            .image_id = kv.get('i') orelse 0,
+            .image_number = kv.get('I') orelse 0,
+            .placement_id = kv.get('p') orelse 0,
+            .action = try .parse(kv),
         };
     }
+
+    pub const Action = union(enum) {
+        // a/A
+        all: bool,
+
+        // i/I
+        id: struct {
+            delete: bool = false, // uppercase
+            image_id: u32 = 0, // i
+            placement_id: u32 = 0, // p
+        },
+
+        // n/N
+        newest: struct {
+            delete: bool = false, // uppercase
+            image_number: u32 = 0, // I
+            placement_id: u32 = 0, // p
+        },
+
+        // c/C,
+        intersect_cursor: bool,
+
+        // f/F
+        animation_frames: bool,
+
+        // p/P
+        intersect_cell: struct {
+            delete: bool = false, // uppercase
+            x: u32 = 0, // x
+            y: u32 = 0, // y
+        },
+
+        // q/Q
+        intersect_cell_z: struct {
+            delete: bool = false, // uppercase
+            x: u32 = 0, // x
+            y: u32 = 0, // y
+            z: i32 = 0, // z
+        },
+
+        // r/R
+        range: struct {
+            delete: bool = false, // uppercase
+            first: u32 = 0, // x
+            last: u32 = 0, // y
+        },
+
+        // x/X
+        column: struct {
+            delete: bool = false, // uppercase
+            x: u32 = 0, // x
+        },
+
+        // y/Y
+        row: struct {
+            delete: bool = false, // uppercase
+            y: u32 = 0, // y
+        },
+
+        // z/Z
+        z: struct {
+            delete: bool = false, // uppercase
+            z: i32 = 0, // z
+        },
+
+        fn parse(kv: KV) !Action {
+            const what: u8 = what: {
+                const value = kv.get('d') orelse break :what 'a';
+                const c = std.math.cast(u8, value) orelse return error.InvalidFormat;
+                break :what c;
+            };
+
+            return switch (what) {
+                'a', 'A' => .{ .all = what == 'A' },
+
+                'i', 'I' => blk: {
+                    var result: Action = .{ .id = .{ .delete = what == 'I' } };
+                    if (kv.get('i')) |v| {
+                        result.id.image_id = v;
+                    }
+                    if (kv.get('p')) |v| {
+                        result.id.placement_id = v;
+                    }
+
+                    break :blk result;
+                },
+
+                'n', 'N' => blk: {
+                    var result: Action = .{ .newest = .{ .delete = what == 'N' } };
+                    if (kv.get('I')) |v| {
+                        result.newest.image_number = v;
+                    }
+                    if (kv.get('p')) |v| {
+                        result.newest.placement_id = v;
+                    }
+
+                    break :blk result;
+                },
+
+                'c', 'C' => .{ .intersect_cursor = what == 'C' },
+
+                'f', 'F' => .{ .animation_frames = what == 'F' },
+
+                'p', 'P' => blk: {
+                    var result: Action = .{ .intersect_cell = .{ .delete = what == 'P' } };
+                    if (kv.get('x')) |v| {
+                        result.intersect_cell.x = v;
+                    }
+                    if (kv.get('y')) |v| {
+                        result.intersect_cell.y = v;
+                    }
+
+                    break :blk result;
+                },
+
+                'q', 'Q' => blk: {
+                    var result: Action = .{ .intersect_cell_z = .{ .delete = what == 'Q' } };
+                    if (kv.get('x')) |v| {
+                        result.intersect_cell_z.x = v;
+                    }
+                    if (kv.get('y')) |v| {
+                        result.intersect_cell_z.y = v;
+                    }
+                    if (kv.get('z')) |v| {
+                        // We can bitcast here because of how we parse it earlier.
+                        result.intersect_cell_z.z = @bitCast(v);
+                    }
+
+                    break :blk result;
+                },
+
+                'r', 'R' => blk: {
+                    // Both bounds default to zero when omitted and no
+                    // validation is performed; an inverted or zero range
+                    // simply matches no images.
+                    var result: Action = .{ .range = .{ .delete = what == 'R' } };
+                    if (kv.get('x')) |v| {
+                        result.range.first = v;
+                    }
+                    if (kv.get('y')) |v| {
+                        result.range.last = v;
+                    }
+
+                    break :blk result;
+                },
+
+                'x', 'X' => blk: {
+                    var result: Action = .{ .column = .{ .delete = what == 'X' } };
+                    if (kv.get('x')) |v| {
+                        result.column.x = v;
+                    }
+
+                    break :blk result;
+                },
+
+                'y', 'Y' => blk: {
+                    var result: Action = .{ .row = .{ .delete = what == 'Y' } };
+                    if (kv.get('y')) |v| {
+                        result.row.y = v;
+                    }
+
+                    break :blk result;
+                },
+
+                'z', 'Z' => blk: {
+                    var result: Action = .{ .z = .{ .delete = what == 'Z' } };
+                    if (kv.get('z')) |v| {
+                        // We can bitcast here because of how we parse it earlier.
+                        result.z.z = @bitCast(v);
+                    }
+
+                    break :blk result;
+                },
+
+                else => return error.InvalidFormat,
+            };
+        }
+    };
 };
 
 pub const CompositionMode = enum {
@@ -1180,7 +1318,7 @@ test "delete command" {
     defer command.deinit(alloc);
 
     try testing.expect(command.control == .delete);
-    const v = command.control.delete;
+    const v = command.control.delete.action;
     try testing.expect(v == .intersect_cell);
     const dv = v.intersect_cell;
     try testing.expect(!dv.delete);
@@ -1210,6 +1348,24 @@ test "ignore unknown keys (long)" {
     defer p.deinit();
 
     const input = "f=24,s=10,v=20,hello=world";
+    for (input) |c| try p.feed(c);
+    const command = try p.complete(alloc);
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .transmit);
+    const v = command.control.transmit;
+    try testing.expectEqual(Transmission.Format.rgb, v.format);
+    try testing.expectEqual(@as(u32, 10), v.width);
+    try testing.expectEqual(@as(u32, 20), v.height);
+}
+
+test "ignore unknown keys (non-letter)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var p = Parser.init(alloc, 1024 * 1024);
+    defer p.deinit();
+
+    const input = "f=24,s=10,v=20,!=1";
     for (input) |c| try p.feed(c);
     const command = try p.complete(alloc);
     defer command.deinit(alloc);
@@ -1380,7 +1536,7 @@ test "delete range command 1" {
     defer command.deinit(alloc);
 
     try testing.expect(command.control == .delete);
-    const v = command.control.delete;
+    const v = command.control.delete.action;
     try testing.expect(v == .range);
     const range = v.range;
     try testing.expect(!range.delete);
@@ -1400,7 +1556,7 @@ test "delete range command 2" {
     defer command.deinit(alloc);
 
     try testing.expect(command.control == .delete);
-    const v = command.control.delete;
+    const v = command.control.delete.action;
     try testing.expect(v == .range);
     const range = v.range;
     try testing.expect(range.delete);
@@ -1409,6 +1565,9 @@ test "delete range command 2" {
 }
 
 test "delete range command 3" {
+    // An inverted range is accepted; it simply matches no images. This
+    // matches kitty, which does no validation and filters with
+    // `x <= image_id <= y`.
     const testing = std.testing;
     const alloc = testing.allocator;
     var p = Parser.init(alloc, 1024 * 1024);
@@ -1416,10 +1575,21 @@ test "delete range command 3" {
 
     const input = "a=d,d=R,x=5,y=4";
     for (input) |c| try p.feed(c);
-    try testing.expectError(error.InvalidFormat, p.complete(alloc));
+    const command = try p.complete(alloc);
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .delete);
+    const v = command.control.delete.action;
+    try testing.expect(v == .range);
+    const range = v.range;
+    try testing.expect(range.delete);
+    try testing.expectEqual(@as(u32, 5), range.first);
+    try testing.expectEqual(@as(u32, 4), range.last);
 }
 
 test "delete range command 4" {
+    // An omitted upper bound defaults to zero, which matches no images
+    // since image IDs are always non-zero.
     const testing = std.testing;
     const alloc = testing.allocator;
     var p = Parser.init(alloc, 1024 * 1024);
@@ -1427,7 +1597,16 @@ test "delete range command 4" {
 
     const input = "a=d,d=R,x=5";
     for (input) |c| try p.feed(c);
-    try testing.expectError(error.InvalidFormat, p.complete(alloc));
+    const command = try p.complete(alloc);
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .delete);
+    const v = command.control.delete.action;
+    try testing.expect(v == .range);
+    const range = v.range;
+    try testing.expect(range.delete);
+    try testing.expectEqual(@as(u32, 5), range.first);
+    try testing.expectEqual(@as(u32, 0), range.last);
 }
 
 test "delete range command 5" {
@@ -1438,5 +1617,178 @@ test "delete range command 5" {
 
     const input = "a=d,d=R,y=5";
     for (input) |c| try p.feed(c);
-    try testing.expectError(error.InvalidFormat, p.complete(alloc));
+    const command = try p.complete(alloc);
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .delete);
+    const v = command.control.delete.action;
+    try testing.expect(v == .range);
+    const range = v.range;
+    try testing.expect(range.delete);
+    try testing.expectEqual(@as(u32, 0), range.first);
+    try testing.expectEqual(@as(u32, 5), range.last);
+}
+
+test "delete range command 6" {
+    // Both bounds omitted defaults to the empty range [0, 0].
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var p = Parser.init(alloc, 1024 * 1024);
+    defer p.deinit();
+
+    const input = "a=d,d=r";
+    for (input) |c| try p.feed(c);
+    const command = try p.complete(alloc);
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .delete);
+    const v = command.control.delete.action;
+    try testing.expect(v == .range);
+    const range = v.range;
+    try testing.expect(!range.delete);
+    try testing.expectEqual(@as(u32, 0), range.first);
+    try testing.expectEqual(@as(u32, 0), range.last);
+}
+
+// Kitty range-checks non-flag keys while handling the command, not while
+// parsing, so a bad value never drops the command (which would make a
+// response impossible even when the client gave an id). The flag keys
+// "a", "d", "t" and "o" are the exception.
+
+test "unknown format value is deferred to execution" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const command = try Parser.parseString(alloc, "a=t,f=42,i=31,s=1,v=1");
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .transmit);
+    try testing.expect(command.control.transmit.format_unknown);
+    try testing.expectEqual(@as(u32, 31), command.control.transmit.image_id);
+}
+
+test "zero format value is rgba" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const command = try Parser.parseString(alloc, "a=t,f=0,i=31,s=1,v=1");
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .transmit);
+    const v = command.control.transmit;
+    try testing.expect(!v.format_unknown);
+    try testing.expectEqual(Transmission.Format.rgba, v.format);
+}
+
+test "known format values are not unknown" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    for ([_]struct { []const u8, Transmission.Format }{
+        .{ "f=24", .rgb },
+        .{ "f=32", .rgba },
+        .{ "f=100", .png },
+    }) |entry| {
+        const command = try Parser.parseString(alloc, entry[0]);
+        defer command.deinit(alloc);
+
+        const v = command.control.transmit;
+        try testing.expect(!v.format_unknown);
+        try testing.expectEqual(entry[1], v.format);
+    }
+}
+
+test "quiet value above two suppresses all responses" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const command = try Parser.parseString(alloc, "a=t,q=3,i=31,s=1,v=1");
+    defer command.deinit(alloc);
+
+    try testing.expectEqual(Command.Quiet.failures, command.quiet);
+}
+
+test "cursor movement value above one moves the cursor" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const command = try Parser.parseString(alloc, "a=p,i=31,C=2");
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .display);
+    try testing.expectEqual(
+        Display.CursorMovement.after,
+        command.control.display.cursor_movement,
+    );
+}
+
+test "virtual placement value above one is virtual" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const command = try Parser.parseString(alloc, "a=p,i=31,U=2");
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .display);
+    try testing.expect(command.control.display.virtual_placement);
+}
+
+test "animation frame composition value above one alpha blends" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const command = try Parser.parseString(alloc, "a=f,i=31,X=2");
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .transmit_animation_frame);
+    try testing.expectEqual(
+        CompositionMode.alpha_blend,
+        command.control.transmit_animation_frame.composition_mode,
+    );
+}
+
+test "animation compose value above one overwrites" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const command = try Parser.parseString(alloc, "a=c,i=31,C=2");
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .compose_animation);
+    try testing.expectEqual(
+        CompositionMode.overwrite,
+        command.control.compose_animation.composition_mode,
+    );
+}
+
+test "animation control action above three is ignored" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const command = try Parser.parseString(alloc, "a=a,i=31,s=4");
+    defer command.deinit(alloc);
+
+    try testing.expect(command.control == .control_animation);
+    try testing.expectEqual(
+        AnimationControl.AnimationAction.invalid,
+        command.control.control_animation.action,
+    );
+}
+
+test "unknown flag key values still fail parsing" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // Kitty rejects these while parsing too. See gen/apc_parsers.py.
+    for ([_][]const u8{
+        "a=z,i=31", // action
+        "a=d,d=w,i=31", // delete action
+        "a=t,t=q,i=31", // transmission medium
+        "a=t,o=q,i=31", // compression
+    }) |input| {
+        try testing.expectError(
+            error.InvalidFormat,
+            Parser.parseString(alloc, input),
+        );
+    }
 }

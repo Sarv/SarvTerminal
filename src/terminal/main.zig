@@ -21,6 +21,7 @@ pub const modes = @import("modes.zig");
 pub const page = @import("page.zig");
 pub const parse_table = @import("parse_table.zig");
 pub const search = @import("search.zig");
+pub const snapshot = @import("snapshot/main.zig");
 pub const sgr = @import("sgr.zig");
 pub const size = @import("size.zig");
 pub const size_report = @import("size_report.zig");
@@ -58,6 +59,7 @@ pub const Terminal = @import("Terminal.zig");
 pub const TerminalStream = stream_terminal.Stream;
 pub const Stream = stream.Stream;
 pub const StreamAction = stream.Action;
+pub const UnknownSequence = stream_terminal.Handler.UnknownSequence;
 pub const Cursor = Screen.Cursor;
 pub const CursorStyle = Screen.CursorStyle;
 pub const CursorStyleReq = ansi.CursorStyle;
@@ -88,6 +90,7 @@ test {
     // Internals
     _ = @import("bitmap_allocator.zig");
     _ = @import("compress.zig");
+    _ = @import("fraction.zig");
     _ = @import("hash_map.zig");
     _ = @import("mem.zig");
     _ = @import("ref_counted_set.zig");

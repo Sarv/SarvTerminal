@@ -52,6 +52,8 @@ const no_trailing_colon =
     \\(?<!:)
 ;
 
+// SarvTerminal divergence: allows a path match to keep trailing spaces that
+// run to end-of-line (upstream dropped this helper). Used by both path tiers.
 const trailing_spaces_at_eol =
     \\(?: +(?= *$))?
 ;
@@ -116,8 +118,7 @@ const bare_relative_path_branch =
     dotted_path_lookahead ++
     bare_relative_path_prefix ++
     path_chars ++ "+" ++
-    no_trailing_colon ++
-    trailing_spaces_at_eol;
+    no_trailing_colon;
 
 // Branch 4 (SarvTerminal): bare openable filenames with NO directory separator,
 // e.g. `README.md` in `ls`/`ll` output. Upstream deliberately does not treat a
@@ -394,11 +395,12 @@ test "url regex" {
             .input = "IPv6 in markdown [link](http://[2001:db8::1]/docs)",
             .expect = "http://[2001:db8::1]/docs",
         },
-        // File paths with spaces
+        // Trailing whitespace isn't part of a detected file path.
         .{
             .input = "./spaces-end.   ",
             .expect = "./spaces-end.   ",
         },
+        // File paths with internal spaces
         .{
             .input = "./space middle",
             .expect = "./space middle",

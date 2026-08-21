@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
-const c = @import("c.zig").c;
+const c = @import("wuffs_c");
 const Error = @import("error.zig").Error;
 
 const log = std.log.scoped(.wuffs_swizzler);
@@ -16,11 +16,15 @@ pub fn gToRgba(alloc: Allocator, src: []const u8) Error![]u8 {
 }
 
 pub fn gaToRgba(alloc: Allocator, src: []const u8) Error![]u8 {
+    // Wuffs doesn't support YA_PREMUL as a swizzle source. The nonpremul
+    // pair produces the same bytes (r=g=b=y, a=a, no alpha math), which
+    // is what we want: alpha semantics are preserved as-is, matching the
+    // other conversions here.
     return swizzle(
         alloc,
         src,
-        c.WUFFS_BASE__PIXEL_FORMAT__YA_PREMUL,
-        c.WUFFS_BASE__PIXEL_FORMAT__RGBA_PREMUL,
+        c.WUFFS_BASE__PIXEL_FORMAT__YA_NONPREMUL,
+        c.WUFFS_BASE__PIXEL_FORMAT__RGBA_NONPREMUL,
     );
 }
 
@@ -49,6 +53,16 @@ pub fn bgraToRgba(alloc: Allocator, src: []const u8) Error![]u8 {
         c.WUFFS_BASE__PIXEL_FORMAT__BGRA_PREMUL,
         c.WUFFS_BASE__PIXEL_FORMAT__RGBA_PREMUL,
     );
+}
+
+test "gaToRgba" {
+    const rgba = try gaToRgba(std.testing.allocator, &.{ 7, 100, 8, 200 });
+    defer std.testing.allocator.free(rgba);
+
+    try std.testing.expectEqualSlices(u8, &.{
+        7, 7, 7, 100,
+        8, 8, 8, 200,
+    }, rgba);
 }
 
 fn swizzle(

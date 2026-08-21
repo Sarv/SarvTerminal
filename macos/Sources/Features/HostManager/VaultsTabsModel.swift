@@ -198,6 +198,10 @@ final class VaultsTabsModel: ObservableObject {
     /// retitle would otherwise never re-persist — and the terminate-time
     /// persist can't catch it when the app dies without a graceful quit.
     private var titleObservers: [AnyCancellable] = []
+    /// Per-surface subscriptions to clipboard confirmations published by
+    /// libghostty. Embedded Vaults surfaces have no BaseTerminalController, so
+    /// this model answers those requests itself.
+    private var clipboardObservers: [AnyCancellable] = []
     /// Coalesce a burst of tab changes into a single write per runloop tick.
     private var persistScheduled = false
     /// Tabs from the previous run, loaded at init and offered for reopen once
@@ -331,6 +335,19 @@ final class VaultsTabsModel: ObservableObject {
                     .dropFirst()
                     .removeDuplicates()
                     .sink { [weak self] _ in self?.schedulePersist() }
+            }
+        }
+        clipboardObservers = terminals.flatMap { tab in
+            (tab.surfaceTree.root?.leaves() ?? []).map { leaf in
+                leaf.$pendingClipboardConfirmation
+                    .compactMap { $0 }
+                    // Published emits synchronously from the libghostty
+                    // callback; hop to main so completing cannot invalidate
+                    // callback state while that callback is still active.
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] request in
+                        self?.handleConfirmClipboard(request)
+                    }
             }
         }
     }
@@ -1976,16 +1993,15 @@ final class VaultsTabsModel: ObservableObject {
     /// for surfaces in its own windows; embedded Vaults surfaces have no such
     /// controller, so without a handler here the request is dropped and the
     /// paste silently does nothing.
-    private func handleConfirmClipboard(_ note: Notification) {
-        guard let surfaceView = note.object as? Ghostty.SurfaceView,
-              tab(containing: surfaceView) != nil,
-              let contents = note.userInfo?[Ghostty.Notification.ConfirmClipboardStrKey] as? String,
-              let state = note.userInfo?[Ghostty.Notification.ConfirmClipboardStateKey] as? UnsafeMutableRawPointer?,
-              let request = note.userInfo?[Ghostty.Notification.ConfirmClipboardRequestKey] as? Ghostty.ClipboardRequest
+    private func handleConfirmClipboard(_ request: Ghostty.ClipboardConfirmationRequest) {
+        guard let surfaceView = request.surface,
+              tab(containing: surfaceView) != nil
         else { return }
 
+        let kind = request.kind
+        let contents = request.contents
         let title: String
-        switch request {
+        switch kind {
         case .paste: title = "Potentially Unsafe Paste"
         case .osc_52_read, .osc_52_write: title = "Authorize Clipboard Access"
         }
@@ -1996,25 +2012,24 @@ final class VaultsTabsModel: ObservableObject {
         Task { @MainActor in
             SarvAlert.present(
                 title: title,
-                message: "\(request.text())\n\n\(preview)",
+                message: "\(kind.text())\n\n\(preview)",
                 buttons: [
-                    .init(ClipboardConfirmationView.Action.text(.confirm, request), isDefault: true),
-                    .init(ClipboardConfirmationView.Action.text(.cancel, request), isCancel: true),
+                    .init(ClipboardConfirmationView.Action.text(.confirm, kind), isDefault: true),
+                    .init(ClipboardConfirmationView.Action.text(.cancel, kind), isCancel: true),
                 ]) { result in
-                    let confirmed = result.buttonIndex == 0
-                    switch request {
-                    case let .osc_52_write(pasteboard):
-                        guard confirmed else { return }
-                        let pb = pasteboard ?? NSPasteboard.general
-                        pb.declareTypes([.string], owner: nil)
-                        pb.setString(contents, forType: .string)
-                    case .osc_52_read, .paste:
-                        guard let surface = surfaceView.surface else { return }
-                        Ghostty.App.completeClipboardRequest(
-                            surface,
-                            data: confirmed ? contents : "",
-                            state: state,
-                            confirmed: true)
+                    // The request owns completion now: it answers libghostty
+                    // for paste/OSC 52 read and writes the pasteboard itself
+                    // for OSC 52 write.
+                    if result.buttonIndex == 0 {
+                        request.complete()
+                    } else {
+                        request.cancel()
+                    }
+
+                    // Release our hold. Completion is idempotent, so the
+                    // surface's didSet cancel is a no-op after this.
+                    if surfaceView.pendingClipboardConfirmation === request {
+                        surfaceView.pendingClipboardConfirmation = nil
                     }
                 }
         }
@@ -2028,7 +2043,6 @@ final class VaultsTabsModel: ObservableObject {
             })
         }
 
-        observe(Ghostty.Notification.confirmClipboard) { [weak self] in self?.handleConfirmClipboard($0) }
         observe(Ghostty.Notification.ghosttyCloseSurface) { [weak self] in self?.handleClose($0) }
         observe(Ghostty.Notification.ghosttyNewSplit) { [weak self] in self?.handleNewSplit($0) }
         observe(Ghostty.Notification.ghosttyFocusSplit) { [weak self] in self?.handleFocusSplit($0) }

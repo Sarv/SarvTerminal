@@ -1924,6 +1924,36 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 **How to verify.** ⇧⌘N and Dock → New Window each open a real second window; each window's tabs/scratchpad/focus-mode reflect *that* window; hosts/groups are shared; closing a secondary window keeps the app running; closing the last quits; the saved session isn't duplicated or wiped by opening/closing extra windows.
 
+
+## 38. Clipboard confirmation for **embedded** terminal surfaces
+
+**What it is.** libghostty asks the apprt to confirm before completing a clipboard action: an unsafe paste (e.g. a browser copy carrying a trailing newline while the shell is not in bracketed-paste mode) and OSC 52 clipboard reads/writes. Stock Ghostty answers this in `BaseTerminalController`, which only covers surfaces living in **its own** windows. SarvTerminal embeds terminal surfaces inside the Vaults window, which has no such controller — so with no handler the request is simply **dropped and the paste silently does nothing**. `VaultsTabsModel` answers it for embedded surfaces.
+
+**Key logic (platform-agnostic).**
+- The core hands out a **one-shot confirmation request** per surface, carrying: the clipboard `contents`, the request `kind` (`paste` / `osc_52_read` / `osc_52_write`), and a completion callback. Whoever owns the embedded surface must subscribe **per surface** (as tabs/panes are created) and resolve each request **exactly once**.
+- Resolve with *confirm* (proceed using the shown contents) or *refuse*. Resolution must be **idempotent**, and **dropping an unresolved request must cancel it** — otherwise raw core callback state leaks and the writing program can wait forever.
+- **Resolve on the UI thread, not inline.** The request is published *synchronously from inside the core callback that created it*; completing it in that callback can invalidate the callback's own state while it is still running. Hop to the main loop first.
+- Show a **truncated preview** (~300 chars), never the full contents — a paste can be arbitrarily large.
+- Title by kind: `paste` → "Potentially Unsafe Paste"; OSC 52 read/write → "Authorize Clipboard Access". Button labels also differ by kind (Paste/Cancel vs Allow/Deny).
+- **Do not write the system clipboard yourself.** For `osc_52_write` the completion performs the clipboard write; for `paste`/`osc_52_read` it answers the core. The handler only decides yes/no.
+
+**macOS→Linux/GTK equivalents.**
+
+| macOS | Why | Linux/GTK |
+|---|---|---|
+| `@Published var pendingClipboardConfirmation` on `SurfaceView` + Combine `sink` per surface | Per-surface delivery, auto-torn-down with the surface | A property-notify signal (or a small callback list) on the GTK surface widget; subscribe when a pane is created, drop with the pane. Keying the subscription by a **value id** rather than capturing the widget avoids extending its lifetime. |
+| `SarvAlert` modal | Ask the user | `AdwMessageDialog` / `GtkAlertDialog`, presented on the window owning the embedded surface |
+| `DispatchQueue.main` hop before resolving | Core publishes from inside its own callback | `g_idle_add` / GLib main-context invoke before resolving |
+| `ghostty_surface_complete_clipboard_request(surface, data, state, confirmed)` | **Shared core C API — identical on both apprts** | Call it exactly once per request. On refusal *or teardown*, still call it (empty data / not-confirmed) so the core stops waiting. |
+
+**Verify on Linux.**
+1. In an embedded Vaults terminal, paste multi-line text ending in a newline with bracketed paste off → confirmation appears. Confirm → text pastes. Deny → nothing pastes and the terminal stays usable.
+2. `printf '\033]52;c;'$(printf hello | base64)'\a'` → "Authorize Clipboard Access"; confirming puts `hello` on the system clipboard.
+3. Close the tab **while the dialog is open** → no hang and no leaked request (teardown must cancel it).
+4. Trigger a second request while one dialog is up → the first is superseded/cancelled, never two competing dialogs, and the terminal never wedges.
+
+> **Note (upstream sync `42a161aad`).** This behavior was re-implemented on upstream's new API: the old `Ghostty.Notification.confirmClipboard` post with `userInfo` keys was replaced by the one-shot `Ghostty.ClipboardConfirmationRequest` object described above. A GTK port should model the **request object**, not a broadcast notification — the object is what makes "resolve exactly once, cancel on drop" enforceable.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

@@ -35,11 +35,8 @@ struct UpdatePopoverView: View {
             case .extracting(let extracting):
                 ExtractingView(extracting: extracting)
 
-            case .installing(let installing):
-                // This is only required when `installing.isAutoUpdate == true`,
-                // but we keep it anyway, just in case something unexpected
-                // happens during installing
-                InstallingView(installing: installing, dismiss: dismiss)
+            case .installing:
+                EmptyView()
 
             case .notFound(let notFound):
                 NotFoundView(notFound: notFound, dismiss: dismiss)
@@ -292,7 +289,8 @@ private struct InstallingView: View {
 
             HStack {
                 Button("Restart Later") {
-                    installing.dismiss()
+                    // Upstream removed Installing.dismiss(); closing is the whole
+                    // action now (matches UpdateController's "Restart Later").
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)

@@ -17,11 +17,8 @@ extension UpdateDriver: SPUUpdaterDelegate {
     /// delegate method on the responsible driver instead.
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem, immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
         viewModel.state = .installing(.init(
-            isAutoUpdate: true,
-            retryTerminatingApplication: immediateInstallHandler,
-            dismiss: { [weak viewModel] in
-                viewModel?.state = .idle
-            }
+            appcastItem: item,
+            retryTerminatingApplication: immediateInstallHandler
         ))
 
         // The auto-downloaded update would otherwise install SILENTLY on quit —
