@@ -171,6 +171,17 @@ Record every guarded-file collision so the reconciliation is auditable.
 | →55a3e33a | `src/Surface.zig` | clean 3-way | `node.data`→`node.page()` API |
 | →55a3e33a | `src/shell-integration/…/ghostty.nu` | clean 3-way | nushell `@complete external` |
 | →55a3e33a | `src/termio/colorize.zig` (ours) | **build fix** | not an upstream file, but the new `PageList.Node.Data` union broke it: `&pin.node.data` → `pin.node.page()` |
+| →74d0c72f | `src/terminal/Terminal.zig` | clean 3-way | resize rework (`89b103dd5`) + cursor defaults moved into terminal state (`c594031d5`) |
+| →74d0c72f | `src/terminal/Screen.zig` | clean 3-way | safe resize-failure paths (`a3c1caba5`, `dde3d4d6b`) |
+| →74d0c72f | `src/terminal/PageList.zig` | clean 3-way | page-capacity error handling in `cursorScrollAbove`/`eraseRow` (`043326249`, `ee9d5b352`) |
+| →74d0c72f | `src/terminal/stream_terminal.zig` | clean 3-way | semantic stream failure marking (`439d35e27`) |
+| →74d0c72f | `src/terminal/c/terminal.zig` | clean 3-way | libghostty-vt resize/cursor API follow-through |
+| →74d0c72f | `src/terminal/kitty/graphics_{command,image,storage}.zig` | clean 3-way | transient usage hints (`a65e11cc9`) |
+| →74d0c72f | `src/config/Config.zig` | clean 3-way | `background-blur` default change (`2da02f4d2`); our fields preserved |
+| →74d0c72f | `src/crash/dir.zig` | clean 3-way | §8.4 `sarvterminal/crash` preserved |
+| →74d0c72f | `src/termio/{Termio,stream_handler}.zig` | clean 3-way | resize/stream plumbing |
+| →74d0c72f | `include/ghostty/vt/terminal.h` | clean 3-way | C API for the resize rework |
+| →74d0c72f | `build.zig.zon{,.json,.nix,.txt}`, `flatpak/zig-packages.json` | clean 3-way | iTerm2 colorschemes bump (`b513f1b20`); md4c dep + zig 0.15.2 preserved |
 
 ---
 
@@ -181,16 +192,38 @@ Update this section every time you reconcile.
 | | |
 |---|---|
 | Upstream base (fork point) | `b831ef6b` (ghostty 1.3.2-dev) |
-| **Reconciled up to** | `55a3e33a` (merged 2026-07-13 on branch `chore/upstream-sync-1.3.x`) |
-| Upstream tip at last check | `55a3e33a` |
-| Last checked | 2026-07-13 |
+| **Reconciled up to** | `74d0c72fd` (2026-08-21 on branch `chore/upstream-sync-1.4.x`) |
+| Upstream tip at last check | `42a161aad` (NOT reconciled — see below) |
+| Last checked | 2026-08-21 |
 
 Sync of 2026-07-13: 114 untouched files fast-forwarded to `55a3e33a`; 6 owned files
 3-way merged cleanly (see §6); 8 files we'd deleted left deleted; one build fix in
 our `colorize.zig` for the new `PageList.Node` union. zig core + full macOS app both
 build; new upstream option `scrollback-compression` added to Settings → General
-(`gtk-horizontal-tab-scroll` skipped — GTK/Linux only). **Next base for the following
-sync is `55a3e33a`.**
+(`gtk-horizontal-tab-scroll` skipped — GTK/Linux only).
+
+Sync of 2026-08-21 (`55a3e33a` → `74d0c72fd`, 24 commits): **deliberately stopped one
+commit short of upstream `e8525c0fd` ("Update to Zig 0.16.0")** so the tree still builds
+with zig 0.15.2. 31 files changed: 1 untouched file fast-forwarded, 12 `.github`
+workflow files we'd deleted left deleted, and 18 owned files 3-way merged — **all clean,
+zero conflicts** (see §6). Content is mostly terminal resize robustness and page-capacity
+error handling, plus kitty transient image hints and a macOS hidden-titlebar
+`NSScrollPocket` fix. All §8 anchors in range verified intact (`sarvterminal/crash`,
+`sarvterminal/themes`, `default_program`, `com.sarv.terminal`, md4c dep,
+`hover_activate_mods`). Verification: `zig build -Demit-macos-app=false` passes;
+`zig build test` = **3074/3090 passed, 16 skipped, 0 test failures**. The one failing
+build step, `xcodebuild test`, is **pre-existing and unrelated** — `project.pbxproj`
+(untouched by this sync) sets `TEST_HOST` to `SarvTerminal.app/…/ghostty`, but our
+executables are `SarvTerminalDev` (Debug) / `SarvTerminal` (Release) and the bundle is
+`Sarv Terminal.app`; the same broken setting is present on `main`. **Next base for the
+following sync is `74d0c72fd`, and that sync MUST begin with the zig 0.16.0 migration**
+— upstream's 499 post-bump commits migrated upstream files only; our ~227 added files
+need migrating by us.
+
+**Remaining unreconciled: 499 commits (`74d0c72fd` → `42a161aad`), ~128 guarded files
+needing hand-merge**, incl. 4 guarded renames (`macos/Sources/App/macOS/*` →
+`macos/Sources/App/*`: `AppDelegate.swift`, `AppDelegate+Ghostty.swift`, `MainMenu.xib`,
+`main.swift`) and `macos/Ghostty.xcodeproj/project.pbxproj`.
 
 ---
 
