@@ -15,6 +15,7 @@ imported as one squashed commit; we do **not** carry upstream's commit history.
 |---|---|
 | Local baseline snapshot commit | `18b6f57` ("Initial commit") — pristine ghostty |
 | Ghostty version at baseline | **1.3.2-dev** (min zig 0.15.2) |
+| **Current min zig** | **0.16.0** (since upstream `e8525c0fd`) |
 | **Corresponding upstream commit** | **`b831ef6b`** (`ghostty-org/ghostty`) |
 | Upstream remote | `https://github.com/ghostty-org/ghostty.git` |
 
@@ -182,6 +183,31 @@ Record every guarded-file collision so the reconciliation is auditable.
 | →74d0c72f | `src/termio/{Termio,stream_handler}.zig` | clean 3-way | resize/stream plumbing |
 | →74d0c72f | `include/ghostty/vt/terminal.h` | clean 3-way | C API for the resize rework |
 | →74d0c72f | `build.zig.zon{,.json,.nix,.txt}`, `flatpak/zig-packages.json` | clean 3-way | iTerm2 colorschemes bump (`b513f1b20`); md4c dep + zig 0.15.2 preserved |
+| →42a161aa | 96 guarded files | clean 3-way | no manual intervention needed |
+| →42a161aa | `src/crash/dir.zig` | **re-applied** | upstream changed the signature to `(io, alloc, environ_map)`; kept `sarvterminal/crash` |
+| →42a161aa | `src/crash/sentry.zig` | **re-applied at new site** | upstream moved cache-dir resolution into a helper; re-applied `sarvterminal/sentry` + `.sarvcrash` there |
+| →42a161aa | `src/cli/ssh.zig`, `src/cli/ssh_cache.zig` | **re-applied at new site** | upstream refactored cache setup and re-hardcoded `"ghostty"`; restored `DiskCache.default_program` |
+| →42a161aa | `src/config/url.zig` | ours + restore | kept our two-tier path regex; upstream deleted `trailing_spaces_at_eol`, so its definition and the 2 test expectations were restored |
+| →42a161aa | `src/config/Config.zig` | kept both | our `output-colorize` + upstream's new `link-osc8` |
+| →42a161aa | `include/ghostty.h`, `src/apprt/action.zig` | kept both | our `reopen_closed_tab` + upstream's `move_tab_to_new_window` |
+| →42a161aa | `src/Surface.zig` | ours + 0.16 API | upstream's `lockUncancelable(global.io())` combined with our `reset_tty` and `linkAtPos(pos, false)` |
+| →42a161aa | `src/build/GhosttyXcodebuild.zig` | ours + 0.16 API | upstream's `b.graph.environ_map`; kept `Sarv Terminal.app` |
+| →42a161aa | `macos/…/Ghostty.Config.swift` | ours | kept `AppPaths.terminalCustomIconFile`; dropped the now-dead `#if os(macOS)` (see note below) |
+| →42a161aa | `macos/…/URLHoverBanner.swift` | ours | upstream added its own URL-preview banner; we keep the "⌘ click to open" hint (§8.5) |
+| →42a161aa | `macos/…/SurfaceView.swift`, `OSSurfaceView.swift` | ours | kept `showScrollToBottom` and the grep-filter state |
+| →42a161aa | `macos/…/Update/{UpdateDelegate,UpdateDriver,UpdatePopoverView}.swift` | ours | kept our SarvAlert-based update prompts |
+| →42a161aa | `macos/Ghostty.xcodeproj/project.pbxproj` | theirs | completed upstream's **iOS target removal**; validated with `plutil -lint`, 0 dangling iOS refs |
+| →42a161aa | `HACKING.md`, `PACKAGING.md`, `po/README_TRANSLATORS.md` | ours | our fork rewrites; upstream's versions reintroduce ghostty-org clone URLs and GitHub teams |
+| →42a161aa | `.gitignore` | kept both | then deduped |
+| →42a161aa | 4 guarded renames | `git mv` + clean 3-way | `macos/Sources/App/macOS/{AppDelegate,AppDelegate+Ghostty,main}.swift`, `MainMenu.xib` → `macos/Sources/App/` |
+| →42a161aa | `pkg/md4c/build.zig`, `src/build/SharedDeps.zig` (ours) | **zig 0.16 migration** | `link_libc` is a module option; `linkLibrary`/`addIncludePath`/`addCSourceFiles` moved to `root_module` |
+| →42a161aa | `src/main_c.zig` (ours) | **zig 0.16 migration** | `state.alloc` → `global.alloc()` |
+| →42a161aa | `macos/…/VaultsTabsModel.swift` (ours) | **API migration** | upstream replaced the `confirmClipboard` notification + userInfo keys with a one-shot `Ghostty.ClipboardConfirmationRequest` published on the surface; we now subscribe per-surface and call `complete()`/`cancel()` |
+| →42a161aa | `macos/…/UpdatePopoverView.swift` (ours) | **API migration** | `UpdateState.Installing.dismiss()` removed upstream; "Restart Later" just closes |
+| →42a161aa | `macos/…/SurfaceSearchFilter.swift` (ours) | **API migration** | `SearchState.needle` is now a `Needle` struct → `.needle.text` |
+| →42a161aa | `macos/…/SurfaceView.swift` (ours) | **API migration** | `OSColor` alias removed with iOS support → `NSColor` |
+| →42a161aa | 5 stale unowned files | **fast-forwarded (pre-existing gap)** | `images/Ghostty.icon/icon.json`, `macos/…/App Intents/{Entities/TerminalEntity,NewTerminalIntent,QuickTerminalIntent}.swift`, `macos/…/TitlebarTabsTahoeTerminalWindow.swift` — stale since BEFORE this sync (see §9) |
+| →42a161aa | `macos/Sources/App/AppDelegate.swift` | **completed the merge** | the clean 3-way brought upstream's `quickTerminalControllerState` machine but dropped the `quickControllerInitialized` computed property beside it; restored (upstream's `QuickTerminalIntent` needs it) |
 
 ---
 
@@ -192,8 +218,8 @@ Update this section every time you reconcile.
 | | |
 |---|---|
 | Upstream base (fork point) | `b831ef6b` (ghostty 1.3.2-dev) |
-| **Reconciled up to** | `74d0c72fd` (2026-08-21 on branch `chore/upstream-sync-1.4.x`) |
-| Upstream tip at last check | `42a161aad` (NOT reconciled — see below) |
+| **Reconciled up to** | `42a161aad` (2026-08-21 on branch `chore/upstream-sync-1.4.x`) |
+| Upstream tip at last check | `42a161aad` (**fully reconciled**) |
 | Last checked | 2026-08-21 |
 
 Sync of 2026-07-13: 114 untouched files fast-forwarded to `55a3e33a`; 6 owned files
@@ -220,10 +246,34 @@ following sync is `74d0c72fd`, and that sync MUST begin with the zig 0.16.0 migr
 — upstream's 499 post-bump commits migrated upstream files only; our ~227 added files
 need migrating by us.
 
-**Remaining unreconciled: 499 commits (`74d0c72fd` → `42a161aad`), ~128 guarded files
-needing hand-merge**, incl. 4 guarded renames (`macos/Sources/App/macOS/*` →
-`macos/Sources/App/*`: `AppDelegate.swift`, `AppDelegate+Ghostty.swift`, `MainMenu.xib`,
-`main.swift`) and `macos/Ghostty.xcodeproj/project.pbxproj`.
+Sync of 2026-08-21, stage 2 (`74d0c72fd` → `42a161aad`, 499 commits): **crosses upstream
+`e8525c0fd` "Update to Zig 0.16.0"**, so the tree now requires zig 0.16.0. 687 files net
+(93 A / 16 D / 573 M / 5 R): 537 untouched files fast-forwarded, 14 upstream deletions
+applied, 12 `.github` workflows we'd deleted left deleted, and 119 owned files 3-way
+merged — 96 clean, 23 resolved by hand (see §6). The 4 guarded renames were handled as
+`git mv` + 3-way and all merged clean.
+
+**Upstream dropped iOS entirely.** `macos/Sources/App/iOS/` is gone, the `Ghostty-iOS`
+target was removed from `project.pbxproj`, and every `#if os(macOS)` / `#if canImport(AppKit)`
+platform guard was deleted (upstream tip has 0 of each). Two of our files kept a guard
+whose `#endif` upstream had removed, leaving them unbalanced — both guards were dropped to
+follow upstream. Watch for this pattern in any future Swift merge.
+
+**Zig 0.16 migration of our own files was small** — upstream migrated only upstream files,
+but our added code is mostly Swift, so only 4 Zig sites needed work (`pkg/md4c/build.zig`,
+`src/build/SharedDeps.zig`, `src/main_c.zig`, `src/Surface.zig`) plus 4 Swift API
+migrations (see §6). Key 0.16 idioms: `link_libc` is a `createModule` option and
+`Compile.linkLibC()` is gone; `linkLibrary`/`addIncludePath`/`addCSourceFiles` live on
+`root_module`; `renderer_state.mutex` is `lockUncancelable(global.io())` / `unlock(global.io())`;
+error formatting is `{t}`; `xdg.state`/`xdg.cache` take `(io, alloc, environ_map, …)`.
+
+Verification: `zig build` (core **and** the full macOS app) succeeds on zig 0.16.0 and
+produces `zig-out/Sarv Terminal.app`; `zig build test` = **3463/3480 passed, 17 skipped,
+0 failures**. All §8 anchors re-verified. The single failing build step, `xcodebuild test`,
+is the **same pre-existing failure as before this sync** — `project.pbxproj` sets
+`TEST_HOST` to `SarvTerminal.app/…/ghostty`, but our executables are `SarvTerminalDev`
+(Debug) / `SarvTerminal` (Release) and the bundle is `Sarv Terminal.app`. It fails
+identically on `main` and is unrelated to the merge; it deserves its own fix commit.
 
 ---
 
@@ -370,3 +420,48 @@ So the *core* hand-merge burden is small — concentrated in `Config.zig` and
 replace) or a file upstream hasn't changed. The larger review surface is our
 **modified macOS Swift files** (see the M list in §2), which upstream also
 evolves.
+
+---
+
+## 9. Completeness audit (added 2026-08-21)
+
+After the stage-2 sync, a full tree-vs-upstream audit found **5 files we do not own that
+were still on older upstream content**. They were **not** introduced by this sync — they
+predate it, and neither the 2026-07-13 sync nor stage 1/2 would have caught them, because
+upstream never modified them inside the reconciled ranges.
+
+**Root cause:** §1 states the baseline snapshot is byte-identical to `b831ef6b` for
+`src/`, `include/`, and `pkg/` — **that claim was never verified for `macos/`, `images/`,
+or the repo root**. The baseline import differs from `b831ef6b` in those trees, so any file
+there that upstream changed *before* our recorded fork point stays stale forever: it never
+appears in a `FROM..TO` diff.
+
+The 5 were pure upstream evolution with no SarvTerminal customization (an async
+`TerminalEntity(view:)` initializer, `"glass": false` icon keys), so they were replaced
+verbatim per §3. One follow-on was needed: upstream's `QuickTerminalIntent` calls
+`AppDelegate.quickControllerInitialized`, which a clean 3-way had silently dropped from our
+guarded `AppDelegate.swift` (it kept the `quickTerminalControllerState` machine but not the
+computed property). That is the general hazard of a *clean* 3-way on a heavily-diverged
+file: it can drop an upstream addition without ever reporting a conflict.
+
+**Run this audit at the end of every sync** — it is the only check that catches both
+failure modes (missed fast-forwards and silently-dropped additions):
+
+```sh
+TO=<the upstream SHA you reconciled to>
+BASE=18b6f57
+
+# Every path that differs between upstream's tree and our working tree
+git diff --name-only "$TO" | sort > /tmp/diff_vs_up.txt
+# Everything we legitimately own
+git diff --diff-filter=AM --name-only "$BASE" HEAD | sort > /tmp/owned.txt
+git diff --diff-filter=D  --name-only "$BASE" HEAD | sort > /tmp/deleted.txt
+
+# Anything left is a MISSED merge (expect only guarded renames + our own new files)
+comm -23 /tmp/diff_vs_up.txt /tmp/owned.txt | comm -23 - /tmp/deleted.txt
+```
+
+Expected residue after a complete sync: the guarded renames (they live at new paths, so the
+baseline diff cannot see them) and our own added-but-uncommitted files. Anything else is a
+real gap. Note this audit only proves *content* parity — it cannot prove a hand-merge was
+*semantically* right, so guarded files still need the §8 anchor checks and a build.
