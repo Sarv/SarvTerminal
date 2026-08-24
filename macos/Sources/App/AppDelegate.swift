@@ -318,6 +318,12 @@ class AppDelegate: NSObject,
         )
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(keyboardSelectionDidChange(_:)),
+            name: NSTextInputContext.keyboardSelectionDidChangeNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(ghosttyBellDidRing(_:)),
             name: .ghosttyBellDidRing,
             object: nil
@@ -870,6 +876,11 @@ class AppDelegate: NSObject,
         ] as? Ghostty.Config else { return }
 
         ghosttyConfigDidChange(config: config)
+    }
+
+    @MainActor @objc private func keyboardSelectionDidChange(_ notification: Notification) {
+        syncMenuShortcuts(ghostty.config)
+        TerminalController.all.forEach { $0.relabelTabs() }
     }
 
     @objc private func ghosttyBellDidRing(_ notification: Notification) {
