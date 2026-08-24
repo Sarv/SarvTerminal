@@ -38,7 +38,8 @@ struct SettingsSearchEntry: Identifiable {
         e("Clipboard read", .general, "clipboard", "paste", "read", "access"),
         e("Clipboard write", .general, "clipboard", "copy", "write", "access"),
         e("Paste protection", .general, "paste", "protection", "safe", "warn"),
-        e("Scrollback limit", .general, "scrollback", "buffer", "history", "memory", "lines"),
+        e("Buffer size", .general, "scrollback", "buffer", "history", "memory", "limit", "unlimited"),
+        e("Line limit", .general, "scrollback", "lines", "history", "limit", "unlimited"),
         e("Scrollback compression", .general, "scrollback", "compression", "compress", "memory", "ram"),
 
         // Appearance

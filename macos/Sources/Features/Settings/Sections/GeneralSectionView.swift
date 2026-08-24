@@ -184,14 +184,28 @@ struct GeneralSectionView: View {
     private var scrollbackCard: some View {
         SettingsCard(title: "Scrollback") {
             row("Buffer size") {
-                HStack(spacing: 12) {
-                    Slider(value: $viewModel.general.scrollbackLimitMB, in: 1...100, step: 1)
-                        .frame(maxWidth: 320)
-                    Text(String(format: "%.0f MB", viewModel.general.scrollbackLimitMB))
-                        .font(.callout)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondaryText)
-                        .frame(width: 70, alignment: .trailing)
+                VStack(alignment: .leading, spacing: 4) {
+                    limitPicker(
+                        selection: $viewModel.general.scrollbackLimitBytes,
+                        presets: ScrollbackLimit.bytePresets,
+                        label: ScrollbackLimit.byteLabel
+                    )
+                    caption(ScrollbackLimit.isUnlimited(viewModel.general.scrollbackLimitBytes)
+                            ? "History grows until memory runs out — under pressure macOS can terminate the app. Applies per terminal surface."
+                            : "Applies per terminal surface. The oldest history is trimmed once this much memory is used.")
+                }
+            }
+            divider
+            row("Line limit") {
+                VStack(alignment: .leading, spacing: 4) {
+                    limitPicker(
+                        selection: $viewModel.general.scrollbackLimitLines,
+                        presets: ScrollbackLimit.linePresets,
+                        label: ScrollbackLimit.lineLabel
+                    )
+                    caption(ScrollbackLimit.isUnlimited(viewModel.general.scrollbackLimitLines)
+                            ? "No line cap — the buffer size above decides when history is trimmed."
+                            : "Whichever limit is reached first trims history. Wrapped rows count individually, so the real cap lands slightly higher.")
                 }
             }
             divider
@@ -206,6 +220,28 @@ struct GeneralSectionView: View {
                 }
             }
         }
+    }
+
+    /// Menu picker over `presets`, plus the configured value when a hand-edited
+    /// config set something off-preset (so it's shown, not silently snapped).
+    private func limitPicker(
+        selection: Binding<UInt>,
+        presets: [UInt],
+        label: @escaping (UInt) -> String
+    ) -> some View {
+        Picker("", selection: selection) {
+            ForEach(ScrollbackLimit.options(presets: presets, current: selection.wrappedValue),
+                    id: \.self) { value in
+                Text(label(value)).tag(value)
+            }
+        }
+        .labelsHidden().pickerStyle(.menu).frame(maxWidth: 200, alignment: .leading)
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption).foregroundStyle(.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func row<C: View>(_ label: String, @ViewBuilder control: () -> C) -> some View {

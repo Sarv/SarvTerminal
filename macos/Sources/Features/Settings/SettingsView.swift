@@ -468,9 +468,16 @@ final class SettingsViewModel: ObservableObject {
             editor.set("quit-after-last-window-closed",
                        cur.quitAfterLastWindowClosed ? "true" : "false")
         }
-        if cur.scrollbackLimitMB != was.scrollbackLimitMB {
-            let bytes = Int(cur.scrollbackLimitMB * 1_000_000)
-            editor.set("scrollback-limit", String(bytes))
+        if cur.scrollbackLimitBytes != was.scrollbackLimitBytes {
+            // Drop the pre-1.4 alias so a stale `scrollback-limit` line can't
+            // win by ordering over the key we're writing.
+            editor.remove("scrollback-limit")
+            editor.set("scrollback-limit-bytes",
+                       ScrollbackLimit.configValue(cur.scrollbackLimitBytes))
+        }
+        if cur.scrollbackLimitLines != was.scrollbackLimitLines {
+            editor.set("scrollback-limit-lines",
+                       ScrollbackLimit.configValue(cur.scrollbackLimitLines))
         }
         if cur.scrollbackCompression != was.scrollbackCompression {
             editor.set("scrollback-compression", cur.scrollbackCompression ? "true" : "false")
@@ -770,7 +777,8 @@ struct GeneralForm: Equatable {
     var command: String
     var confirmClose: ConfirmCloseOption
     var quitAfterLastWindowClosed: Bool
-    var scrollbackLimitMB: Double          // expose as megabytes for usability
+    var scrollbackLimitBytes: UInt         // ScrollbackLimit.unlimited == no cap
+    var scrollbackLimitLines: UInt         // ScrollbackLimit.unlimited == no cap
     var scrollbackCompression: Bool
     var mouseHideWhileTyping: Bool
     var focusFollowsMouse: Bool
@@ -789,8 +797,8 @@ struct GeneralForm: Equatable {
         self.command = config?.command ?? ""
         self.confirmClose = ConfirmCloseOption(rawValue: config?.confirmCloseSurface ?? "true") ?? .yes
         self.quitAfterLastWindowClosed = config?.quitAfterLastWindowClosed ?? false
-        let bytes = config?.scrollbackLimit ?? 10_000_000
-        self.scrollbackLimitMB = Double(bytes) / 1_000_000
+        self.scrollbackLimitBytes = config?.scrollbackLimitBytes ?? ScrollbackLimit.defaultBytes
+        self.scrollbackLimitLines = config?.scrollbackLimitLines ?? ScrollbackLimit.defaultLines
         self.scrollbackCompression = config?.scrollbackCompression ?? true
         self.mouseHideWhileTyping = config?.mouseHideWhileTyping ?? false
         self.focusFollowsMouse = config?.focusFollowsMouse ?? false

@@ -1384,10 +1384,20 @@ input: RepeatableReadableIO = .{},
 /// are set, then the first one reached will determine when scrollback is
 /// removed.
 ///
-/// The default is 50 MB. Set this to `unlimited` to remove the byte limit.
+/// SarvTerminal divergence: the default is 500 MB, not upstream's 50 MB.
+/// SarvTerminal is SSH-first and log-heavy, where 50 MB (roughly 48k lines at
+/// 120 columns, since page memory runs about 1 KB per line) truncates a normal
+/// working session. 500 MB retains roughly 480k lines at 120 columns while
+/// still capping the resource that actually matters; with `scrollback-compression`
+/// on, historical pages measure around 6% of their raw size, so the resident
+/// cost of a full buffer stays far below the limit.
+///
+/// Set this to `unlimited` to remove the byte limit, but note that unlimited is
+/// genuinely unbounded per surface: a 3M-line flood maps about 3 GB. macOS will
+/// jetsam the app rather than trim history.
 ///
 /// This can be changed at runtime but will only affect new terminal surfaces.
-@"scrollback-limit-bytes": Limit(usize, 50_000_000) = .default,
+@"scrollback-limit-bytes": Limit(usize, 500_000_000) = .default,
 
 /// The maximum number of lines of scrollback to retain. This excludes
 /// the active screen. Soft-wrapped lines count as multiple lines.
@@ -11042,7 +11052,7 @@ test "scrollback limits" {
     var cfg = try Config.default(alloc);
     defer cfg.deinit();
     try testing.expectEqual(
-        @as(usize, 50_000_000),
+        @as(usize, 500_000_000),
         cfg.@"scrollback-limit-bytes".value,
     );
     try testing.expectEqual(
@@ -11087,7 +11097,7 @@ test "scrollback limits" {
     try cfg.loadIter(alloc, &reset_it);
 
     try testing.expectEqual(
-        @as(usize, 50_000_000),
+        @as(usize, 500_000_000),
         cfg.@"scrollback-limit-bytes".value,
     );
     try testing.expectEqual(

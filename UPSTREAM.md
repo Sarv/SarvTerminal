@@ -405,6 +405,34 @@ re-apply if an upstream refactor drops it.
     (`openURL` routes local `.md` to the viewer), `URLHoverBanner.swift` +
     `SurfaceView.swift` (cursor-adjacent "⌘ click to open" hint).
 
+### 8.6 Scrollback limits readable by the settings UI + 500 MB default (core divergence)
+- **Why:** two problems. (1) `Limit(usize, …)` (added upstream in 1.4 when
+  `scrollback-limit` split into `scrollback-limit-bytes` / `-lines`) is a
+  non-packed struct, and `c_get` rejects those — so every C-API reader, i.e. our
+  macOS settings UI, silently fell back to its own hardcoded default and could
+  never show or round-trip the real value. (2) Upstream's 50 MB default is about
+  48k lines at 120 columns (page memory runs ~1 KB/line); SarvTerminal is
+  SSH-first and log-heavy, where that truncates a normal session.
+- **What we do & anchors to preserve:**
+  - `src/config/limit.zig` — **guarded.** `Limit.cval` returns the raw value so
+    `c_get`'s struct branch accepts it; `unlimited` surfaces as `maxInt(T)`, the
+    same sentinel Zig uses. Without this the settings UI silently lies.
+  - `src/config/Config.zig` — **guarded.** `scrollback-limit-bytes` defaults to
+    **500 MB**, not upstream's 50 MB (doc comment carries the reasoning). Two
+    tests in the same file assert the default; they move with it.
+  - `src/config/CApi.zig` — **guarded.** `test "ghostty_config_get: scrollback
+    limits"` is the regression guard for the `cval` path; it fails if an upstream
+    refactor drops `cval` or changes the default.
+  - macOS UI (ours): `ScrollbackLimit.swift` (pure helpers: `UInt.max` sentinel,
+    `unlimited` serialization, presets, labels — `defaultBytes` MUST match the Zig
+    default), plus the Buffer size / Line limit pickers in `GeneralSectionView.swift`,
+    the diff in `SettingsView.swift` (writes the new keys and `remove`s the
+    pre-1.4 `scrollback-limit` alias), and `SettingsConfigExtensions.swift`.
+- **Measured, for future reference:** page memory is ~1 KB/line at 120 cols
+  regardless of content; `scrollback-compression` takes historical pages to ~6% of
+  raw on realistic text; `unlimited` maps ~3 GB for a 3M-line flood (macOS jetsams
+  the app rather than trimming). Keep `unlimited` opt-in only.
+
 ### Upstream activity on our guarded **core** files (base → tip, at last check)
 
 | File | Upstream commits since base |

@@ -196,13 +196,17 @@ extension Ghostty.Config {
         return v
     }
 
-    /// `scrollback-limit` — usize. Returned as Int (likely won't exceed 2^63).
-    var scrollbackLimit: Int {
-        guard let config = self.config else { return 10_000_000 }
-        var v: UInt = 10_000_000
-        let key = "scrollback-limit"
-        _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
-        return Int(v)
+    /// `scrollback-limit-bytes` — `Limit(usize)`. `ScrollbackLimit.unlimited`
+    /// (`UInt.max`) means no byte limit. Readable only because our fork adds
+    /// `cval` to `Limit` (`src/config/limit.zig`); the pre-1.4 name was
+    /// `scrollback-limit`, which no longer exists as a config key.
+    var scrollbackLimitBytes: UInt {
+        readLimit(key: "scrollback-limit-bytes", default: ScrollbackLimit.defaultBytes)
+    }
+
+    /// `scrollback-limit-lines` — `Limit(usize)`, defaults to unlimited.
+    var scrollbackLimitLines: UInt {
+        readLimit(key: "scrollback-limit-lines", default: ScrollbackLimit.defaultLines)
     }
 
     /// `scrollback-compression` — bool. Compress idle offscreen scrollback.
@@ -322,6 +326,15 @@ extension Ghostty.Config {
     /// it directly — reliable for every string key, no per-key C-type matching.
     private func readString(key: String) -> String? {
         Ghostty.Config.rawConfigFileValue(key)
+    }
+
+    /// Read a `Limit(usize)` config key via the typed getter. Unlimited comes
+    /// back as `ScrollbackLimit.unlimited`; `defaultValue` covers get failure.
+    private func readLimit(key: String, default defaultValue: UInt) -> UInt {
+        guard let config = self.config else { return defaultValue }
+        var v: UInt = defaultValue
+        _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+        return v
     }
 
     /// Read a bool config key via the typed getter (resolves Ghostty's own

@@ -278,3 +278,29 @@ test "ghostty_config_trigger: default keybind" {
         try testing.expectEqual(.unidentified, trigger.key.physical);
     }
 }
+
+// SarvTerminal divergence: our macOS settings UI reads the scrollback limits
+// over the C API, which only works because `Limit` declares `cval`. Without it
+// `c_get` rejects the struct and the UI shows a stale hardcoded default.
+test "ghostty_config_get: scrollback limits" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var cfg = try Config.default(alloc);
+    defer cfg.deinit();
+
+    var out: usize = 0;
+
+    const bytes_key = "scrollback-limit-bytes";
+    try testing.expect(ghostty_config_get(&cfg, &out, bytes_key, bytes_key.len));
+    try testing.expectEqual(@as(usize, 500_000_000), out);
+
+    // Defaults to unlimited, which surfaces as the maxInt sentinel.
+    const lines_key = "scrollback-limit-lines";
+    try testing.expect(ghostty_config_get(&cfg, &out, lines_key, lines_key.len));
+    try testing.expectEqual(std.math.maxInt(usize), out);
+
+    cfg.@"scrollback-limit-bytes" = .{ .value = std.math.maxInt(usize) };
+    try testing.expect(ghostty_config_get(&cfg, &out, bytes_key, bytes_key.len));
+    try testing.expectEqual(std.math.maxInt(usize), out);
+}

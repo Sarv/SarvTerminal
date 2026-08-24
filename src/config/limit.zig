@@ -49,6 +49,17 @@ pub fn Limit(comptime T: type, comptime default_value: T) type {
             return self.value;
         }
 
+        /// SarvTerminal divergence: expose the raw limit to the C API.
+        ///
+        /// `c_get` rejects a non-packed struct unless it declares `cval`, so
+        /// without this every C-API reader (our macOS settings UI) silently
+        /// falls back to its own hardcoded default instead of the real value.
+        /// `unlimited` surfaces as `maxInt(T)` — the same sentinel Zig uses —
+        /// so callers detect it without an optional.
+        pub fn cval(self: Self) T {
+            return self.value;
+        }
+
         /// Returns an independent copy of this value for Config cloning.
         pub fn clone(
             self: Self,
@@ -112,4 +123,15 @@ test "Limit formatting" {
             buf.written(),
         );
     }
+}
+
+test "Limit cval" {
+    const testing = std.testing;
+    const TestLimit = Limit(u16, 42);
+
+    try testing.expectEqual(@as(u16, 42), (TestLimit{}).cval());
+    try testing.expectEqual(
+        std.math.maxInt(u16),
+        (TestLimit{ .value = std.math.maxInt(u16) }).cval(),
+    );
 }

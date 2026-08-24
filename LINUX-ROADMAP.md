@@ -1954,6 +1954,34 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 > **Note (upstream sync `42a161aad`).** This behavior was re-implemented on upstream's new API: the old `Ghostty.Notification.confirmClipboard` post with `userInfo` keys was replaced by the one-shot `Ghostty.ClipboardConfirmationRequest` object described above. A GTK port should model the **request object**, not a broadcast notification — the object is what makes "resolve exactly once, cancel on drop" enforceable.
 
+## 39. Scrollback limits in Settings (Buffer size + Line limit, with Unlimited)
+
+**What it is.** Settings → General → Scrollback exposes both of upstream 1.4's limits: **Buffer size** (`scrollback-limit-bytes`, presets 10 MB → 4 GB plus Unlimited) and **Line limit** (`scrollback-limit-lines`, 10k → 5M plus Unlimited), each with a caption that changes when Unlimited is selected. Our default for the byte limit is **500 MB**, not upstream's 50 MB.
+
+**Root cause & reasoning.** Before this, the macOS settings row was a 1–100 MB slider bound to the pre-1.4 key `scrollback-limit`, and it always displayed a hardcoded fallback. Two independent reasons: the old key no longer exists (renamed to `scrollback-limit-bytes`), and the new type `Limit(usize, …)` is a **non-packed struct**, which `c_get` rejects — so `ghostty_config_get` returned false and the UI silently showed its own default, never the user's value. The fix adds `Limit.cval` on the Zig side (see UPSTREAM.md §8.6). The default was raised because 50 MB is ~48k lines at 120 columns: page memory measures ~1 KB per line regardless of content, so a log-heavy SSH session truncates almost immediately.
+
+**Platform-agnostic logic.**
+1. `unlimited` is the sentinel `maxInt(usize)`, NOT an optional. Compare against it to detect "no limit"; serialize it back to the config file as the literal string `unlimited`, and any other value as a plain integer.
+2. Both limits are independent and whichever is reached first trims history. The byte limit is the memory guard; the line limit is the *predictable* knob, because bytes/line scales with column count.
+3. Offer presets, but if the configured value isn't a preset (hand-edited config), inject that value into the list so the UI shows what's actually set instead of snapping to the nearest preset — snapping silently rewrites the user's config the next time anything is saved.
+4. When writing the byte limit, also **delete** any pre-1.4 `scrollback-limit` line. Both keys parse (the old one via a compatibility rename), so leaving both means the file's line order decides the winner.
+5. Changing either limit only affects **new** surfaces; existing ones keep the limit they were created with.
+
+**macOS→Linux equivalents.**
+- `ScrollbackLimit.swift` (pure helpers: sentinel, `configValue`, presets, labels, off-preset passthrough) → a plain Zig struct of pure functions in the GTK app. Keep it free of widget code so it stays unit-testable; `defaultBytes` MUST track the Zig default in `Config.zig` or the UI lies again.
+- SwiftUI `Picker(.menu)` bound to a `UInt` → `GtkDropDown` over a `[]const usize` model with a label callback. The tag IS the byte/line value, which is what makes off-preset passthrough trivial.
+- **GTK does not need `cval`.** The GTK app is Zig and reads `Config` directly, so it can use `.optional()` (null = unlimited) and skip the C-API limitation entirely. Only bindings that cross the C boundary need the sentinel dance.
+- Settings write path (`ConfigFileEditor.set`/`remove`) → whatever the GTK app uses to rewrite the config file; the "remove the legacy alias" step is the part that's easy to forget.
+
+**Measured behavior (macOS, for comparison when porting).** ~1 KB of page memory per line at 120 cols; `scrollback-compression` brings historical pages to ~6% of raw on realistic text; a 3M-line flood at `unlimited` maps ~3 GB and stays ~1.4 GB resident. Unlimited is genuinely unbounded — the OS kills the app rather than the terminal trimming — so it must stay opt-in, never a default.
+
+**Verify on Linux.**
+1. With no scrollback keys in the config, Settings shows **500 MB** and **Unlimited** — not a hardcoded placeholder. Hand-edit the config to an off-preset value (e.g. `333000000`) and confirm the picker displays it.
+2. Set Buffer size = Unlimited, restart, run `seq 1 300000`, scroll to the very top: the first line must be `1`. Then check RSS is in the ~300 MB range for that many lines.
+3. Set Buffer size = 50 MB, repeat: the top line must now be far into the sequence (history trimmed), proving the limit is actually applied to new surfaces.
+4. Put a legacy `scrollback-limit = 500000000` line in the config, change Buffer size in the UI, and confirm the legacy line is gone and only `scrollback-limit-bytes` remains.
+5. A Debug build makes step 2 crawl (integrity checks); build optimized for throughput testing or you'll misread slowness as data loss.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
