@@ -211,6 +211,9 @@ Record every guarded-file collision so the reconciliation is auditable.
 | →e77b2309 | `src/input/paste.zig` | **hand-merged** | upstream added +168 lines (`bracketed_prefix`/`suffix`, `max_frame_size`, `encodeWriter`, `isSafeWith`) in `a5bb22e23`; took theirs verbatim and re-applied our `isSafeAllowingTrailingNewline` (+ its test) into the function/test regions. Ours is orthogonal to their `isSafeWith`: theirs relaxes by bracketed-paste state, ours only forgives a single trailing newline. `src/Surface.zig:6001` is the caller |
 | →e77b2309 | `build.zig.zon` | clean (non-overlapping) | upstream moved the gobject dep to `deps.files.ghostty.org`; took theirs and re-added our `.md4c` line |
 | →e77b2309 | `.github/VOUCHED.td` | kept deleted | upstream keeps updating its vouch list; we deleted the whole `.github` CI surface |
+| →6a508fd5 | `macos/Sources/App/AppDelegate.swift` | clean 3-way | upstream's AppKit menu-shortcut translation; our menu branding/Vaults/Reset-Terminal setup and `quickControllerInitialized` preserved |
+| →6a508fd5 | `macos/Sources/Ghostty/Ghostty.App.swift` | clean 3-way | shortcut translation moved to AppKit; our `openURL` markdown routing preserved |
+| →6a508fd5 | `macos/Sources/Ghostty/Ghostty.Config.swift` | clean 3-way | our isolated `AppPaths.ghosttyConfigFile` load path preserved |
 
 ---
 
@@ -221,8 +224,8 @@ Update this section every time you reconcile.
 | | |
 |---|---|
 | Upstream base (fork point) | `b831ef6b` (ghostty 1.3.2-dev) |
-| **Reconciled up to** | `e77b2309f` (2026-08-24 on branch `chore/upstream-sync-1.4.x`) |
-| Upstream tip at last check | `e77b2309f` (**fully reconciled**) |
+| **Reconciled up to** | `6a508fd5e` (2026-08-24 on branch `chore/upstream-sync-1.4.x`) |
+| Upstream tip at last check | `6a508fd5e` (**fully reconciled**) |
 | Last checked | 2026-08-24 |
 
 Sync of 2026-07-13: 114 untouched files fast-forwarded to `55a3e33a`; 6 owned files
@@ -305,6 +308,37 @@ failures**. The one failing build step, `xcodebuild test`, is the **same pre-exi
 untouched by this sync and equally broken on `main`. All §8 anchors verified intact
 (`sarvterminal/crash`, `sarvterminal/themes`, `com.sarv.terminal`, `default_program`,
 `md4c`, `hover_activate_mods`, `macos_app_debug`, `isSafeAllowingTrailingNewline`).
+
+---
+
+Sync of 2026-08-24, stage 2 (`e77b2309f` → `6a508fd5e`, 5 commits): upstream's **macOS
+menu-shortcut translation** rework (#13888) — physical-layout shortcut translation moved to
+AppKit, keyboard-layout actor isolation, simplified shortcut identity. 10 files: 7
+fast-forwarded (including the new `macos/Tests/Helpers/KeyboardLayoutTests.swift`) and the
+3 we diverge on — `AppDelegate.swift`, `Ghostty.App.swift`, `Ghostty.Config.swift` —
+3-way merged with `git merge-file` (base = `e77b2309f`), **0 conflicts**. Verified both
+directions: every upstream added line is present, and our anchors survived
+(`brandMenuFromBundleName`, `setupNewVaultsWindowMenuItem`, `quickControllerInitialized`,
+`AppPaths.ghosttyConfigFile`, markdown `openURL` routing).
+
+**`xcodebuild test` now runs** (it had been dead since the rename, see the note in the
+previous stage). Two things were wrong: `TEST_HOST` pointed at `SarvTerminal.app/…/ghostty`
+when the bundle is `Sarv Terminal.app` and the executables are `SarvTerminalDev` (Debug) /
+`SarvTerminal` (Release+ReleaseLocal); and `PRODUCT_NAME = "Sarv Terminal"` had silently
+renamed the Swift module to `Sarv_Terminal`, so every `@testable import Ghostty` failed.
+Fixed by correcting `TEST_HOST` per configuration and pinning `PRODUCT_MODULE_NAME = Ghostty`
+in all three app configurations — which also keeps upstream's test files merging verbatim.
+A third problem only showed up once the build worked: the app's session-restore modal blocks
+XCTest's launch handshake ("test runner timed out while preparing to run tests"), and the
+test host shares the debug bundle id, so it also popped a dialog over the running dev app
+and could overwrite the developer's saved session. `isRunningXCTest()` (`AppInfo.swift`) now
+gates both the restore prompt and `persistSession()`.
+
+Verification: `zig build test` = **all green, exit 0** (Zig + `xcodebuild test`) — the first
+fully green run. One caveat: `terminal.search.Thread.test_0` plus a viewport search test
+crashed on one run and passed on the next with a different seed; `src/terminal/search.zig`
+is pristine baseline (untouched by us and by these syncs), so treat it as a **flaky
+threaded test**, not a regression.
 
 ---
 
