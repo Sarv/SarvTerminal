@@ -208,6 +208,9 @@ Record every guarded-file collision so the reconciliation is auditable.
 | →42a161aa | `macos/…/SurfaceView.swift` (ours) | **API migration** | `OSColor` alias removed with iOS support → `NSColor` |
 | →42a161aa | 5 stale unowned files | **fast-forwarded (pre-existing gap)** | `images/Ghostty.icon/icon.json`, `macos/…/App Intents/{Entities/TerminalEntity,NewTerminalIntent,QuickTerminalIntent}.swift`, `macos/…/TitlebarTabsTahoeTerminalWindow.swift` — stale since BEFORE this sync (see §9) |
 | →42a161aa | `macos/Sources/App/AppDelegate.swift` | **completed the merge** | the clean 3-way brought upstream's `quickTerminalControllerState` machine but dropped the `quickControllerInitialized` computed property beside it; restored (upstream's `QuickTerminalIntent` needs it) |
+| →e77b2309 | `src/input/paste.zig` | **hand-merged** | upstream added +168 lines (`bracketed_prefix`/`suffix`, `max_frame_size`, `encodeWriter`, `isSafeWith`) in `a5bb22e23`; took theirs verbatim and re-applied our `isSafeAllowingTrailingNewline` (+ its test) into the function/test regions. Ours is orthogonal to their `isSafeWith`: theirs relaxes by bracketed-paste state, ours only forgives a single trailing newline. `src/Surface.zig:6001` is the caller |
+| →e77b2309 | `build.zig.zon` | clean (non-overlapping) | upstream moved the gobject dep to `deps.files.ghostty.org`; took theirs and re-added our `.md4c` line |
+| →e77b2309 | `.github/VOUCHED.td` | kept deleted | upstream keeps updating its vouch list; we deleted the whole `.github` CI surface |
 
 ---
 
@@ -218,9 +221,9 @@ Update this section every time you reconcile.
 | | |
 |---|---|
 | Upstream base (fork point) | `b831ef6b` (ghostty 1.3.2-dev) |
-| **Reconciled up to** | `42a161aad` (2026-08-21 on branch `chore/upstream-sync-1.4.x`) |
-| Upstream tip at last check | `42a161aad` (**fully reconciled**) |
-| Last checked | 2026-08-21 |
+| **Reconciled up to** | `e77b2309f` (2026-08-24 on branch `chore/upstream-sync-1.4.x`) |
+| Upstream tip at last check | `e77b2309f` (**fully reconciled**) |
+| Last checked | 2026-08-24 |
 
 Sync of 2026-07-13: 114 untouched files fast-forwarded to `55a3e33a`; 6 owned files
 3-way merged cleanly (see §6); 8 files we'd deleted left deleted; one build fix in
@@ -274,6 +277,34 @@ is the **same pre-existing failure as before this sync** — `project.pbxproj` s
 `TEST_HOST` to `SarvTerminal.app/…/ghostty`, but our executables are `SarvTerminalDev`
 (Debug) / `SarvTerminal` (Release) and the bundle is `Sarv Terminal.app`. It fails
 identically on `main` and is unrelated to the merge; it deserves its own fix commit.
+
+---
+
+Sync of 2026-08-24 (`42a161aad` → `e77b2309f`, 75 commits): **86 files (17 A / 69 M / 0 D),
+and only 3 needed hands** — see §6. 83 files fast-forwarded verbatim, `.github/VOUCHED.td`
+left deleted, `build.zig.zon` and `src/input/paste.zig` hand-merged. Content is almost
+entirely **clipboard and paste**: the Kitty clipboard protocol (read + write), the Kitty
+drag-and-drop protocol (12 commits), a new `ghostty_terminal_paste` C API centralizing
+paste with mode 5522, `clipboard_read` effects, plus OSC 99 work, a GTK XKB modifier fix,
+`pkg/wuffs` updates and translation churn. `src/config/Config.zig` was NOT touched, so
+there are **no new config options to expose in Settings** this round.
+
+**Method note.** §2's M/D heuristic is computed against the pristine `18b6f57` baseline, so
+it now reports 608 "owned" files — every file any past sync fast-forwarded counts as
+modified. Following the §5 skeleton literally would halt on ~50 files in a range like this.
+The precise test is `git diff --name-only <RECONCILED_UP_TO> HEAD -- <upstream-changed
+files>`: only files where **our HEAD differs from the last sync point** can actually
+conflict. That reduced this range from 50 apparent collisions to 3 real ones. Use that
+refinement; the M/D list is still the right *safety net*, just not a work list.
+
+Verification: `zig build -Demit-macos-app=false` passes; full macOS app builds
+(`scripts/dev.sh --fast`); `zig build test` = **3696/3714 passed, 18 skipped, 0 test
+failures**. The one failing build step, `xcodebuild test`, is the **same pre-existing
+`TEST_HOST` breakage** documented for the previous sync (`project.pbxproj` points at
+`SarvTerminal.app/…/ghostty`; our executables are `SarvTerminalDev`/`SarvTerminal`) —
+untouched by this sync and equally broken on `main`. All §8 anchors verified intact
+(`sarvterminal/crash`, `sarvterminal/themes`, `com.sarv.terminal`, `default_program`,
+`md4c`, `hover_activate_mods`, `macos_app_debug`, `isSafeAllowingTrailingNewline`).
 
 ---
 
