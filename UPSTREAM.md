@@ -433,6 +433,23 @@ re-apply if an upstream refactor drops it.
   raw on realistic text; `unlimited` maps ~3 GB for a 3M-line flood (macOS jetsams
   the app rather than trimming). Keep `unlimited` opt-in only.
 
+### 8.7 Optimized dev build keeps the Dev identity (build divergence)
+- **Why:** a Debug core sets `slow_runtime_safety = true`, which enables
+  `PageList.assertIntegrity()` on every mutation — heavy output crawls, and it
+  reads like a product bug. But upstream derives the Xcode configuration straight
+  from `-Doptimize`, so `-Doptimize=ReleaseFast` silently switches the dev app to
+  the RELEASE identity (`SarvTerminal` executable, `com.sarv.terminal` bundle id)
+  — sharing UserDefaults and the config dir with the user's daily app, and
+  breaking `dev.sh`'s path-scoped `pkill`.
+- **What we do & anchors to preserve:**
+  - `src/build/Config.zig` — **guarded.** `-Dmacos-app-debug` option, defaulting
+    to `optimize == .Debug` so upstream behavior is unchanged when unset.
+  - `src/build/GhosttyXcodebuild.zig` — **guarded.** `xc_config` follows that
+    option instead of the optimize mode. Safe because every configuration links
+    the same `macos/GhosttyKit.xcframework`.
+  - `scripts/dev.sh` (ours): `--fast` = `-Doptimize=ReleaseFast -Dmacos-app-debug=true`.
+    Default stays Debug for real debugging.
+
 ### Upstream activity on our guarded **core** files (base → tip, at last check)
 
 | File | Upstream commits since base |

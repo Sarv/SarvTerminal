@@ -26,13 +26,11 @@ pub fn init(
     config: *const Config,
     deps: Deps,
 ) !Ghostty {
-    const xc_config = switch (config.optimize) {
-        .Debug => "Debug",
-        .ReleaseSafe,
-        .ReleaseSmall,
-        .ReleaseFast,
-        => "ReleaseLocal",
-    };
+    // SarvTerminal divergence: the Xcode configuration follows
+    // `-Dmacos-app-debug` rather than the optimize mode directly, so an
+    // optimized core can still be packaged with the Dev identity. That option
+    // defaults to `optimize == .Debug`, preserving upstream behavior.
+    const xc_config = if (config.macos_app_debug) "Debug" else "ReleaseLocal";
 
     const xc_arch: ?[]const u8 = switch (deps.xcframework.target) {
         // Universal is our default target, so we don't have to

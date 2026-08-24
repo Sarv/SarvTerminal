@@ -54,6 +54,14 @@ emit_exe: bool = false,
 emit_helpgen: bool = false,
 emit_lib_vt: bool = false,
 emit_macos_app: bool = false,
+
+/// SarvTerminal divergence: choose the macOS app's Xcode configuration
+/// independently of the Zig optimize mode. Debug keeps the Dev identity
+/// (`SarvTerminalDev` executable, `com.sarv.terminal.debug` bundle id, so
+/// dev state never touches the release app's) while the Zig core can still
+/// be built optimized. Defaults to Debug only for a Debug core, i.e. the
+/// upstream behavior unless asked otherwise.
+macos_app_debug: bool = false,
 emit_terminfo: bool = false,
 emit_termcap: bool = false,
 emit_test_exe: bool = false,
@@ -559,6 +567,14 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         "emit-macos-app",
         "Build and install the macOS app bundle.",
     ) orelse !config.emit_lib_vt and config.emit_xcframework;
+
+    config.macos_app_debug = b.option(
+        bool,
+        "macos-app-debug",
+        "Build the macOS app with the Debug Xcode configuration (Dev bundle " ++
+            "id and executable name), independent of -Doptimize. Defaults to " ++
+            "true only for a Debug build.",
+    ) orelse (optimize == .Debug);
 
     //---------------------------------------------------------------
     // System Packages

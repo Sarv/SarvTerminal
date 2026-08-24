@@ -6,9 +6,23 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# `--fast` builds the Zig core optimized (ReleaseFast) while keeping the Debug
+# Xcode configuration, so the app keeps the Dev identity (`SarvTerminalDev`
+# executable + `com.sarv.terminal.debug` bundle id, hence its own UserDefaults
+# and data dir) and the two apps stay isolated. Use it when a Debug core is too
+# slow to exercise -- Debug enables the terminal's integrity checks, which walk
+# the page list on every mutation and make heavy output crawl. The tradeoff is
+# no integrity assertions and optimized frames in a crash, so keep the default
+# Debug build for actual debugging.
+OPT_FLAGS=""
+if [ "$1" = "--fast" ]; then
+  shift
+  OPT_FLAGS="-Doptimize=ReleaseFast -Dmacos-app-debug=true"
+fi
+
 # Pass the version explicitly (skips git detection, which panics when HEAD is on
 # a release tag). "$@" still lets you add flags like -Dtest-filter.
-zig build -Dversion-string="$(cat VERSION)" "$@"
+zig build -Dversion-string="$(cat VERSION)" $OPT_FLAGS "$@"
 
 # No space in the filename so the path is shell-friendly (`open /tmp/...`).
 # The in-app display name stays "Sarv Terminal Dev" (set in Info.plist).
