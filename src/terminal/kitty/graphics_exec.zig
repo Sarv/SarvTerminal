@@ -5,6 +5,8 @@ const Allocator = std.mem.Allocator;
 const Terminal = @import("../Terminal.zig");
 const command = @import("graphics_command.zig");
 const image = @import("graphics_image.zig");
+const animation = @import("graphics_animation.zig");
+const pixel = @import("graphics_pixel.zig");
 const Command = command.Command;
 const Response = command.Response;
 const LoadingImage = image.LoadingImage;
@@ -69,7 +71,7 @@ pub fn execute(
         .display => display(io, alloc, terminal, cmd),
         .delete => delete(io, alloc, terminal, cmd),
 
-        .transmit, .transmit_and_display => resp: {
+        .transmit, .transmit_and_display, .transmit_animation_frame => resp: {
             // If we're transmitting, then our `q` setting value is complicated.
             // The `q` setting inherits the value from the starting command
             // unless `q` is set >= 1 on this command. If it is, then we save
@@ -86,13 +88,35 @@ pub fn execute(
                 },
             };
 
-            break :resp transmit(io, alloc, terminal, cmd);
+            break :resp switch (cmd.control) {
+                .transmit_animation_frame => transmitAnimationFrame(
+                    io,
+                    alloc,
+                    terminal,
+                    cmd,
+                ),
+                else => transmit(
+                    io,
+                    alloc,
+                    terminal,
+                    cmd,
+                ),
+            };
         },
 
-        .transmit_animation_frame,
-        .control_animation,
-        .compose_animation,
-        => .{ .message = "ERROR: unimplemented action" },
+        .control_animation => controlAnimation(
+            io,
+            alloc,
+            terminal,
+            cmd,
+        ),
+
+        .compose_animation => composeAnimation(
+            io,
+            alloc,
+            terminal,
+            cmd,
+        ),
     };
 
     // Handle the quiet settings
@@ -169,14 +193,26 @@ fn transmit(
 ) Response {
     const t = cmd.transmission().?;
     const storage = &terminal.screens.active.kitty_images;
-    var result: Response = if (storage.loading) |loading|
-        loading.response
-    else
-        .{
-            .id = t.image_id,
-            .image_number = t.image_number,
-            .placement_id = t.placement_id,
-        };
+
+    var result: Response = if (storage.loading) |loading| loading: {
+        // Any transmit-like command received while a load is in progress
+        // is a continuation chunk of that load, and the load completes
+        // according to how it started. If an animation frame load (a=f)
+        // is in progress, this chunk belongs to it even when the client
+        // didn't repeat a=f on the chunk.
+        if (loading.frame != null) return transmitAnimationFrame(
+            io,
+            alloc,
+            terminal,
+            cmd,
+        );
+
+        break :loading loading.response;
+    } else .{
+        .id = t.image_id,
+        .image_number = t.image_number,
+        .placement_id = t.placement_id,
+    };
 
     const load = loadAndAddImage(io, alloc, terminal, cmd) catch |err| {
         encodeError(&result, err);
@@ -399,6 +435,527 @@ fn display(
     return result;
 }
 
+/// Transmit animation frame data (a=f).
+///
+/// Frame data is loaded exactly like image data, including chunking
+/// and every transmission medium, and once complete it is composed
+/// into a frame of an existing image's animation.
+fn transmitAnimationFrame(
+    io: std.Io,
+    alloc: Allocator,
+    terminal: *Terminal,
+    cmd: *const Command,
+) Response {
+    const storage = &terminal.screens.active.kitty_images;
+
+    // A chunk arriving while a load is in progress continues that load.
+    if (storage.loading) |loading| {
+        // If this is the first frame, then we treat it like a normal image
+        // because the first frame is just the image.
+        if (loading.frame == null) return transmit(
+            io,
+            alloc,
+            terminal,
+            cmd,
+        );
+
+        // Not the first frame, so continue loading similar to transmit
+        // but this is for a subsequent frame.
+        var result = loading.response;
+        loading.addData(alloc, cmd.data) catch |err| {
+            encodeError(&result, err);
+            return result;
+        };
+
+        // If more chunks are expected we don't respond yet.
+        const t = cmd.transmission().?;
+        if (t.more_chunks) return .{};
+
+        // Final chunk: copy the loading state out and free the
+        // pointer, mirroring loadAndAddImage.
+        var loading_copy = loading.*;
+        alloc.destroy(loading);
+        storage.loading = null;
+        defer loading_copy.deinit(alloc);
+        return completeAnimationFrame(
+            io,
+            alloc,
+            terminal,
+            &loading_copy,
+        );
+    }
+
+    // We are starting our load, either the first frame or a subsequent frame.
+    const f = cmd.control.transmit_animation_frame;
+    const t = f.transmission;
+    var result: Response = .{
+        .id = t.image_id,
+        .image_number = t.image_number,
+        .placement_id = t.placement_id,
+        // Errors echo the client's frame number; on success this is
+        // replaced with the resolved (possibly newly assigned) one.
+        .frame = f.edit_frame,
+    };
+
+    // A frame can only be added to an existing image.
+    if (t.image_id == 0 and t.image_number == 0) {
+        result.message = "EINVAL: image ID or number required";
+        return result;
+    }
+    const img = storage.imagePtrByIdOrNumber(
+        t.image_id,
+        t.image_number,
+    ) orelse {
+        result.message = "ENOENT: image not found";
+        return result;
+    };
+    result.id = img.id;
+
+    var loading = LoadingImage.init(
+        io,
+        alloc,
+        cmd,
+        storage.image_limits,
+    ) catch |err| {
+        encodeError(&result, err);
+        return result;
+    };
+    loading.frame = .{
+        .cmd = f,
+        .image_generation = img.generation,
+    };
+    loading.response.id = img.id;
+
+    // Chunked: store the loading state and wait for the rest. The
+    // frame parameters above are saved with it; continuation chunks
+    // contribute only payload bytes.
+    if (t.more_chunks) {
+        const loading_ptr = alloc.create(LoadingImage) catch |err| {
+            loading.deinit(alloc);
+            encodeError(&result, err);
+            return result;
+        };
+        loading_ptr.* = loading;
+        storage.loading = loading_ptr;
+        return .{};
+    }
+
+    defer loading.deinit(alloc);
+    return completeAnimationFrame(
+        io,
+        alloc,
+        terminal,
+        &loading,
+    );
+}
+
+/// Complete a fully loaded animation frame: validate it against its
+/// image and compose it into the image's animation.
+fn completeAnimationFrame(
+    io: std.Io,
+    alloc: Allocator,
+    terminal: *Terminal,
+    loading: *LoadingImage,
+) Response {
+    const storage = &terminal.screens.active.kitty_images;
+    var result = loading.response;
+    const f = loading.frame.?.cmd;
+
+    // Re-resolve the image: it may have been deleted, evicted, or
+    // replaced while the frame data was being transmitted. The saved
+    // generation pins the exact image the load started against.
+    var img = storage.imagePtrByIdOrNumber(
+        loading.image.id,
+        loading.image.number,
+    ) orelse {
+        result.message = "ENOENT: image not found";
+        return result;
+    };
+    if (img.generation != loading.frame.?.image_generation) {
+        result.message = "ENOENT: image not found";
+        return result;
+    }
+    if (img.data.bytes() == null) {
+        result.message = "EINVAL: image data incomplete";
+        return result;
+    }
+
+    // Finish decoding the frame data: decompression, PNG decoding,
+    // and length validation all match image loading.
+    var frame_img = loading.complete(alloc) catch |err| {
+        encodeError(&result, err);
+        return result;
+    };
+    defer frame_img.deinit(alloc);
+
+    // The frame rectangle may not exceed the image's size. The x/y
+    // offsets are deliberately not validated: composition clips,
+    // matching Kitty.
+    if (frame_img.width > img.width or frame_img.height > img.height) {
+        result.message = "EINVAL: frame dimensions exceed image";
+        return result;
+    }
+
+    // All composition happens in RGBA; convert both sides as needed.
+    if (frame_img.format != .rgba) {
+        const rgba = pixel.rgbaFromFormat(
+            alloc,
+            frame_img.format,
+            frame_img.data.bytes().?,
+        ) catch |err| {
+            encodeError(&result, err);
+            return result;
+        };
+        frame_img.data.deinit(alloc);
+        frame_img.data = .{ .complete = rgba };
+        frame_img.format = .rgba;
+    }
+    storage.convertImageToRgba(io, alloc, img) catch |err| {
+        encodeError(&result, err);
+        return result;
+    };
+
+    const anim = ensureAnimation(alloc, img) catch |err| {
+        encodeError(&result, err);
+        return result;
+    };
+
+    // Resolve the frame number: r in 1..count edits that existing
+    // frame, anything else (including omitted) creates a new frame
+    // appended at count+1. The resolved number is echoed in the
+    // response so clients can learn assigned frame numbers.
+    const count: u32 = anim.frameCount();
+    const number: u32 = number: {
+        const r = f.edit_frame;
+        if (r == 0 or r > count + 1) break :number count + 1;
+        break :number r;
+    };
+    result.frame = number;
+
+    const src = frame_img.data.bytes().?;
+    if (number == count + 1) {
+        // Creating a new frame. The gap defaults to 40ms when omitted
+        // and a negative gap creates a gapless (never shown) frame.
+        const gap: u32 = if (f.gap_ms > 0)
+            @intCast(f.gap_ms)
+        else if (f.gap_ms < 0)
+            0
+        else
+            animation.default_gap_ms;
+
+        // The base canvas frame must exist before we reserve space.
+        if (f.create_frame > 0 and img.frameData(f.create_frame) == null) {
+            result.message = "EINVAL: base frame not found";
+            return result;
+        }
+
+        // Reserve room for the new frame, evicting other images if
+        // needed. Eviction can remove images (never this one), so we
+        // re-resolve our pointer afterwards to be safe.
+        const frame_len: usize = @as(usize, img.width) * img.height * 4;
+        const image_id = img.id;
+        storage.reserveAnimationBytes(
+            io,
+            alloc,
+            terminal.screens.active,
+            image_id,
+            frame_len,
+        ) catch {
+            result.message = "ENOSPC: animation frame storage full";
+            return result;
+        };
+        img = storage.imagePtrByIdOrNumber(image_id, 0).?;
+
+        const canvas = alloc.alloc(u8, frame_len) catch {
+            storage.releaseAnimationBytes(frame_len);
+            result.message = "ENOMEM: out of memory";
+            return result;
+        };
+        if (f.create_frame > 0) {
+            @memcpy(canvas, img.frameData(f.create_frame).?);
+        } else {
+            pixel.fillBackground(canvas, f.background);
+        }
+        pixel.composeRect(
+            canvas,
+            img.width,
+            img.height,
+            src,
+            frame_img.width,
+            frame_img.height,
+            f.x,
+            f.y,
+            f.composition_mode,
+        );
+
+        anim.frames.append(alloc, .{
+            .data = canvas,
+            .gap_ms = gap,
+        }) catch {
+            alloc.free(canvas);
+            storage.releaseAnimationBytes(frame_len);
+            result.message = "ENOMEM: out of memory";
+            return result;
+        };
+
+        // A new frame never changes the displayed frame (playback
+        // reaches it later), but the storage content changed.
+        storage.markMutated(io);
+    } else {
+        // Editing an existing frame. A nonzero gap also updates the
+        // frame's gap; the 40ms default doesn't apply to edits.
+        //
+        // Unlike frame creation there is no byte reservation here:
+        // frames are always stored at full image size, so the edit
+        // composes into the existing buffer in place and storage
+        // usage cannot change. Kitty likewise exempts frame edits
+        // from its quota check.
+        if (f.gap_ms != 0) anim.setGapAt(
+            number - 1,
+            if (f.gap_ms > 0) @intCast(f.gap_ms) else 0,
+        );
+
+        // The frame data is owned by this storage, so the const cast
+        // is safe (same reasoning as the renderer's image uploads).
+        const dst = @constCast(img.frameData(number).?);
+        pixel.composeRect(
+            dst,
+            img.width,
+            img.height,
+            src,
+            frame_img.width,
+            frame_img.height,
+            f.x,
+            f.y,
+            f.composition_mode,
+        );
+
+        if (number - 1 == anim.current_index) {
+            // The displayed pixels changed; restart the frame's gap
+            // timer like Kitty's re-upload does.
+            anim.frame_shown_at_ms = null;
+            storage.markImageContentChanged(io, img);
+        } else {
+            storage.markMutated(io);
+        }
+    }
+
+    return result;
+}
+
+/// Control animation playback (a=a).
+///
+/// Successful commands never respond. The only possible responses are
+/// for a missing image or identifier. Invalid key values are silently
+/// ignored, matching Kitty.
+fn controlAnimation(
+    io: std.Io,
+    alloc: Allocator,
+    terminal: *Terminal,
+    cmd: *const Command,
+) Response {
+    const a = cmd.control.control_animation;
+    const storage = &terminal.screens.active.kitty_images;
+
+    var result: Response = .{
+        .id = a.image_id,
+        .image_number = a.image_number,
+        .placement_id = a.placement_id,
+    };
+    if (a.image_id == 0 and a.image_number == 0) {
+        result.message = "EINVAL: image ID or number required";
+        return result;
+    }
+    const img = storage.imagePtrByIdOrNumber(
+        a.image_id,
+        a.image_number,
+    ) orelse {
+        result.message = "ENOENT: image not found";
+        return result;
+    };
+
+    const anim = ensureAnimation(alloc, img) catch |err| {
+        encodeError(&result, err);
+        return result;
+    };
+
+    // The keys below are applied independently and in the same order as Kitty.
+
+    // Set a frame's gap (r= together with z=). This is the only way
+    // to give the root frame a gap, since it is created gapless.
+    if (a.frame != 0 and a.frame <= anim.frameCount() and a.gap_ms != 0) {
+        anim.setGapAt(
+            a.frame - 1,
+            if (a.gap_ms > 0) @intCast(a.gap_ms) else 0,
+        );
+        storage.markMutated(io);
+    }
+
+    // Set the current frame (c=), the client-driven animation
+    // primitive.
+    if (a.current_frame != 0 and a.current_frame <= anim.frameCount() and
+        a.current_frame - 1 != anim.current_index)
+    {
+        anim.current_index = a.current_frame - 1;
+        anim.frame_shown_at_ms = null;
+        storage.markImageContentChanged(io, img);
+    }
+
+    // Set the playback state (s=). Any state change resets the loop
+    // counter; leaving the stopped state restarts the gap timer.
+    if (a.action != .invalid) {
+        const old = anim.state;
+        anim.state = switch (a.action) {
+            .invalid => unreachable,
+            .stop => .stopped,
+            .run_wait => .loading,
+            .run => .running,
+        };
+        if (old == .stopped and anim.state != .stopped) {
+            anim.frame_shown_at_ms = null;
+        }
+        anim.current_loop = 0;
+        storage.markMutated(io);
+    }
+
+    // Set the loop count (v=), stored off by one per the protocol:
+    // v=1 loops forever, v=n plays n-1 loops.
+    if (a.loops != 0) {
+        anim.max_loops = a.loops - 1;
+        storage.markMutated(io);
+    }
+
+    // Successful animation control commands never respond.
+    return .{};
+}
+
+/// Compose a rectangle of pixels from one animation frame onto
+/// another (a=c). Frame 1 (the root frame) always exists, so this also works
+/// on images without any animation state.
+fn composeAnimation(
+    io: std.Io,
+    alloc: Allocator,
+    terminal: *Terminal,
+    cmd: *const Command,
+) Response {
+    const c = cmd.control.compose_animation;
+    const storage = &terminal.screens.active.kitty_images;
+
+    var result: Response = .{
+        .id = c.image_id,
+        .image_number = c.image_number,
+        .placement_id = c.placement_id,
+    };
+    if (c.image_id == 0 and c.image_number == 0) {
+        result.message = "EINVAL: image ID or number required";
+        return result;
+    }
+    const img = storage.imagePtrByIdOrNumber(
+        c.image_id,
+        c.image_number,
+    ) orelse {
+        result.message = "ENOENT: image not found";
+        return result;
+    };
+    result.id = img.id;
+    if (img.data.bytes() == null) {
+        result.message = "EINVAL: image data incomplete";
+        return result;
+    }
+
+    // Both frames must exist. Note that r is the source frame and c
+    // the destination; the spec's reference table describes these
+    // backwards (see AnimationFrameComposition).
+    if (img.frameData(c.source_frame) == null) {
+        result.message = "ENOENT: source frame not found";
+        return result;
+    }
+    if (img.frameData(c.dest_frame) == null) {
+        result.message = "ENOENT: destination frame not found";
+        return result;
+    }
+
+    // Rectangle validation is done in u64 so untrusted 32-bit values
+    // can't overflow. Out-of-bounds rectangles are errors here,
+    // unlike a=f which clips.
+    const width: u64 = if (c.width > 0) c.width else img.width;
+    const height: u64 = if (c.height > 0) c.height else img.height;
+    if (@as(u64, c.x) + width > img.width or
+        @as(u64, c.y) + height > img.height)
+    {
+        result.message = "EINVAL: destination rectangle out of bounds";
+        return result;
+    }
+    if (@as(u64, c.left_edge) + width > img.width or
+        @as(u64, c.top_edge) + height > img.height)
+    {
+        result.message = "EINVAL: source rectangle out of bounds";
+        return result;
+    }
+
+    // Composing a frame onto itself requires non-overlapping
+    // rectangles.
+    if (c.source_frame == c.dest_frame) {
+        const x_overlaps = @max(c.left_edge, c.x) < @min(c.left_edge, c.x) + width;
+        const y_overlaps = @max(c.top_edge, c.y) < @min(c.top_edge, c.y) + height;
+        if (x_overlaps and y_overlaps) {
+            result.message = "EINVAL: source and destination rectangles overlap";
+            return result;
+        }
+    }
+
+    // All composition happens in RGBA.
+    storage.convertImageToRgba(
+        io,
+        alloc,
+        img,
+    ) catch |err| {
+        encodeError(&result, err);
+        return result;
+    };
+
+    // The frame data is owned by this storage, so the const cast is
+    // safe. The rectangles were validated disjoint above, so in-place
+    // composition within one frame is well-defined.
+    const src = img.frameData(c.source_frame).?;
+    const dst = @constCast(img.frameData(c.dest_frame).?);
+    pixel.composeCanvasRect(
+        dst,
+        src,
+        img.width,
+        @intCast(width),
+        @intCast(height),
+        c.left_edge,
+        c.top_edge,
+        c.x,
+        c.y,
+        c.composition_mode,
+    );
+
+    // If the destination is the displayed frame then the on-screen
+    // content changed.
+    const current: u32 = if (img.animation) |anim| anim.current_index else 0;
+    if (c.dest_frame - 1 == current) {
+        storage.markImageContentChanged(io, img);
+    } else {
+        storage.markMutated(io);
+    }
+
+    return result;
+}
+
+/// Get or lazily create the animation state for an image.
+fn ensureAnimation(
+    alloc: Allocator,
+    img: *Image,
+) Allocator.Error!*animation.Animation {
+    if (img.animation) |anim| return anim;
+    const anim = try alloc.create(animation.Animation);
+    anim.* = .{};
+    img.animation = anim;
+    return anim;
+}
+
 /// Display a previously transmitted image.
 fn delete(
     io: std.Io,
@@ -521,6 +1078,7 @@ const EncodeableError = Image.Error || Allocator.Error;
 fn encodeError(r: *Response, err: EncodeableError) void {
     switch (err) {
         error.OutOfMemory => r.message = "ENOMEM: out of memory",
+        error.InsufficientData => r.message = "ENODATA: insufficient data",
         error.InvalidData => r.message = "EINVAL: invalid data",
         error.DecompressionFailed => r.message = "EINVAL: decompression failed",
         error.FilePathTooLong => r.message = "EINVAL: file path too long",
@@ -2139,4 +2697,907 @@ test "kittygfx uppercase delete frees image of cascaded placements" {
     }
     try testing.expectEqual(@as(usize, 0), storage.placements.count());
     try testing.expect(storage.imageById(1) == null);
+}
+
+// Animation tests frequently start from a 1x1 RGB red image with
+// id=1 ("/wAA" is FF0000). Composition converts images to RGBA, so
+// after the first frame command the base data is FF0000FF.
+
+test "kittygfx animation: new frame with default gap responds with frame number" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // Transmit a 1x1 RGB blue frame ("AAD/" is 0000FF).
+    const cmd = try command.Parser.parseString(
+        alloc,
+        "a=f,i=1,f=24,s=1,v=1;AAD/",
+    );
+    defer cmd.deinit(alloc);
+    const resp = execute(io, alloc, &t, &cmd).?;
+    try testing.expect(resp.ok());
+    try testing.expectEqual(@as(u32, 1), resp.id);
+    try testing.expectEqual(@as(u32, 2), resp.frame);
+
+    var buf: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try resp.encode(&writer);
+    try testing.expectEqualStrings("\x1b_Gi=1,r=2;OK\x1b\\", writer.buffered());
+
+    const img = storage.imagePtrByIdOrNumber(1, 0).?;
+    try testing.expectEqual(command.Transmission.Format.rgba, img.format);
+    try testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255 }, img.data.bytes().?);
+
+    const anim = img.animation.?;
+    try testing.expectEqual(@as(u32, 2), anim.frameCount());
+    try testing.expectEqual(@as(u32, 0), anim.root_gap_ms);
+    try testing.expectEqual(@as(u32, 40), anim.frames.items[0].gap_ms);
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 255, 255 }, anim.frames.items[0].data);
+
+    // The displayed frame is still the root: renderData is the base.
+    try testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255 }, img.renderData().bytes().?);
+
+    // Frame bytes count against the storage total.
+    try testing.expectEqual(@as(usize, 8), storage.total_bytes);
+}
+
+test "kittygfx animation: frame gap normalization on create" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    for ([_][]const u8{
+        "a=f,i=1,f=24,s=1,v=1,z=100;AAD/",
+        "a=f,i=1,f=24,s=1,v=1,z=-5;AAD/",
+    }) |input| {
+        const cmd = try command.Parser.parseString(alloc, input);
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqual(@as(u32, 100), anim.frames.items[0].gap_ms);
+    try testing.expectEqual(@as(u32, 0), anim.frames.items[1].gap_ms);
+}
+
+test "kittygfx animation: background fill and offset composition" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+
+    // 2x1 RGB white image ("////////" is FFFFFF FFFFFF).
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=2,v=1,i=1;////////",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // New frame: 1x1 RGB white transmitted at x=1 over an opaque red
+    // background (Y=4278190335 is 0xff0000ff, R in the MSB).
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=24,s=1,v=1,x=1,Y=4278190335;////",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqualSlices(
+        u8,
+        &.{ 255, 0, 0, 255, 255, 255, 255, 255 },
+        anim.frames.items[0].data,
+    );
+}
+
+test "kittygfx animation: create from base frame with overwrite" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // Frame 2 based on the root (c=1) with a semi-transparent blue
+    // pixel ("AAD/gA==" is 0000FF80) in overwrite mode: the source
+    // replaces the canvas including alpha.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=32,s=1,v=1,c=1,X=1;AAD/gA==",
+        );
+        defer cmd.deinit(alloc);
+        const resp = execute(io, alloc, &t, &cmd).?;
+        try testing.expect(resp.ok());
+    }
+
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 255, 128 }, anim.frames.items[0].data);
+}
+
+test "kittygfx animation: alpha blend composes over base frame" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // Blend a fully opaque blue pixel over the root: alpha blending
+    // an opaque source is equivalent to a copy.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=32,s=1,v=1,c=1;AAD//w==",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // Blend a fully transparent pixel over the root: the canvas is
+    // unchanged (still the red base).
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=32,s=1,v=1,c=1;AAD/AA==",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 255, 255 }, anim.frames.items[0].data);
+    try testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255 }, anim.frames.items[1].data);
+}
+
+test "kittygfx animation: edit root frame bumps generation" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    const gen1 = storage.imagePtrByIdOrNumber(1, 0).?.generation;
+
+    // r=1 edits the root frame in place. The root is the displayed
+    // frame so the image generation must change.
+    const cmd = try command.Parser.parseString(
+        alloc,
+        "a=f,i=1,f=24,s=1,v=1,r=1;AAD/",
+    );
+    defer cmd.deinit(alloc);
+    const resp = execute(io, alloc, &t, &cmd).?;
+    try testing.expect(resp.ok());
+    try testing.expectEqual(@as(u32, 1), resp.frame);
+
+    const img = storage.imagePtrByIdOrNumber(1, 0).?;
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 255, 255 }, img.data.bytes().?);
+    try testing.expect(img.generation > gen1);
+}
+
+test "kittygfx animation: edit frame gap without data change" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // Create frame 2, then edit it with z=-1: gap becomes gapless.
+    // Editing with z=0 leaves the gap unchanged (no 40ms default).
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=24,s=1,v=1,z=77;AAD/",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=24,s=1,v=1,r=2;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqual(@as(u32, 77), anim.frames.items[0].gap_ms);
+
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=24,s=1,v=1,r=2,z=-1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    try testing.expectEqual(@as(u32, 0), anim.frames.items[0].gap_ms);
+}
+
+test "kittygfx animation: frame errors" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    const cases = [_]struct {
+        input: []const u8,
+        message: []const u8,
+    }{
+        // Unknown image.
+        .{
+            .input = "a=f,i=9,f=24,s=1,v=1;AAD/",
+            .message = "ENOENT: image not found",
+        },
+        // Frame bigger than the image.
+        .{
+            .input = "a=f,i=1,f=24,s=2,v=1;////////",
+            .message = "EINVAL: frame dimensions exceed image",
+        },
+        // Nonexistent base frame.
+        .{
+            .input = "a=f,i=1,f=24,s=1,v=1,c=5;AAD/",
+            .message = "EINVAL: base frame not found",
+        },
+        // Insufficient data for the declared rectangle.
+        .{
+            .input = "a=f,i=1,f=24,s=1,v=1;AA==",
+            .message = "ENODATA: insufficient data",
+        },
+    };
+    for (cases) |case| {
+        const cmd = try command.Parser.parseString(alloc, case.input);
+        defer cmd.deinit(alloc);
+        const resp = execute(io, alloc, &t, &cmd).?;
+        try testing.expect(!resp.ok());
+        try testing.expectEqualStrings(case.message, resp.message);
+    }
+
+    // None of the failures may have created a frame.
+    const storage = &t.screens.active.kitty_images;
+    const img = storage.imagePtrByIdOrNumber(1, 0).?;
+    if (img.animation) |anim| {
+        try testing.expectEqual(@as(usize, 0), anim.frames.items.len);
+    }
+}
+
+test "kittygfx animation: excess frame data is truncated" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // Six bytes for a 1x1 RGB frame: Kitty tolerates the excess.
+    const cmd = try command.Parser.parseString(
+        alloc,
+        "a=f,i=1,f=24,s=1,v=1;AAD/////",
+    );
+    defer cmd.deinit(alloc);
+    try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 255, 255 }, anim.frames.items[0].data);
+}
+
+test "kittygfx animation: chunked frame transmission" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+
+    // 2x1 RGB white image.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=2,v=1,i=1;////////",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // Transmit a 2x1 frame in two chunks of one pixel each. The
+    // chunks repeat a=f per the protocol. No response until the
+    // final chunk.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=24,s=2,v=1,z=60,m=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd) == null);
+    }
+    try testing.expect(storage.loading != null);
+    {
+        const cmd = try command.Parser.parseString(alloc, "a=f,m=0;AAD/");
+        defer cmd.deinit(alloc);
+        const resp = execute(io, alloc, &t, &cmd).?;
+        try testing.expect(resp.ok());
+        try testing.expectEqual(@as(u32, 1), resp.id);
+        try testing.expectEqual(@as(u32, 2), resp.frame);
+    }
+    try testing.expect(storage.loading == null);
+
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqual(@as(u32, 60), anim.frames.items[0].gap_ms);
+    try testing.expectEqualSlices(
+        u8,
+        &.{ 255, 0, 0, 255, 0, 0, 255, 255 },
+        anim.frames.items[0].data,
+    );
+}
+
+test "kittygfx animation: chunked frame continuation without a=f" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=2,v=1,i=1;////////",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // The spec requires chunks to repeat a=f, but a bare continuation
+    // (which parses as a transmit action) must still continue the
+    // frame load rather than turn into an image transmission.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=24,s=2,v=1,m=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd) == null);
+    }
+    {
+        const cmd = try command.Parser.parseString(alloc, "m=0;AAD/");
+        defer cmd.deinit(alloc);
+        const resp = execute(io, alloc, &t, &cmd).?;
+        try testing.expect(resp.ok());
+        try testing.expectEqual(@as(u32, 2), resp.frame);
+    }
+
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqual(@as(usize, 1), anim.frames.items.len);
+}
+
+test "kittygfx animation: control command sets gap current state and loops" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=24,s=1,v=1;AAD/",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    const img = storage.imagePtrByIdOrNumber(1, 0).?;
+    const gen1 = img.generation;
+
+    // One command can set several things: the root frame's gap
+    // (r=1,z=50), the current frame (c=2), the state (s=3, running),
+    // and the loop count (v=3, meaning two loops). Successful a=a
+    // commands never respond.
+    const cmd = try command.Parser.parseString(
+        alloc,
+        "a=a,i=1,r=1,z=50,c=2,s=3,v=3",
+    );
+    defer cmd.deinit(alloc);
+    try testing.expect(execute(io, alloc, &t, &cmd) == null);
+
+    const anim = img.animation.?;
+    try testing.expectEqual(@as(u32, 50), anim.root_gap_ms);
+    try testing.expectEqual(@as(u32, 1), anim.current_index);
+    try testing.expectEqual(animation.Animation.State.running, anim.state);
+    try testing.expectEqual(@as(u32, 2), anim.max_loops);
+
+    // Changing the current frame changes the displayed content.
+    try testing.expect(img.generation > gen1);
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 255, 255 }, img.renderData().bytes().?);
+}
+
+test "kittygfx animation: control command ignores invalid values" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // Out-of-range frame numbers and s values are silently ignored.
+    const cmd = try command.Parser.parseString(
+        alloc,
+        "a=a,i=1,r=9,z=50,c=9,s=7",
+    );
+    defer cmd.deinit(alloc);
+    try testing.expect(execute(io, alloc, &t, &cmd) == null);
+
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqual(@as(u32, 0), anim.root_gap_ms);
+    try testing.expectEqual(@as(u32, 0), anim.current_index);
+    try testing.expectEqual(animation.Animation.State.stopped, anim.state);
+}
+
+test "kittygfx animation: control command missing image responds ENOENT" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+
+    const cmd = try command.Parser.parseString(alloc, "a=a,i=9,s=3");
+    defer cmd.deinit(alloc);
+    const resp = execute(io, alloc, &t, &cmd).?;
+    try testing.expect(!resp.ok());
+    try testing.expectEqualStrings("ENOENT: image not found", resp.message);
+}
+
+test "kittygfx animation: compose frames" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+
+    // 2x1 RGB image: red then blue ("/wAAAAD/" is FF0000 0000FF).
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=2,v=1,i=1;/wAAAAD/",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    // Frame 2 starts as a transparent canvas with a white pixel at
+    // x=0 ("////" is FFFFFF).
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=24,s=1,v=1;////",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // Compose the root's pixel at (1,0) onto frame 2 at (0,0):
+    // r=1 is the source frame, c=2 the destination, X/Y the source
+    // offsets, x/y the destination offsets.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=c,i=1,r=1,c=2,w=1,h=1,X=1,x=0",
+        );
+        defer cmd.deinit(alloc);
+        const resp = execute(io, alloc, &t, &cmd).?;
+        try testing.expect(resp.ok());
+        try testing.expectEqual(@as(u32, 0), resp.frame);
+    }
+
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqualSlices(
+        u8,
+        &.{ 0, 0, 255, 255, 0, 0, 0, 0 },
+        anim.frames.items[0].data,
+    );
+}
+
+test "kittygfx animation: compose current frame bumps generation" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+
+    // 2x1 RGB white image; the root frame is the displayed frame.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=2,v=1,i=1;////////",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    const img = storage.imagePtrByIdOrNumber(1, 0).?;
+    const gen1 = img.generation;
+
+    // a=c works on images without animation state: both frames are
+    // the root. Copy pixel 0 onto pixel 1.
+    const cmd = try command.Parser.parseString(
+        alloc,
+        "a=c,i=1,r=1,c=1,w=1,h=1,x=1",
+    );
+    defer cmd.deinit(alloc);
+    try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    try testing.expect(img.generation > gen1);
+}
+
+test "kittygfx animation: compose errors" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    const cases = [_]struct {
+        input: []const u8,
+        message: []const u8,
+    }{
+        .{
+            .input = "a=c,i=9,r=1,c=1",
+            .message = "ENOENT: image not found",
+        },
+        .{
+            .input = "a=c,i=1,r=2,c=1",
+            .message = "ENOENT: source frame not found",
+        },
+        .{
+            .input = "a=c,i=1,r=1,c=2",
+            .message = "ENOENT: destination frame not found",
+        },
+        // 1x1 image: any offset pushes the rect out of bounds.
+        .{
+            .input = "a=c,i=1,r=1,c=1,x=1",
+            .message = "EINVAL: destination rectangle out of bounds",
+        },
+        .{
+            .input = "a=c,i=1,r=1,c=1,X=1",
+            .message = "EINVAL: source rectangle out of bounds",
+        },
+        // Same frame, same (whole-image) rect: overlap.
+        .{
+            .input = "a=c,i=1,r=1,c=1",
+            .message = "EINVAL: source and destination rectangles overlap",
+        },
+    };
+    for (cases) |case| {
+        const cmd = try command.Parser.parseString(alloc, case.input);
+        defer cmd.deinit(alloc);
+        const resp = execute(io, alloc, &t, &cmd).?;
+        try testing.expect(!resp.ok());
+        try testing.expectEqualStrings(case.message, resp.message);
+    }
+}
+
+test "kittygfx animation: delete frame promotes root and fixes current" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    // Frames 2 and 3: blue and white.
+    for ([_][]const u8{
+        "a=f,i=1,f=24,s=1,v=1,z=10;AAD/",
+        "a=f,i=1,f=24,s=1,v=1,z=20;////",
+    }) |input| {
+        const cmd = try command.Parser.parseString(alloc, input);
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    const total_before = storage.total_bytes;
+
+    // Delete the root frame (r omitted selects it): frame 2 becomes
+    // the new root, including its gap. Deletes never respond.
+    {
+        const cmd = try command.Parser.parseString(alloc, "a=d,d=f,i=1");
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd) == null);
+    }
+    const img = storage.imagePtrByIdOrNumber(1, 0).?;
+    const anim = img.animation.?;
+    try testing.expectEqual(@as(u32, 2), anim.frameCount());
+    try testing.expectEqual(@as(u32, 10), anim.root_gap_ms);
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 255, 255 }, img.data.bytes().?);
+    try testing.expectEqual(total_before - 4, storage.total_bytes);
+
+    // Delete a frame number past the end: clamps to the last frame.
+    {
+        const cmd = try command.Parser.parseString(alloc, "a=d,d=f,i=1,r=9");
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd) == null);
+    }
+    try testing.expectEqual(@as(u32, 1), anim.frameCount());
+    try testing.expectEqual(total_before - 8, storage.total_bytes);
+
+    // Down to one frame: d=f is now a no-op and the image survives.
+    {
+        const cmd = try command.Parser.parseString(alloc, "a=d,d=f,i=1");
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd) == null);
+    }
+    try testing.expect(storage.imageById(1) != null);
+}
+
+test "kittygfx animation: uppercase frame delete removes non-animated image" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+
+    // Transmit and place: unlike d=I, an uppercase frame delete on a
+    // non-animated image removes it even though it is placed.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=T,f=24,s=1,v=1,i=1,C=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    try testing.expectEqual(@as(usize, 1), storage.placements.count());
+
+    {
+        const cmd = try command.Parser.parseString(alloc, "a=d,d=F,i=1");
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd) == null);
+    }
+    try testing.expect(storage.imageById(1) == null);
+    try testing.expectEqual(@as(usize, 0), storage.placements.count());
+    try testing.expectEqual(@as(usize, 0), storage.total_bytes);
+}
+
+test "kittygfx animation: deleting current frame refreshes display" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    for ([_][]const u8{
+        "a=f,i=1,f=24,s=1,v=1;AAD/",
+        "a=f,i=1,f=24,s=1,v=1;////",
+        "a=a,i=1,c=3",
+    }) |input| {
+        const cmd = try command.Parser.parseString(alloc, input);
+        defer cmd.deinit(alloc);
+        _ = execute(io, alloc, &t, &cmd);
+    }
+
+    const img = storage.imagePtrByIdOrNumber(1, 0).?;
+    const anim = img.animation.?;
+    try testing.expectEqual(@as(u32, 2), anim.current_index);
+    const gen1 = img.generation;
+
+    // Deleting the last frame (the current one) clamps the index and
+    // refreshes the display.
+    {
+        const cmd = try command.Parser.parseString(alloc, "a=d,d=f,i=1,r=3");
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd) == null);
+    }
+    try testing.expectEqual(@as(u32, 1), anim.current_index);
+    try testing.expect(img.generation > gen1);
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 255, 255 }, img.renderData().bytes().?);
+}
+
+test "kittygfx animation: retransmitting base image resets animation" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=24,s=1,v=1;AAD/",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    try testing.expectEqual(@as(usize, 8), storage.total_bytes);
+
+    // Retransmit the base image: the animation is dropped and the
+    // frame bytes are credited back.
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    const img = storage.imagePtrByIdOrNumber(1, 0).?;
+    try testing.expect(img.animation == null);
+    try testing.expectEqual(@as(usize, 3), storage.total_bytes);
+}
+
+test "kittygfx animation: control negative gap makes frame gapless" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try Terminal.init(io, alloc, .{ .rows = 5, .cols = 5 });
+    defer t.deinit(alloc);
+    const storage = &t.screens.active.kitty_images;
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=t,f=24,s=1,v=1,i=1;/wAA",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+    {
+        const cmd = try command.Parser.parseString(
+            alloc,
+            "a=f,i=1,f=24,s=1,v=1;AAD/",
+        );
+        defer cmd.deinit(alloc);
+        try testing.expect(execute(io, alloc, &t, &cmd).?.ok());
+    }
+
+    const cmd = try command.Parser.parseString(alloc, "a=a,i=1,r=2,z=-1");
+    defer cmd.deinit(alloc);
+    try testing.expect(execute(io, alloc, &t, &cmd) == null);
+
+    const anim = storage.imagePtrByIdOrNumber(1, 0).?.animation.?;
+    try testing.expectEqual(@as(u32, 0), anim.frames.items[0].gap_ms);
 }

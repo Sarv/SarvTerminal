@@ -417,8 +417,14 @@ pub fn reset(self: *Screen) void {
 
     if (comptime build_options.kitty_graphics) {
         // Reset kitty graphics storage
+        const image_limits = self.kitty_images.image_limits;
+        const total_limit = self.kitty_images.total_limit;
         self.kitty_images.deinit(self.alloc, self);
-        self.kitty_images = .{ .dirty = true };
+        self.kitty_images = .{
+            .dirty = true,
+            .image_limits = image_limits,
+            .total_limit = total_limit,
+        };
     }
 
     // Reset our basic state

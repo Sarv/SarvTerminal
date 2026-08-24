@@ -112,7 +112,6 @@ private class TerminalGlassView: NSView, ObservableObject {
     }
 
     class GlassViewModel: ObservableObject {
-        @Published var isActive: Bool = false
         @Published var backgroundColor: Color = .clear
         @Published var backgroundOpacity: Double = 0
         @Published var cornerRadius: CGFloat = 0

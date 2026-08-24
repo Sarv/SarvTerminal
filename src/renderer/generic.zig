@@ -236,6 +236,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// Our overlay state, if any.
         overlay: ?Overlay = null,
 
+        /// The base timestamp for the Kitty graphics animation clock.
+        /// Animation frame timing is expressed as milliseconds since
+        /// this instant. Set on the first frame update that observes
+        /// Kitty images.
+        kitty_animation_clock: ?std.Io.Timestamp = null,
+
+        /// When the next Kitty animation frame is due, in
+        /// milliseconds on the animation clock, from the most recent
+        /// frame update. Null when no running animation needs a
+        /// wakeup.
+        kitty_animation_next_ms: ?u64 = null,
+
         const HighlightTag = enum(u8) {
             search_match,
             search_match_selected,
@@ -577,6 +589,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             blending: configpkg.Config.AlphaBlending,
             background_blur: configpkg.Config.BackgroundBlur,
             scroll_to_bottom_on_output: bool,
+            custom_shader_animation: configpkg.CustomShaderAnimation,
 
             pub fn init(
                 alloc_gpa: Allocator,
@@ -651,6 +664,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .blending = config.@"alpha-blending",
                     .background_blur = config.@"background-blur",
                     .scroll_to_bottom_on_output = config.@"scroll-to-bottom".output,
+                    .custom_shader_animation = config.@"custom-shader-animation",
                     .arena = arena,
                 };
             }
@@ -997,10 +1011,74 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.syncDisplayLink(id, draw_now);
         }
 
-        /// True if our renderer has animations so that a higher frequency
-        /// timer is used.
-        pub fn hasAnimations(self: *const Self) bool {
-            return self.has_custom_shaders;
+        /// The cadence of continuous (draw-only) animation wakes,
+        /// i.e. 120fps, and the floor for any animation wake delay.
+        pub const draw_interval_ms: u64 = 8;
+
+        /// A point in the future when the renderer needs to be driven
+        /// again to keep animating, and what kind of drive it needs.
+        pub const AnimationWake = struct {
+            /// Delay in milliseconds until the wake is due.
+            delay_ms: u64,
+            kind: Kind,
+
+            pub const Kind = enum {
+                /// A redraw alone suffices, no updateFrame. Much cheaper
+                /// than `update`.
+                draw,
+
+                /// Frame data must be updated first: updateFrame, then draw.
+                update,
+            };
+        };
+
+        /// The soonest animation wake this renderer needs, if any:
+        /// custom shader animation wants continuous draw-only wakes
+        /// at draw_interval_ms while active, and a running Kitty
+        /// graphics animation wants an update wake when its next
+        /// frame is due. The renderer thread drives its animation
+        /// timer off this, re-querying after every wake.
+        ///
+        /// Must be called on the render thread.
+        pub fn animationWake(self: *const Self) ?AnimationWake {
+            // Custom shaders animate by redrawing on a fixed cadence,
+            // gated by configuration and focus.
+            const shader_delay: ?u64 = shader: {
+                if (!self.has_custom_shaders) break :shader null;
+                break :shader switch (self.config.custom_shader_animation) {
+                    .false => null,
+                    .always => draw_interval_ms,
+                    .true => if (self.focused) draw_interval_ms else null,
+                };
+            };
+
+            // Kitty animations tick during updateFrame; between
+            // updates the deadline is absolute on the animation
+            // clock, so a stream of draw wakes recomputing this
+            // cannot starve it into the future.
+            const kitty_delay: ?u64 = kitty: {
+                const next = self.kitty_animation_next_ms orelse break :kitty null;
+                const base = self.kitty_animation_clock orelse break :kitty null;
+                const now: std.Io.Timestamp = .now(global.io(), .awake);
+                const now_ms: u64 = @intCast(@divTrunc(
+                    base.durationTo(now).nanoseconds,
+                    std.time.ns_per_ms,
+                ));
+                // Never wake faster than the draw interval; an
+                // overdue frame is picked up on the next wake.
+                break :kitty @max(next -| now_ms, draw_interval_ms);
+            };
+
+            // An update wake includes a draw, so it wins ties.
+            if (kitty_delay) |k| {
+                if (shader_delay == null or k <= shader_delay.?) {
+                    return .{ .delay_ms = k, .kind = .update };
+                }
+            }
+
+            if (shader_delay) |s| return .{ .delay_ms = s, .kind = .draw };
+
+            return null;
         }
 
         /// True if our renderer is using vsync. If true, the renderer or apprt
@@ -1248,6 +1326,33 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     break :preedit try p.clone(arena_alloc);
                 };
 
+                // Advance any running Kitty graphics animations to the
+                // frame due now, and remember when the next frame is
+                // due (as an absolute deadline, see animationWake) so
+                // the renderer thread can schedule a wakeup for it.
+                // This must happen before the dirty check below:
+                // advancing a frame marks the image state dirty.
+                self.kitty_animation_next_ms = next: {
+                    // Likely case: we have no kitty images, so do nothing.
+                    const storage = &state.terminal.screens.active.kitty_images;
+                    if (storage.images.count() == 0) break :next null;
+
+                    const now: std.Io.Timestamp = .now(global.io(), .awake);
+                    const base = self.kitty_animation_clock orelse base: {
+                        self.kitty_animation_clock = now;
+                        break :base now;
+                    };
+                    const now_ms: u64 = @intCast(@divTrunc(
+                        base.durationTo(now).nanoseconds,
+                        std.time.ns_per_ms,
+                    ));
+                    const delay = storage.animationTick(
+                        global.io(),
+                        now_ms,
+                    ) orelse break :next null;
+                    break :next now_ms + delay;
+                };
+
                 // If we have Kitty graphics data, we enter a SLOW SLOW SLOW path.
                 // We only do this if the Kitty image state is dirty meaning only if
                 // it changes.
@@ -1492,10 +1597,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Conditions under which we need to draw the frame, otherwise we
             // don't need to since the previous frame should be identical.
+            //
+            // While any animation is in progress (a pending animation wake)
+            // every draw must actually render.
             const needs_redraw =
                 size_changed or
                 self.cells_rebuilt or
-                self.hasAnimations() or
+                self.animationWake() != null or
                 sync;
 
             if (!needs_redraw) {

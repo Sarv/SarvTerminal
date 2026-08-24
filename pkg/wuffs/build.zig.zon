@@ -11,7 +11,7 @@
 
         // google/wuffs
         .wuffs = .{
-            .url = "git+https://github.com/google/wuffs-mirror-release-c.git?rev=v0.4.0-alpha.10#7411f488fe2e2c205c3d3b3d28638b7356522930",
+            .url = "https://deps.files.ghostty.org/wuffs-7411f488fe2e2c205c3d3b3d28638b7356522930.tar.gz",
             .hash = "N-V-__8AAP5JWgCGP_AD0teWpa4krRvE9VPZzvviGdbmN4jI",
             .lazy = true,
         },
@@ -22,12 +22,11 @@
             .hash = "N-V-__8AADYiAAB_80AWnH1AxXC0tql9thT-R-DYO1gBqTLc",
             .lazy = true,
         },
-
-        .apple_sdk = .{ .path = "../apple-sdk" },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "include",
         "src",
     },
 }

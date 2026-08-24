@@ -237,8 +237,8 @@ pub const Parser = struct {
             'p' => .{ .display = try .parse(self.kv) },
             'd' => .{ .delete = try .parse(self.kv) },
             'f' => .{ .transmit_animation_frame = try .parse(self.kv) },
-            'a' => .{ .control_animation = try .parse(self.kv) },
-            'c' => .{ .compose_animation = try .parse(self.kv) },
+            'a' => .{ .control_animation = .parse(self.kv) },
+            'c' => .{ .compose_animation = .parse(self.kv) },
             else => return error.InvalidFormat,
         };
 
@@ -333,6 +333,10 @@ pub const Response = struct {
     id: u32 = 0,
     image_number: u32 = 0,
     placement_id: u32 = 0,
+    /// The 1-based animation frame number, echoed as "r=" for the
+    /// animation frame actions. This is how clients learn the frame
+    /// number assigned to a newly created frame.
+    frame: u32 = 0,
     message: []const u8 = "OK",
 
     pub fn encode(self: Response, writer: *std.Io.Writer) !void {
@@ -355,6 +359,10 @@ pub const Response = struct {
         if (self.placement_id > 0) {
             if (prior) try writer.writeByte(',') else prior = true;
             try writer.print("p={}", .{self.placement_id});
+        }
+        if (self.frame > 0) {
+            if (prior) try writer.writeByte(',') else prior = true;
+            try writer.print("r={}", .{self.frame});
         }
         try writer.writeByte(';');
         try writer.writeAll(self.message);
@@ -437,9 +445,9 @@ pub const Command = struct {
                     .placement_id = d.placement_id,
                 },
                 .transmit_animation_frame => |f| .{
-                    .image_id = f.image_id,
-                    .image_number = f.image_number,
-                    .placement_id = f.placement_id,
+                    .image_id = f.transmission.image_id,
+                    .image_number = f.transmission.image_number,
+                    .placement_id = f.transmission.placement_id,
                 },
                 .control_animation => |a| .{
                     .image_id = a.image_id,
@@ -469,6 +477,7 @@ pub const Command = struct {
             .query => |t| t,
             .transmit => |t| t,
             .transmit_and_display => |t| t.transmission,
+            .transmit_animation_frame => |f| f.transmission,
             else => null,
         };
     }
@@ -747,38 +756,51 @@ pub const Display = struct {
 };
 
 pub const AnimationFrameLoading = struct {
-    image_id: u32 = 0, // i
-    image_number: u32 = 0, // I
-    placement_id: u32 = 0, // p
+    /// Frame data is transmitted exactly like image data, so an a=f
+    /// command carries a full set of transmission keys: medium (t),
+    /// format (f), the frame rectangle size (s/v), chunking (m), etc.
+    /// The image id/number here identify the (existing) image the
+    /// frame belongs to.
+    transmission: Transmission = .{},
+
+    /// The left/top edge (pixels) of the rectangle within the frame
+    /// that the transmitted data updates.
     x: u32 = 0, // x
     y: u32 = 0, // y
+
+    /// The 1-based frame number whose pixels serve as the base canvas
+    /// for a newly created frame. Zero means no base frame: the
+    /// canvas is filled with `background` instead.
     create_frame: u32 = 0, // c
+
+    /// The 1-based frame number of an existing frame to edit. Zero
+    /// (or any value past the next frame number) creates a new frame.
     edit_frame: u32 = 0, // r
-    gap_ms: u32 = 0, // z
+
+    /// The gap in milliseconds before the next frame is shown. For
+    /// new frames, zero selects the default gap and a negative value
+    /// creates a gapless (never displayed) frame. For edits, zero
+    /// leaves the gap unchanged.
+    gap_ms: i32 = 0, // z
+
     composition_mode: CompositionMode = .alpha_blend, // X
     background: Background = .{}, // Y
 
+    /// The canvas background color as a 32-bit RGBA value where R is
+    /// the most significant byte (0xRRGGBBAA), e.g. Y=4278190335
+    /// (0xff0000ff) is opaque red. Bit-cast from the little-endian
+    /// u32 value, so the field order is reversed from the byte order.
     pub const Background = packed struct(u32) {
-        r: u8 = 0,
-        g: u8 = 0,
-        b: u8 = 0,
         a: u8 = 0,
+        b: u8 = 0,
+        g: u8 = 0,
+        r: u8 = 0,
     };
 
-    fn parse(kv: KV) !AnimationFrameLoading {
-        var result: AnimationFrameLoading = .{};
-
-        if (kv.get('i')) |v| {
-            result.image_id = v;
-        }
-
-        if (kv.get('I')) |v| {
-            result.image_number = v;
-        }
-
-        if (kv.get('p')) |v| {
-            result.placement_id = v;
-        }
+    fn parse(kv: KV) error{InvalidFormat}!AnimationFrameLoading {
+        var result: AnimationFrameLoading = .{
+            .transmission = try .parse(kv),
+        };
 
         if (kv.get('x')) |v| {
             result.x = v;
@@ -797,11 +819,14 @@ pub const AnimationFrameLoading = struct {
         }
 
         if (kv.get('z')) |v| {
-            result.gap_ms = v;
+            // 'z' is one of the keys Parser.finishValue parses as an
+            // i32, so the u32 in the KV table is the bit pattern of
+            // that i32 and this reconstructs it exactly.
+            result.gap_ms = @bitCast(v);
         }
 
+        // Tested only against 1 like Kitty.
         if (kv.get('X')) |v| {
-            // Kitty tests this only against 1
             result.composition_mode = if (v == 1) .overwrite else .alpha_blend;
         }
 
@@ -817,17 +842,33 @@ pub const AnimationFrameComposition = struct {
     image_id: u32 = 0, // i
     image_number: u32 = 0, // I
     placement_id: u32 = 0, // p
-    frame: u32 = 0, // c
-    edit_frame: u32 = 0, // r
+
+    /// The 1-based frame number being edited (the destination).
+    dest_frame: u32 = 0, // c
+
+    /// The 1-based frame number whose pixels are composed onto the
+    /// destination (the source).
+    source_frame: u32 = 0, // r
+
+    /// The left/top edge (pixels) of the destination rectangle.
     x: u32 = 0, // x
     y: u32 = 0, // y
+
+    /// The size of the rectangle to compose. Zero selects the full
+    /// image width/height.
     width: u32 = 0, // w
     height: u32 = 0, // h
+
+    /// The left/top edge (pixels) of the source rectangle.
     left_edge: u32 = 0, // X
     top_edge: u32 = 0, // Y
+
     composition_mode: CompositionMode = .alpha_blend, // C
 
-    fn parse(kv: KV) !AnimationFrameComposition {
+    // Cannot fail: every key is stored as parsed, with no range
+    // validation (Kitty range-checks these while handling the
+    // command; see the comment above the execution-deferral tests).
+    fn parse(kv: KV) AnimationFrameComposition {
         var result: AnimationFrameComposition = .{};
 
         if (kv.get('i')) |v| {
@@ -843,11 +884,11 @@ pub const AnimationFrameComposition = struct {
         }
 
         if (kv.get('c')) |v| {
-            result.frame = v;
+            result.dest_frame = v;
         }
 
         if (kv.get('r')) |v| {
-            result.edit_frame = v;
+            result.source_frame = v;
         }
 
         if (kv.get('x')) |v| {
@@ -888,9 +929,20 @@ pub const AnimationControl = struct {
     image_number: u32 = 0, // I
     placement_id: u32 = 0, // p
     action: AnimationAction = .invalid, // s
+
+    /// The 1-based frame number whose gap is set from gap_ms.
     frame: u32 = 0, // r
-    gap_ms: u32 = 0, // z
+
+    /// The new gap for `frame` in milliseconds. Zero is ignored and a
+    /// negative value makes the frame gapless.
+    gap_ms: i32 = 0, // z
+
+    /// The 1-based frame number to make current (client-driven
+    /// animation). Zero is ignored.
     current_frame: u32 = 0, // c
+
+    /// The loop count: zero is ignored, 1 loops forever, and any
+    /// larger value plays that many minus one loops.
     loops: u32 = 0, // v
 
     pub const AnimationAction = enum {
@@ -900,7 +952,10 @@ pub const AnimationControl = struct {
         run, // 3
     };
 
-    fn parse(kv: KV) !AnimationControl {
+    // Cannot fail: every key is stored as parsed. Out-of-range values
+    // (frame numbers, states) are silently ignored during execution,
+    // matching Kitty.
+    fn parse(kv: KV) AnimationControl {
         var result: AnimationControl = .{};
 
         if (kv.get('i')) |v| {
@@ -931,7 +986,10 @@ pub const AnimationControl = struct {
         }
 
         if (kv.get('z')) |v| {
-            result.gap_ms = v;
+            // 'z' is one of the keys Parser.finishValue parses as an
+            // i32, so the u32 in the KV table is the bit pattern of
+            // that i32 and this reconstructs it exactly.
+            result.gap_ms = @bitCast(v);
         }
 
         if (kv.get('c')) |v| {
@@ -983,7 +1041,7 @@ pub const Delete = struct {
         intersect_cursor: bool,
 
         // f/F
-        animation_frames: bool,
+        animation_frames: AnimationFrames,
 
         // p/P
         intersect_cell: struct {
@@ -1025,7 +1083,14 @@ pub const Delete = struct {
             z: i32 = 0, // z
         },
 
-        fn parse(kv: KV) !Action {
+        pub const AnimationFrames = struct {
+            delete: bool = false, // uppercase
+            image_id: u32 = 0, // i
+            image_number: u32 = 0, // I
+            frame: u32 = 0, // r
+        };
+
+        fn parse(kv: KV) error{InvalidFormat}!Action {
             const what: u8 = what: {
                 const value = kv.get('d') orelse break :what 'a';
                 const c = std.math.cast(u8, value) orelse return error.InvalidFormat;
@@ -1061,7 +1126,20 @@ pub const Delete = struct {
 
                 'c', 'C' => .{ .intersect_cursor = what == 'C' },
 
-                'f', 'F' => .{ .animation_frames = what == 'F' },
+                'f', 'F' => blk: {
+                    var result: Action = .{ .animation_frames = .{ .delete = what == 'F' } };
+                    if (kv.get('i')) |v| {
+                        result.animation_frames.image_id = v;
+                    }
+                    if (kv.get('I')) |v| {
+                        result.animation_frames.image_number = v;
+                    }
+                    if (kv.get('r')) |v| {
+                        result.animation_frames.frame = v;
+                    }
+
+                    break :blk result;
+                },
 
                 'p', 'P' => blk: {
                     var result: Action = .{ .intersect_cell = .{ .delete = what == 'P' } };

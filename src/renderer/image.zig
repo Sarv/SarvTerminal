@@ -769,7 +769,10 @@ pub const State = struct {
         alloc: Allocator,
         image: *const terminal.kitty.graphics.Image,
     ) PrepImageError!void {
-        const data = image.data.bytes() orelse unreachable;
+        // For animated images this is the current animation frame;
+        // the image generation changes whenever the current frame
+        // does, so the upload cache stays coherent.
+        const data = image.renderData().bytes() orelse unreachable;
         try self.prepImage(
             alloc,
             .{ .kitty = image.id },
@@ -1438,4 +1441,67 @@ test "kitty renderer positions relative placements from virtual parent placehold
     try testing.expectEqual(@as(i32, 5), child.z);
     try testing.expectEqual(@as(i32, 2), child.x);
     try testing.expectEqual(@as(i32, 3), child.y);
+}
+
+test "kitty renderer uploads the current animation frame" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var t = try terminal.Terminal.init(io, alloc, .{ .rows = 3, .cols = 3 });
+    defer t.deinit(alloc);
+    t.width_px = 30;
+    t.height_px = 30;
+
+    var state: State = .empty;
+    defer state.deinit(alloc);
+
+    const storage = &t.screens.active.kitty_images;
+    try storage.addImage(io, alloc, t.screens.active, .{
+        .id = 1,
+        .width = 1,
+        .height = 1,
+        .format = .rgba,
+        .data = .{ .complete = try alloc.dupe(u8, &.{ 255, 0, 0, 255 }) },
+    });
+    const pin = try t.screens.active.pages.trackPin(
+        t.screens.active.cursor.page_pin.*,
+    );
+    try storage.addPlacement(io, alloc, t.screens.active, 1, 1, .{
+        .location = .{ .pin = pin },
+        .columns = 1,
+        .rows = 1,
+    });
+
+    state.kittyUpdate(alloc, &t, .{ .width = 10, .height = 10 });
+    const gen1 = state.images.get(.{ .kitty = 1 }).?.generation;
+    try testing.expectEqualSlices(
+        u8,
+        &.{ 255, 0, 0, 255 },
+        state.images.get(.{ .kitty = 1 }).?.image.pending.dataSlice(),
+    );
+
+    // Attach an animation and make its extra frame current, the way
+    // an animation tick would.
+    const img = storage.images.getPtr(1).?;
+    const anim = try alloc.create(terminal.kitty.graphics.Animation);
+    anim.* = .{};
+    img.animation = anim;
+    try anim.frames.append(alloc, .{
+        .data = try alloc.dupe(u8, &.{ 0, 0, 255, 255 }),
+        .gap_ms = 40,
+    });
+    anim.current_index = 1;
+    storage.markImageContentChanged(io, img);
+
+    // The renderer must pick up the frame's pixels under a fresh
+    // generation.
+    state.kittyUpdate(alloc, &t, .{ .width = 10, .height = 10 });
+    const entry = state.images.get(.{ .kitty = 1 }).?;
+    try testing.expect(entry.generation > gen1);
+    try testing.expectEqualSlices(
+        u8,
+        &.{ 0, 0, 255, 255 },
+        entry.image.pending.dataSlice(),
+    );
 }

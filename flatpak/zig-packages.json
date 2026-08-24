@@ -43,7 +43,7 @@
   },
   {
     "type": "archive",
-    "url": "https://github.com/ghostty-org/zig-gobject/releases/download/0.10.0-2026-07-28-36-1/ghostty-gobject-0.10.0-2026-07-28-36-1.tar.zst",
+    "url": "https://deps.files.ghostty.org/gobject-2026-07-28-36-1.tar.zst",
     "dest": "vendor/p/gobject-0.3.2-Skun7F6HogCMynX2JqeSHS7xr-8pK4ob-qRFIcEasVi3",
     "sha256": "9014db570db06e3fbfcfadb7b32aa8addacc6969e701650683c1c74428adba6c"
   },
@@ -180,10 +180,10 @@
     "sha256": "5cedcadde81b75e60f23e5e83b5dd2b8eb4efb9f8f79bd7a347d148aeb0530f8"
   },
   {
-    "type": "git",
-    "url": "https://github.com/google/wuffs-mirror-release-c.git",
-    "commit": "7411f488fe2e2c205c3d3b3d28638b7356522930",
-    "dest": "vendor/p/N-V-__8AAP5JWgCGP_AD0teWpa4krRvE9VPZzvviGdbmN4jI"
+    "type": "archive",
+    "url": "https://deps.files.ghostty.org/wuffs-7411f488fe2e2c205c3d3b3d28638b7356522930.tar.gz",
+    "dest": "vendor/p/N-V-__8AAP5JWgCGP_AD0teWpa4krRvE9VPZzvviGdbmN4jI",
+    "sha256": "17877d346f7988651d6c62e45b2e3b05c86809a6442c5e34612374b2a9719a1c"
   },
   {
     "type": "archive",

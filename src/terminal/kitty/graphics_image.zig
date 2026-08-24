@@ -6,6 +6,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const posix = std.posix;
 
 const fastmem = @import("../../fastmem.zig");
+const animation = @import("graphics_animation.zig");
 const command = @import("graphics_command.zig");
 const PageList = @import("../PageList.zig");
 const sys = @import("../sys.zig");
@@ -35,6 +36,12 @@ pub const LoadingImage = struct {
     /// so that we display the image after it is fully loaded.
     display: ?command.Display = null,
 
+    /// This is non-null when this load is an animation frame
+    /// transmission (a=f) rather than a new image. On completion the
+    /// data is composed into the target image's animation instead of
+    /// being stored as an image.
+    frame: ?FrameContext = null,
+
     /// Quiet is the quiet settings for the initial load command. This is
     /// used if q isn't set on subsequent chunks.
     quiet: command.Command.Quiet,
@@ -46,6 +53,20 @@ pub const LoadingImage = struct {
     /// The temporary directory for file transmission (null means that
     /// temporary directory transmission is disabled).
     temporary_directory: ?[]const u8,
+
+    pub const FrameContext = struct {
+        /// The frame parameters from the initial a=f command. Chunked
+        /// continuations only contribute payload bytes; all parameters
+        /// come from the command that started the load, matching the
+        /// protocol's requirement that chunks repeat a=f.
+        cmd: command.AnimationFrameLoading,
+
+        /// The generation of the target image when the load began.
+        /// A different generation at completion means the image was
+        /// replaced or evicted mid-transmission and the frame must be
+        /// discarded rather than composed onto the wrong image.
+        image_generation: u64,
+    };
 
     /// The limits of the Kitty Graphics protocol we should allow.
     ///
@@ -501,11 +522,23 @@ pub const LoadingImage = struct {
         if (img.width == 0 or img.height == 0) return error.DimensionsRequired;
         if (img.width > max_dimension or img.height > max_dimension) return error.DimensionsTooLarge;
 
-        // Data length must be what we expect
+        // Data length must be what we expect.
         const bpp = command.Transmission.formatBpp(img.format);
         const expected_len = img.width * img.height * bpp;
         const actual_len = self.data.items.len;
-        if (actual_len != expected_len) {
+        if (self.frame != null) {
+            // Kitty allows animation frames to exceed their expected length
+            // and just truncates it. Not sure if thats expected but lets
+            // allow it too.
+            if (actual_len < expected_len) {
+                std.log.warn(
+                    "insufficient frame data image id={} expected_len={} actual_len={}",
+                    .{ img.id, expected_len, actual_len },
+                );
+                return error.InsufficientData;
+            }
+            self.data.items.len = expected_len;
+        } else if (actual_len != expected_len) {
             std.log.warn(
                 "unexpected length image id={} width={} height={} bpp={} expected_len={} actual_len={}",
                 .{ img.id, img.width, img.height, bpp, expected_len, actual_len },
@@ -653,9 +686,25 @@ pub const Image = struct {
     /// have changed, even if the dimensions and byte length are the
     /// same (e.g. a retransmission of the same ID). Stamps order by
     /// transmission time. Zero means "never stored".
+    ///
+    /// For animated images this also changes whenever the frame that
+    /// should be displayed changes (advance, edit, or delete of the
+    /// current frame), since consumers key texture caches off it.
     generation: u64 = 0,
 
+    /// Animation state, non-null once any animation command (a=f,
+    /// a=a) has attached animation state to this image. Owned by the
+    /// image; replaced/retransmitted images drop it, which implements
+    /// the protocol's "retransmission resets the animation" rule.
+    ///
+    /// This is only ever attached to images stored in an ImageStorage
+    /// and must only be mutated through the storage's own pointer
+    /// (Image values are copied around freely; copies share this
+    /// pointer and never own it).
+    animation: ?*animation.Animation = null,
+
     pub const Error = error{
+        InsufficientData,
         InvalidData,
         DecompressionFailed,
         DimensionsRequired,
@@ -705,6 +754,54 @@ pub const Image = struct {
 
     pub fn deinit(self: *Image, alloc: Allocator) void {
         self.data.deinit(alloc);
+        if (self.animation) |anim| {
+            anim.deinit(alloc);
+            alloc.destroy(anim);
+            self.animation = null;
+        }
+    }
+
+    /// The pixel data that should be displayed for this image. For an
+    /// animated image this is the current animation frame; otherwise
+    /// (and for the root frame) it is the image's own data.
+    pub fn renderData(self: *const Image) Data {
+        if (self.animation) |anim| {
+            if (anim.current_index > 0) {
+                return .{ .complete = anim.frames.items[anim.current_index - 1].data };
+            }
+        }
+
+        return self.data;
+    }
+
+    /// The pixel data of the given 1-based animation frame number, or
+    /// null if the frame doesn't exist. Frame 1 (the root frame)
+    /// always exists as long as the image data is complete, even for
+    /// images without animation state.
+    ///
+    /// The returned slice is owned by the image (or its animation)
+    /// and remains valid until the image or frame is mutated.
+    pub fn frameData(self: *const Image, number: u32) ?[]const u8 {
+        switch (number) {
+            0 => return null,
+            1 => return self.data.bytes(),
+            else => {
+                const anim = self.animation orelse return null;
+                // Minus 2 because frame is 1-based and frame 1 is the
+                // image base data, so the animation frames start at frame 2.
+                const idx = number - 2;
+                if (idx >= anim.frames.items.len) return null;
+                return anim.frames.items[idx].data;
+            },
+        }
+    }
+
+    /// Total bytes of pixel data reserved against the storage limit
+    /// for this image: the base data plus any animation frames.
+    pub fn storageSize(self: *const Image) usize {
+        var total: usize = self.data.len();
+        if (self.animation) |anim| total += anim.frameBytes();
+        return total;
     }
 
     /// Mostly for logging

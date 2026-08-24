@@ -262,8 +262,11 @@ fn imageGetTyped(
         .height => out.* = image.height,
         .format => out.* = image.format,
         .compression => out.* = image.compression,
-        .data_ptr => out.* = (image.data.bytes() orelse return .no_value).ptr,
-        .data_len => out.* = image.data.len(),
+        // For animated images this is the current animation frame's
+        // data; the image generation changes whenever the current
+        // frame does, so generation-keyed caches stay coherent.
+        .data_ptr => out.* = (image.renderData().bytes() orelse return .no_value).ptr,
+        .data_len => out.* = image.renderData().len(),
         .generation => out.* = image.generation,
     }
 

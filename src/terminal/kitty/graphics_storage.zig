@@ -6,6 +6,8 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const terminal = @import("../main.zig");
 const point = @import("../point.zig");
 const size = @import("../size.zig");
+const animation = @import("graphics_animation.zig");
+const pixel = @import("graphics_pixel.zig");
 const command = @import("graphics_command.zig");
 const PageList = @import("../PageList.zig");
 const Screen = @import("../Screen.zig");
@@ -185,13 +187,14 @@ pub const ImageStorage = struct {
 
     /// Record a content mutation: marks the storage dirty and assigns a
     /// fresh generation stamp. Must be called by anything that changes
-    /// the set of images or placements (or image contents).
+    /// the set of images or placements (or image contents), including
+    /// the animation command handlers in graphics_exec.zig.
     ///
     /// Do NOT call this for geometry-only events (scrolling, resizing,
     /// screen switches); those must set only the dirty flag directly.
     /// Bumping the generation for geometry changes would break the
     /// contract that an unchanged generation means unchanged contents.
-    fn markMutated(self: *ImageStorage, io: std.Io) void {
+    pub fn markMutated(self: *ImageStorage, io: std.Io) void {
         self.dirty = true;
         self.generation = nextGeneration(io);
     }
@@ -281,7 +284,7 @@ pub const ImageStorage = struct {
         // replacing pending snapshot metadata must be able to reuse the
         // reservation without evicting its own ID.
         const old_len = if (self.images.get(img.id)) |old|
-            old.data.len()
+            old.storageSize()
         else
             0;
         assert(old_len <= self.total_bytes);
@@ -315,7 +318,10 @@ pub const ImageStorage = struct {
             // Relative placements parented to the removed placements go too.
             _ = self.removeOrphans(s, null);
 
-            self.total_bytes -= gop.value_ptr.data.len();
+            // Replacing an image drops its animation frames with it,
+            // implementing the protocol rule that retransmitting the
+            // base image resets the animation.
+            self.total_bytes -= gop.value_ptr.storageSize();
             gop.value_ptr.deinit(alloc);
         }
 
@@ -928,6 +934,235 @@ pub const ImageStorage = struct {
         return newest;
     }
 
+    /// Get a mutable pointer to a stored image, by ID or (newest by)
+    /// number, following the protocol's id/number addressing. Used by
+    /// the animation commands, which mutate images in place. The
+    /// pointer is invalidated by any operation that adds or removes
+    /// images.
+    pub fn imagePtrByIdOrNumber(
+        self: *const ImageStorage,
+        image_id: u32,
+        image_number: u32,
+    ) ?*Image {
+        if (image_id != 0) return self.images.getPtr(image_id);
+
+        var newest: ?*Image = null;
+        var it = self.images.iterator();
+        while (it.next()) |kv| {
+            if (kv.value_ptr.number != image_number) continue;
+            if (newest == null or
+                kv.value_ptr.generation > newest.?.generation)
+            {
+                newest = kv.value_ptr;
+            }
+        }
+
+        return newest;
+    }
+
+    /// Record that the displayed content of an image changed without
+    /// the image being re-added: marks the storage mutated and stamps
+    /// the image with the fresh generation so consumers (e.g. the
+    /// renderer's texture cache) replace what they hold. Used when an
+    /// animation changes which frame is current or edits the current
+    /// frame's pixels.
+    pub fn markImageContentChanged(
+        self: *ImageStorage,
+        io: std.Io,
+        img: *Image,
+    ) void {
+        self.markMutated(io);
+        img.generation = self.generation;
+    }
+
+    /// Convert a stored image's base data to RGBA in place, adjusting
+    /// byte accounting. All animation composition happens in RGBA;
+    /// this is called before the first composition into an image.
+    ///
+    /// The pixels are unchanged visually but the stored representation
+    /// changed, so the image is stamped with a fresh generation.
+    pub fn convertImageToRgba(
+        self: *ImageStorage,
+        io: std.Io,
+        alloc: Allocator,
+        img: *Image,
+    ) Allocator.Error!void {
+        if (img.format == .rgba) return;
+        const old = img.data.bytes() orelse return;
+
+        const rgba = try pixel.rgbaFromFormat(alloc, img.format, old);
+        self.total_bytes -= old.len;
+        self.total_bytes += rgba.len;
+        img.data.deinit(alloc);
+        img.data = .{ .complete = rgba };
+        img.format = .rgba;
+        self.markImageContentChanged(io, img);
+    }
+
+    /// Reserve `bytes` of storage for animation frame data belonging
+    /// to `image_id`, evicting other images if needed, mirroring how
+    /// image transmission reserves space.
+    ///
+    /// Errors if the space cannot be made available. On success the caller
+    /// owns the reservation and must either attach the frame data to the
+    /// image or call releaseAnimationBytes.
+    pub fn reserveAnimationBytes(
+        self: *ImageStorage,
+        io: std.Io,
+        alloc: Allocator,
+        s: *terminal.Screen,
+        image_id: u32,
+        bytes: usize,
+    ) Allocator.Error!void {
+        if (bytes > self.total_limit) return error.OutOfMemory;
+
+        const total_bytes = self.total_bytes + bytes;
+        if (total_bytes > self.total_limit) {
+            const req_bytes = total_bytes - self.total_limit;
+            // Excess this large cannot be recovered by evicting other
+            // images (evictImageExcept also requires it).
+            if (req_bytes > self.total_limit) return error.OutOfMemory;
+            log.info("evicting images for animation frame, evicting={}", .{req_bytes});
+            if (!self.evictImageExcept(
+                io,
+                alloc,
+                s,
+                req_bytes,
+                image_id,
+            )) {
+                log.warn("failed to evict enough images for animation frame", .{});
+                return error.OutOfMemory;
+            }
+        }
+
+        self.total_bytes += bytes;
+    }
+
+    /// Release a reservation made by reserveAnimationBytes, or credit
+    /// bytes freed by deleting animation frame data.
+    pub fn releaseAnimationBytes(self: *ImageStorage, bytes: usize) void {
+        assert(bytes <= self.total_bytes);
+        self.total_bytes -= bytes;
+    }
+
+    /// Advance every running animation to the frame that should be
+    /// displayed at `now_ms` and report when the next frame change is
+    /// due, as a delay in milliseconds relative to `now_ms`. Null
+    /// means no running animation needs a future tick.
+    ///
+    /// `now_ms` is a monotonic timestamp on a clock of the caller's
+    /// choosing. The same clock must be used for every call. The
+    /// caller is expected to be the renderer, ticking once per frame
+    /// build and scheduling a wakeup for the returned delay.
+    pub fn animationTick(self: *ImageStorage, io: std.Io, now_ms: u64) ?u64 {
+        var min_delay: ?u64 = null;
+
+        var it = self.images.iterator();
+        while (it.next()) |entry| {
+            const img: *Image = entry.value_ptr;
+
+            // The gates below mirror Kitty's image_is_animatable.
+
+            // No animation state was ever attached (plain image).
+            const anim = img.animation orelse continue;
+
+            // Stopped is the initial state of every animation: frames
+            // then only change client-driven (a=a c=N), never by time.
+            if (anim.state == .stopped) continue;
+
+            // Only the root frame exists; there is nothing to advance
+            // to yet even in the running state.
+            if (anim.frames.items.len == 0) continue;
+
+            // Unplaced images don't animate. This is our simpler
+            // approximation of Kitty's "is actually drawn" visibility
+            // gate; it is what stops an image that was transmitted but
+            // never placed from waking the renderer forever.
+            if (img.metadata.placement_count == 0) continue;
+
+            // The base pixel data hasn't arrived yet (e.g. an image
+            // restored from a snapshot); nothing can be displayed.
+            if (img.data.isPending()) continue;
+
+            // A zero total duration means every frame is gapless and
+            // no frame can ever be displayed, so the animation can
+            // never advance. This also guards the gapless-skip loop
+            // below from never terminating.
+            if (anim.durationMs() == 0) continue;
+
+            // A finite loop budget (a=a v=N) that ran out on an
+            // earlier tick froze playback on the last frame for good.
+            if (anim.max_loops > 0 and anim.current_loop >= anim.max_loops) continue;
+
+            const shown_at: u64 = shown_at: {
+                // First tick since playback started (or since the
+                // current frame changed through another path, e.g.
+                // a=a c=N): the frame is considered shown as of now,
+                // and its gap starts counting from here.
+                const at = anim.frame_shown_at_ms orelse break :shown_at now_ms;
+
+                // A timestamp from the future means the caller's clock
+                // restarted; re-anchor rather than stalling until the
+                // old timestamp comes around again.
+                if (at > now_ms) break :shown_at now_ms;
+
+                break :shown_at at;
+            };
+            anim.frame_shown_at_ms = shown_at;
+
+            // The current frame is replaced once its gap has elapsed.
+            // We advance at most one displayed frame per tick with no
+            // catch-up, exactly like Kitty: if ticks lag behind the
+            // gaps, the animation slows down rather than skipping.
+            var next_at: u64 = shown_at +| anim.gapAt(anim.current_index);
+            if (now_ms >= next_at) advance: {
+                // Walk forward to the next displayable frame. This is
+                // a loop only because gapless (gap=0) frames are never
+                // displayed and are stepped over; the durationMs gate
+                // above guarantees a displayable frame exists.
+                const count: u32 = anim.frameCount();
+                var idx = anim.current_index;
+                while (true) {
+                    const next = (idx + 1) % count;
+                    if (next == 0) {
+                        // Wrapping past the last frame back to the
+                        // root. A loading-state (a=a s=2) animation
+                        // refuses the wrap: it parks on the last frame
+                        // awaiting more frames from the client.
+                        if (anim.state == .loading) break :advance;
+
+                        // Each wrap completes a loop; a finite budget
+                        // that just ran out parks on the last frame.
+                        anim.current_loop += 1;
+                        if (anim.max_loops > 0 and
+                            anim.current_loop >= anim.max_loops) break :advance;
+                    }
+                    idx = next;
+                    if (anim.gapAt(idx) != 0) break;
+                }
+
+                // Show the chosen frame: restart its gap timer and
+                // stamp a fresh generation so consumers (the renderer
+                // texture cache, the C API) pick up the new pixels.
+                anim.current_index = idx;
+                anim.frame_shown_at_ms = now_ms;
+                self.markImageContentChanged(io, img);
+                next_at = now_ms +| anim.gapAt(idx);
+            }
+
+            // Schedule the next tick. A parked animation left next_at
+            // in the past and so never schedules one; it is woken by
+            // its trigger instead (a new frame arriving, or an a=a
+            // command changing the state).
+            if (next_at > now_ms) {
+                const delay = next_at - now_ms;
+                min_delay = if (min_delay) |m| @min(m, delay) else delay;
+            }
+        }
+
+        return min_delay;
+    }
+
     /// Clear placements intersecting the active screen, then reclaim every
     /// image with no remaining placement. Unlike protocol d=A, a terminal
     /// clear also reclaims images that were already unplaced.
@@ -1148,9 +1383,12 @@ pub const ImageStorage = struct {
                 }
             },
 
-            // We don't support animation frames yet so they are successfully
-            // deleted!
-            .animation_frames => {},
+            .animation_frames => |v| self.deleteAnimationFrame(
+                io,
+                alloc,
+                t.screens.active,
+                v,
+            ),
         }
 
         // Deleting placements orphans any relative placements parented
@@ -1160,7 +1398,7 @@ pub const ImageStorage = struct {
         // per-branch deleteIfUnused calls above ran while the orphans
         // still counted as placements).
         const delete_unused: bool = switch (cmd) {
-            .all, .intersect_cursor, .animation_frames => |v| v,
+            .all, .intersect_cursor => |v| v,
             inline else => |v| v.delete,
         };
         _ = self.removeOrphans(
@@ -1239,12 +1477,97 @@ pub const ImageStorage = struct {
         if (delete_unused and matched) self.deleteIfUnused(alloc, image_id);
     }
 
+    /// Delete an animation frame (d=f/F). Deletes never produce
+    /// responses, so all failures are only logged. Kitty behaviors
+    /// implemented here: on an image without extra frames a lowercase
+    /// delete is a no-op while an uppercase delete removes the entire
+    /// image, placements included; the frame number is clamped to the
+    /// last frame and zero selects the root frame; deleting the root
+    /// frame promotes frame 2 to be the new root.
+    fn deleteAnimationFrame(
+        self: *ImageStorage,
+        io: std.Io,
+        alloc: Allocator,
+        s: *terminal.Screen,
+        v: command.Delete.Action.AnimationFrames,
+    ) void {
+        if (v.image_id == 0 and v.image_number == 0) {
+            log.warn("delete animation frames requires image id or number", .{});
+            return;
+        }
+        const img = self.imagePtrByIdOrNumber(
+            v.image_id,
+            v.image_number,
+        ) orelse {
+            log.warn(
+                "delete animation frames for unknown image id={} number={}",
+                .{ v.image_id, v.image_number },
+            );
+            return;
+        };
+
+        const anim: *animation.Animation = anim: {
+            if (img.animation) |anim| {
+                if (anim.frames.items.len > 0) break :anim anim;
+            }
+
+            // The image is not (or no longer) an animation. The
+            // uppercase delete removes the entire image, even when it
+            // still has placements.
+            if (!v.delete) return;
+            self.removePlacementsByImageId(s, img.id);
+            const entry = self.images.getEntry(img.id).?;
+            self.total_bytes -= entry.value_ptr.storageSize();
+            entry.value_ptr.deinit(alloc);
+            self.images.removeByPtr(entry.key_ptr);
+            return;
+        };
+
+        // Clamp the frame number: zero selects the root frame and
+        // values past the end select the last frame.
+        const count: u32 = anim.frameCount();
+        var number: u32 = @min(v.frame, count);
+        if (number == 0) number = 1;
+
+        if (number == 1) {
+            // Deleting the root frame promotes frame 2 to root. The
+            // promoted frame's bytes stay reserved; only the old root
+            // data is freed.
+            self.releaseAnimationBytes(img.data.len());
+            img.data.deinit(alloc);
+            const promoted = anim.frames.orderedRemove(0);
+            img.data = .{ .complete = promoted.data };
+            anim.root_gap_ms = promoted.gap_ms;
+        } else {
+            const removed = anim.frames.orderedRemove(number - 2);
+            self.releaseAnimationBytes(removed.data.len);
+            alloc.free(removed.data);
+        }
+
+        // Fix up the current frame.
+        const removed_idx: u32 = if (number == 1) 0 else number - 2;
+        const remaining: u32 = @intCast(anim.frames.items.len);
+        if (anim.current_index > remaining) {
+            anim.current_index = remaining;
+            anim.frame_shown_at_ms = null;
+            self.markImageContentChanged(io, img);
+            return;
+        }
+        if (removed_idx == anim.current_index) {
+            anim.frame_shown_at_ms = null;
+            self.markImageContentChanged(io, img);
+        } else {
+            if (removed_idx < anim.current_index) anim.current_index -= 1;
+            self.markMutated(io);
+        }
+    }
+
     /// Delete an image if it is unused.
     fn deleteIfUnused(self: *ImageStorage, alloc: Allocator, image_id: u32) void {
         const entry = self.images.getEntry(image_id) orelse return;
         if (entry.value_ptr.metadata.placement_count > 0) return;
 
-        self.total_bytes -= entry.value_ptr.data.len();
+        self.total_bytes -= entry.value_ptr.storageSize();
         entry.value_ptr.deinit(alloc);
         self.images.removeByPtr(entry.key_ptr);
     }
@@ -1364,7 +1687,7 @@ pub const ImageStorage = struct {
             }
 
             const entry = self.images.getEntry(c.id).?;
-            const image_len = entry.value_ptr.data.len();
+            const image_len = entry.value_ptr.storageSize();
             log.info("evicting image id={} bytes={}", .{ c.id, image_len });
 
             evicted += image_len;
@@ -4098,4 +4421,244 @@ test "storage: placeholderTarget lookup" {
         };
         try testing.expectEqual(expected, s.placeholderTarget(1, 0).?.key);
     }
+}
+
+test "storage: animation tick advances and schedules" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+    var t = try terminal.Terminal.init(io, alloc, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(alloc);
+    t.width_px = 100;
+    t.height_px = 100;
+
+    var s: ImageStorage = .{};
+    defer s.deinit(alloc, t.screens.active);
+
+    // A running 1x1 RGBA image whose animation has one extra frame.
+    try s.addImage(io, alloc, t.screens.active, .{
+        .id = 1,
+        .width = 1,
+        .height = 1,
+        .format = .rgba,
+        .data = .{ .complete = try alloc.dupe(u8, &.{ 255, 0, 0, 255 }) },
+    });
+    const img = s.images.getPtr(1).?;
+    const anim = try alloc.create(animation.Animation);
+    anim.* = .{ .state = .running };
+    img.animation = anim;
+    try anim.frames.append(alloc, .{
+        .data = try alloc.dupe(u8, &.{ 0, 0, 255, 255 }),
+        .gap_ms = 40,
+    });
+
+    // Without a placement the animation doesn't advance (our
+    // approximation of Kitty's visibility gate).
+    try testing.expect(s.animationTick(io, 0) == null);
+    try testing.expectEqual(@as(u32, 0), anim.current_index);
+
+    try s.addPlacement(io, alloc, t.screens.active, 1, 0, .{
+        .location = .{ .pin = try trackPin(&t, .{ .x = 0, .y = 0 }) },
+    });
+    const gen1 = img.generation;
+    s.dirty = false;
+
+    // First tick: the gapless root frame is due immediately and is
+    // skipped over to frame 2, which is due again in its 40ms gap.
+    try testing.expectEqual(@as(?u64, 40), s.animationTick(io, 0));
+    try testing.expectEqual(@as(u32, 1), anim.current_index);
+    try testing.expect(img.generation > gen1);
+    try testing.expect(s.dirty);
+
+    // Nothing due yet: no advance, and the delay counts down.
+    const gen2 = img.generation;
+    try testing.expectEqual(@as(?u64, 30), s.animationTick(io, 10));
+    try testing.expectEqual(gen2, img.generation);
+
+    // Wrapping is fine with an infinite loop budget: the gapless
+    // root is skipped and frame 2 is shown again.
+    try testing.expectEqual(@as(?u64, 40), s.animationTick(io, 40));
+    try testing.expectEqual(@as(u32, 1), anim.current_index);
+    try testing.expectEqual(@as(u32, 1), anim.current_loop);
+}
+
+test "storage: animation tick loading state parks on last frame" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+    var t = try terminal.Terminal.init(io, alloc, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(alloc);
+    t.width_px = 100;
+    t.height_px = 100;
+
+    var s: ImageStorage = .{};
+    defer s.deinit(alloc, t.screens.active);
+
+    // A placed 1x1 RGBA image in the loading state (a=a s=2) whose
+    // animation has one extra frame.
+    try s.addImage(io, alloc, t.screens.active, .{
+        .id = 1,
+        .width = 1,
+        .height = 1,
+        .format = .rgba,
+        .data = .{ .complete = try alloc.dupe(u8, &.{ 255, 0, 0, 255 }) },
+    });
+    const anim = try alloc.create(animation.Animation);
+    anim.* = .{ .state = .loading };
+    s.images.getPtr(1).?.animation = anim;
+    try anim.frames.append(alloc, .{
+        .data = try alloc.dupe(u8, &.{ 0, 0, 255, 255 }),
+        .gap_ms = 40,
+    });
+    try s.addPlacement(io, alloc, t.screens.active, 1, 0, .{
+        .location = .{ .pin = try trackPin(&t, .{ .x = 0, .y = 0 }) },
+    });
+
+    // Reach the last frame, then park: no wakeup is scheduled while
+    // waiting for more frames and the loop counter stays untouched.
+    try testing.expectEqual(@as(?u64, 40), s.animationTick(io, 0));
+    try testing.expectEqual(@as(u32, 1), anim.current_index);
+    try testing.expect(s.animationTick(io, 100) == null);
+    try testing.expectEqual(@as(u32, 1), anim.current_index);
+    try testing.expectEqual(@as(u32, 0), anim.current_loop);
+
+    // A new frame arriving un-parks playback.
+    try anim.frames.append(alloc, .{
+        .data = try alloc.dupe(u8, &.{ 0, 255, 0, 255 }),
+        .gap_ms = 25,
+    });
+    try testing.expectEqual(@as(?u64, 25), s.animationTick(io, 150));
+    try testing.expectEqual(@as(u32, 2), anim.current_index);
+}
+
+test "storage: animation tick exhausts loop budget" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+    var t = try terminal.Terminal.init(io, alloc, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(alloc);
+    t.width_px = 100;
+    t.height_px = 100;
+
+    var s: ImageStorage = .{};
+    defer s.deinit(alloc, t.screens.active);
+
+    // A placed, running 1x1 RGBA image with a gapped root frame, one
+    // extra frame, and a one-loop budget (a=a v=2).
+    try s.addImage(io, alloc, t.screens.active, .{
+        .id = 1,
+        .width = 1,
+        .height = 1,
+        .format = .rgba,
+        .data = .{ .complete = try alloc.dupe(u8, &.{ 255, 0, 0, 255 }) },
+    });
+    const anim = try alloc.create(animation.Animation);
+    anim.* = .{
+        .state = .running,
+        .root_gap_ms = 10,
+        .max_loops = 1,
+    };
+    s.images.getPtr(1).?.animation = anim;
+    try anim.frames.append(alloc, .{
+        .data = try alloc.dupe(u8, &.{ 0, 0, 255, 255 }),
+        .gap_ms = 40,
+    });
+    try s.addPlacement(io, alloc, t.screens.active, 1, 0, .{
+        .location = .{ .pin = try trackPin(&t, .{ .x = 0, .y = 0 }) },
+    });
+
+    // Root shows for 10ms, frame 2 for 40ms, then the wrap exhausts
+    // the budget and playback freezes on the last frame for good.
+    try testing.expectEqual(@as(?u64, 10), s.animationTick(io, 0));
+    try testing.expectEqual(@as(u32, 0), anim.current_index);
+    try testing.expectEqual(@as(?u64, 40), s.animationTick(io, 10));
+    try testing.expectEqual(@as(u32, 1), anim.current_index);
+    try testing.expect(s.animationTick(io, 50) == null);
+    try testing.expectEqual(@as(u32, 1), anim.current_index);
+    try testing.expect(s.animationTick(io, 500) == null);
+}
+
+test "storage: animation tick ignores ineligible animations" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+    var t = try terminal.Terminal.init(io, alloc, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(alloc);
+    t.width_px = 100;
+    t.height_px = 100;
+
+    var s: ImageStorage = .{};
+    defer s.deinit(alloc, t.screens.active);
+
+    // A placed 1x1 RGBA image with one extra frame, in the default
+    // stopped state.
+    try s.addImage(io, alloc, t.screens.active, .{
+        .id = 1,
+        .width = 1,
+        .height = 1,
+        .format = .rgba,
+        .data = .{ .complete = try alloc.dupe(u8, &.{ 255, 0, 0, 255 }) },
+    });
+    const anim = try alloc.create(animation.Animation);
+    anim.* = .{};
+    s.images.getPtr(1).?.animation = anim;
+    try anim.frames.append(alloc, .{
+        .data = try alloc.dupe(u8, &.{ 0, 0, 255, 255 }),
+        .gap_ms = 40,
+    });
+    try s.addPlacement(io, alloc, t.screens.active, 1, 0, .{
+        .location = .{ .pin = try trackPin(&t, .{ .x = 0, .y = 0 }) },
+    });
+
+    // Stopped (the default) never advances.
+    try testing.expect(s.animationTick(io, 0) == null);
+
+    // An all-gapless animation can never advance either.
+    anim.state = .running;
+    anim.frames.items[0].gap_ms = 0;
+    try testing.expect(s.animationTick(io, 0) == null);
+    try testing.expectEqual(@as(u32, 0), anim.current_index);
+}
+
+test "storage: animation tick re-anchors a restarted clock" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+    var t = try terminal.Terminal.init(io, alloc, .{ .cols = 10, .rows = 10 });
+    defer t.deinit(alloc);
+    t.width_px = 100;
+    t.height_px = 100;
+
+    var s: ImageStorage = .{};
+    defer s.deinit(alloc, t.screens.active);
+
+    // A placed, running 1x1 RGBA image displaying its extra frame,
+    // with a shown-at timestamp far ahead of the tick clock.
+    try s.addImage(io, alloc, t.screens.active, .{
+        .id = 1,
+        .width = 1,
+        .height = 1,
+        .format = .rgba,
+        .data = .{ .complete = try alloc.dupe(u8, &.{ 255, 0, 0, 255 }) },
+    });
+    const anim = try alloc.create(animation.Animation);
+    anim.* = .{
+        .state = .running,
+        .current_index = 1,
+        .frame_shown_at_ms = 1000,
+    };
+    s.images.getPtr(1).?.animation = anim;
+    try anim.frames.append(alloc, .{
+        .data = try alloc.dupe(u8, &.{ 0, 0, 255, 255 }),
+        .gap_ms = 40,
+    });
+    try s.addPlacement(io, alloc, t.screens.active, 1, 0, .{
+        .location = .{ .pin = try trackPin(&t, .{ .x = 0, .y = 0 }) },
+    });
+
+    // A timestamp in the future relative to now means the caller's
+    // clock restarted; the animation must not stall until the old
+    // timestamp comes around again.
+    try testing.expectEqual(@as(?u64, 40), s.animationTick(io, 5));
+    try testing.expectEqual(@as(?u64, 5), anim.frame_shown_at_ms);
 }
