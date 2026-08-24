@@ -795,6 +795,21 @@ Stock Ghostty treats a window/tab as ephemeral: close it and it's gone, quit and
 9. **Broadcasting:** open a 2-pane tab, enable broadcast, type → both shells receive input with no doubled characters; a pane still on the SSH connect popup receives nothing. Confirm broadcasting state is **not** restored after relaunch.
 10. **Legacy migration:** drop an old flat `TabSessionEntry`-format `session.json` in place and confirm it still restores as single-pane tabs.
 
+### Test-host guard (added 2026-08-24)
+
+**Symptom.** Running the macOS UI test suite popped the "Reopen your last session?" dialog on the developer's screen from a *second* app instance, and the test runner then failed with "The test runner timed out while preparing to run tests." Clicking the dialog appeared to do nothing, because the runner killed that instance.
+
+**Root cause & reasoning.** Two independent traps, both worth knowing before writing GTK tests. (1) A test runner launches the app and waits for it to finish launching and call back; any **blocking modal on the launch path** deadlocks that handshake. (2) The test host is built with the **same bundle/app id as the dev build**, so it reads and writes the dev app's state directory — meaning it can overwrite the developer's real `session.json` with the empty state of a freshly launched test instance, silently destroying their saved tabs.
+
+**Platform-agnostic logic.** Detect "running under a test harness" once, in a single shared predicate, and use it to suppress (a) every launch-time prompt and (b) **all session persistence**. Suppressing only the prompt is not enough: the test instance would still autosave its empty tab set over the real file. Leave the pending-restore list untouched rather than draining it, so nothing is consumed even in memory.
+
+**macOS→Linux equivalents.**
+- `isRunningXCTest()` in `macos/Sources/Helpers/AppInfo.swift` checks `ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"]`, sitting beside the existing `isRunningInXcode()`. The GTK equivalent is whatever the chosen harness exports (e.g. a `GHOSTTY_UNDER_TEST=1` set by the test entry point) — the env-var check is the portable part, the variable name is not.
+- Guard sites: `VaultsTabsModel.offerSessionRestoreIfNeeded()` (the prompt) and `VaultsTabsModel.persistSession()` (the single write choke point). Porting note: put the guard at the one function that writes the file, not at each caller.
+- Related macOS-only fix in the same change: `project.pbxproj` had `TEST_HOST` pointing at the pre-rename bundle/executable, and our `PRODUCT_NAME` rename had silently renamed the Swift module so `@testable import Ghostty` no longer resolved — fixed by pinning `PRODUCT_MODULE_NAME`. A GTK port has no analogue, but the lesson does: **renaming the product must not rename the module/library that tests import.**
+
+**How to verify on Linux.** Save two tabs, quit, note `session.json`. Run the UI test suite: it must complete without any dialog appearing, and `session.json` must be **byte-identical** afterwards. Then launch the app normally — the restore prompt appears and still restores both tabs.
+
 ## 12. Splits, panes & focus mode
 
 ### What it is

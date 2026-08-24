@@ -317,6 +317,10 @@ final class VaultsTabsModel: ObservableObject {
     /// clobber it with its own tabs.
     func persistSession() {
         guard isPrimary else { return }
+        // A test host shares the dev app's bundle id, so persisting here would
+        // overwrite the developer's real saved session with the test app's
+        // empty state. See `isRunningXCTest()`.
+        guard !isRunningXCTest() else { return }
         // Splits and pane drags add surfaces without touching `terminals`, so
         // re-sync the tab and per-surface subscriptions on every persist.
         observeTabChanges()
@@ -366,6 +370,11 @@ final class VaultsTabsModel: ObservableObject {
     /// If the previous run left tabs open, ask whether to reopen them. Call
     /// once after the app finishes launching.
     func offerSessionRestoreIfNeeded() {
+        // Never prompt from a test host: the modal blocks XCTest's launch
+        // handshake and steals focus from the real dev app. Leave
+        // `pendingRestore` untouched so nothing is consumed.
+        guard !isRunningXCTest() else { return }
+
         let entries = pendingRestore
         pendingRestore = []
         guard !entries.isEmpty else { return }
