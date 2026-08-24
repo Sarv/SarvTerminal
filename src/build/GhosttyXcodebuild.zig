@@ -26,13 +26,11 @@ pub fn init(
     config: *const Config,
     deps: Deps,
 ) !Ghostty {
-    const xc_config = switch (config.optimize) {
-        .Debug => "Debug",
-        .ReleaseSafe,
-        .ReleaseSmall,
-        .ReleaseFast,
-        => "ReleaseLocal",
-    };
+    // SarvTerminal divergence: the Xcode configuration follows
+    // `-Dmacos-app-debug` rather than the optimize mode directly, so an
+    // optimized core can still be packaged with the Dev identity. That option
+    // defaults to `optimize == .Debug`, preserving upstream behavior.
+    const xc_config = if (config.macos_app_debug) "Debug" else "ReleaseLocal";
 
     const xc_arch: ?[]const u8 = switch (deps.xcframework.target) {
         // Universal is our default target, so we don't have to
@@ -48,21 +46,21 @@ pub fn init(
         },
     };
 
-    const env = try std.process.getEnvMap(b.allocator);
+    const env = b.graph.environ_map;
     const app_path = b.fmt("macos/build/{s}/Sarv Terminal.app", .{xc_config});
 
     // Our step to build the Ghostty macOS app.
     const build = build: {
         // External environment variables can mess up xcodebuild, so
         // we create a new empty environment.
-        const env_map = try b.allocator.create(std.process.EnvMap);
+        const env_map = try b.allocator.create(std.process.Environ.Map);
         env_map.* = .init(b.allocator);
         if (env.get("PATH")) |v| try env_map.put("PATH", v);
 
         const step = RunStep.create(b, "xcodebuild");
         step.has_side_effects = true;
         step.cwd = b.path("macos");
-        step.env_map = env_map;
+        step.environ_map = env_map;
         step.addArgs(&.{
             "xcodebuild",
             "-target",
@@ -91,14 +89,14 @@ pub fn init(
     };
 
     const xctest = xctest: {
-        const env_map = try b.allocator.create(std.process.EnvMap);
+        const env_map = try b.allocator.create(std.process.Environ.Map);
         env_map.* = .init(b.allocator);
         if (env.get("PATH")) |v| try env_map.put("PATH", v);
 
         const step = RunStep.create(b, "xcodebuild test");
         step.has_side_effects = true;
         step.cwd = b.path("macos");
-        step.env_map = env_map;
+        step.environ_map = env_map;
         step.addArgs(&.{
             "xcodebuild",
             "test",

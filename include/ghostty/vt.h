@@ -31,12 +31,14 @@
  * - @ref terminal "Terminal" - Complete terminal emulator state and rendering
  * - @ref render "Render State" - Incremental render state updates for custom renderers
  * - @ref formatter "Formatter" - Format terminal content as plain text, VT sequences, or HTML
+ * - @ref snapshot "Terminal Snapshot" - Encode and incrementally restore terminal state
  * - @ref osc "OSC Parser" - Parse OSC (Operating System Command) sequences
  * - @ref sgr "SGR Parser" - Parse SGR (Select Graphic Rendition) sequences
- * - @ref paste "Paste Utilities" - Validate paste data safety
+ * - @ref paste "Paste" - Paste into a terminal, validate and encode paste data
  * - @ref unicode "Unicode Utilities" - Codepoint properties for text layout
  * - @ref build_info "Build Info" - Query compile-time build configuration
  * - @ref allocator "Memory Management" - Memory management and custom allocators
+ * - @ref io "Byte-stream I/O" - Reusable synchronous reader and writer callbacks
  * - @ref wasm "WebAssembly Utilities" - WebAssembly convenience functions
  *
  * Encoding related APIs:
@@ -51,7 +53,7 @@
  * - @ref c-vt/src/main.c - OSC parser example
  * - @ref c-vt-encode-key/src/main.c - Key encoding example
  * - @ref c-vt-encode-mouse/src/main.c - Mouse encoding example
- * - @ref c-vt-paste/src/main.c - Paste safety check example
+ * - @ref c-vt-paste/src/main.c - Paste example
  * - @ref c-vt-sgr/src/main.c - SGR parser example
  * - @ref c-vt-formatter/src/main.c - Terminal formatter example
  * - @ref c-vt-grid-traverse/src/main.c - Grid traversal example using grid refs
@@ -81,8 +83,10 @@
  */
 
 /** @example c-vt-paste/src/main.c
- * This example demonstrates how to use the paste utilities to check if
- * paste data is safe before sending it to the terminal.
+ * This example demonstrates how to paste into a terminal, including the
+ * unsafe-paste confirmation flow and Kitty clipboard protocol paste events
+ * (mode 5522), as well as the terminal-free paste safety and encoding
+ * utilities.
  */
 
 /** @example c-vt-sgr/src/main.c
@@ -140,6 +144,7 @@ extern "C" {
 #include <ghostty/vt/terminal.h>
 #include <ghostty/vt/grid_ref.h>
 #include <ghostty/vt/grid_ref_tracked.h>
+#include <ghostty/vt/io.h>
 #include <ghostty/vt/osc.h>
 #include <ghostty/vt/sgr.h>
 #include <ghostty/vt/style.h>
@@ -153,6 +158,7 @@ extern "C" {
 #include <ghostty/vt/screen.h>
 #include <ghostty/vt/selection.h>
 #include <ghostty/vt/size_report.h>
+#include <ghostty/vt/snapshot.h>
 #include <ghostty/vt/unicode.h>
 #include <ghostty/vt/wasm.h>
 

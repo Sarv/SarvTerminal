@@ -236,7 +236,7 @@ extension Ghostty {
         @State private var engine = IncrementalLineFilter()
 
         private var active: Bool {
-            searchState.filterEnabled && !searchState.needle.isEmpty
+            searchState.filterEnabled && !searchState.needle.text.isEmpty
         }
 
         private var matchCount: Int { displayLines.reduce(0) { $1.isMatch ? $0 + 1 : $0 } }
@@ -379,7 +379,7 @@ extension Ghostty {
             }
             let raw = surfaceView.liveScreenText()
             let m = SearchLineFilter.Matcher(
-                needle: searchState.needle,
+                needle: searchState.needle.text,
                 caseSensitive: searchState.caseSensitive,
                 useRegex: searchState.useRegex)
             matcher = m

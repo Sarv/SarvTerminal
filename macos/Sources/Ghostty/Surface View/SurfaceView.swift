@@ -4,35 +4,6 @@ import GhosttyKit
 import System
 
 extension Ghostty {
-    /// Render a terminal for the active app in the environment.
-    struct Terminal: View {
-        @EnvironmentObject private var ghostty: Ghostty.App
-
-        var body: some View {
-            if let app = self.ghostty.app {
-                SurfaceForApp(app) { surfaceView in
-                    SurfaceWrapper(surfaceView: surfaceView)
-                }
-            }
-        }
-    }
-
-    /// Yields a SurfaceView for a ghostty app that can then be used however you want.
-    struct SurfaceForApp<Content: View>: View {
-        let content: ((SurfaceView) -> Content)
-
-        @StateObject private var surfaceView: SurfaceView
-
-        init(_ app: ghostty_app_t, @ViewBuilder content: @escaping ((SurfaceView) -> Content)) {
-            _surfaceView = StateObject(wrappedValue: SurfaceView(app))
-            self.content = content
-        }
-
-        var body: some View {
-            content(surfaceView)
-        }
-    }
-
     struct SurfaceWrapper: View {
         // The surface to create a view for. This must be created upstream. As long as this
         // remains the same, the surface that is being rendered remains the same.
@@ -54,10 +25,8 @@ extension Ghostty {
         // update), so streaming output doesn't churn the SwiftUI body.
         @State private var showScrollToBottom: Bool = false
 
-        #if canImport(AppKit)
         // Observe SecureInput to detect when its enabled
         @ObservedObject private var secureInput = SecureInput.shared
-        #endif
 
         @EnvironmentObject private var ghostty: Ghostty.App
         @Environment(\.ghosttyLastFocusedSurface) private var lastFocusedSurface
@@ -74,17 +43,14 @@ extension Ghostty {
                 // is up to date. See TerminalSurfaceView for why we don't use the NSView
                 // resize callback.
                 GeometryReader { geo in
-                    #if canImport(AppKit)
                     let pubBecomeKey = center.publisher(for: NSWindow.didBecomeKeyNotification)
                     let pubResign = center.publisher(for: NSWindow.didResignKeyNotification)
-                    #endif
 
                     SurfaceRepresentable(view: surfaceView, size: geo.size)
                         .focused($surfaceFocus)
                         .focusedValue(\.ghosttySurfacePwd, surfaceView.pwd)
                         .focusedValue(\.ghosttySurfaceView, surfaceView)
                         .focusedValue(\.ghosttySurfaceCellSize, surfaceView.cellSize)
-                    #if canImport(AppKit)
                         .onReceive(pubBecomeKey) { notification in
                             guard let window = notification.object as? NSWindow else { return }
                             guard let surfaceWindow = surfaceView.window else { return }
@@ -97,7 +63,6 @@ extension Ghostty {
                                 windowFocus = false
                             }
                         }
-                    #endif
 
                     // If our geo size changed then we show the resize overlay as configured.
                     if let surfaceSize = surfaceView.surfaceSize {
@@ -124,7 +89,6 @@ extension Ghostty {
                     .transition(.opacity)
                 }
 
-#if canImport(AppKit)
                 // Readonly indicator badge
                 if surfaceView.readonly {
                     ReadonlyBadge {
@@ -138,7 +102,6 @@ extension Ghostty {
                     keySequence: surfaceView.keySequence
                 )
                 .zIndex(1)
-#endif
 
                 // "⌘ click to open" hint pinned next to the cursor while a link
                 // is hovered. mouseLocationInSurface is AppKit bottom-left, so we
@@ -163,7 +126,6 @@ extension Ghostty {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
 
-                #if canImport(AppKit)
                 // If we have secure input enabled and we're the focused surface and window
                 // then we want to show the secure input overlay.
                 if ghostty.config.secureInputIndication &&
@@ -172,7 +134,6 @@ extension Ghostty {
                     windowFocus {
                     SecureInputOverlay()
                 }
-                #endif
 
                 // Search overlay
                 if let searchState = surfaceView.searchState {
@@ -237,13 +198,12 @@ extension Ghostty {
                     }
                 }
 
-                #if canImport(AppKit)
                 // Grab handle for dragging the window. We want this to appear at the very
                 // top Z-index os it isn't faded by the unfocused overlay.
-                //
-                // This is disabled except on macOS because it uses AppKit drag/drop APIs.
-                SurfaceGrabHandle(surfaceView: surfaceView)
-                #endif
+                SurfaceGrabHandle(
+                    surfaceView: surfaceView,
+                    dragHandle: ghostty.config.dragHandle,
+                )
             }
             // Track viewport scroll position (the core pushes this on every change)
             // to toggle the scroll-to-bottom button. Only flips the flag when the
@@ -271,7 +231,7 @@ extension Ghostty {
 
         /// A neutral that always contrasts with the terminal background.
         private var contrast: Color {
-            OSColor(terminalBackground).isLightColor ? .black : .white
+            NSColor(terminalBackground).isLightColor ? .black : .white
         }
 
         var body: some View {
@@ -462,8 +422,8 @@ extension Ghostty {
                   HStack(spacing: 4) {
                     BackportSelectionTextField(
                         "Search",
-                        text: $searchState.needle,
-                        selection: $searchState.needleSelection
+                        text: $searchState.needle.text,
+                        selection: $searchState.needle.selection
                     )
                     .textFieldStyle(.plain)
                     .frame(width: 180)
@@ -488,12 +448,12 @@ extension Ghostty {
                                 .padding(.trailing, 8)
                         }
                     }
-                    .onChange(of: searchState.needle) { _ in
+                    .onChange(of: searchState.needle.text) { _ in
                         searchState.writePasteboardNeedle()
                     }
                     .onReceive(
                         NotificationCenter.default.publisher(
-                            for: OSApplication.didBecomeActiveNotification
+                            for: NSApplication.didBecomeActiveNotification
                         )
                     ) { _ in
                         // When the app becomes active, we want to check for external changes
@@ -503,15 +463,13 @@ extension Ghostty {
                     .onSubmit {
                         _ = surfaceView.navigateSearchToNext()
                     }
-#if canImport(AppKit)
                     .onExitCommand {
-                        if searchState.needle.isEmpty {
+                        if searchState.needle.text.isEmpty {
                             onClose()
                         } else {
                             Ghostty.moveFocus(to: surfaceView)
                         }
                     }
-#endif
                     .backport.onKeyPress(.return) { modifiers in
                         if modifiers.contains(.shift) {
                             _ = surfaceView.navigateSearchToPrevious()
@@ -657,7 +615,7 @@ extension Ghostty {
         }
 
         private var clipShape: some Shape {
-            if #available(iOS 26.0, macOS 26.0, *) {
+            if #available(macOS 26.0, *) {
                 return ConcentricRectangle(corners: .concentric(minimum: 8), isUniform: true)
             } else {
                 return RoundedRectangle(cornerRadius: 8)
@@ -737,7 +695,7 @@ extension Ghostty {
     /// A surface is terminology in Ghostty for a terminal surface, or a place where a terminal is actually drawn
     /// and interacted with. The word "surface" is used because a surface may represent a window, a tab,
     /// a split, a small preview pane, etc. It is ANYTHING that has a terminal drawn to it.
-    struct SurfaceRepresentable: OSViewRepresentable {
+    struct SurfaceRepresentable: NSViewRepresentable {
         /// The view to render for the terminal surface.
         let view: SurfaceView
 
@@ -751,13 +709,11 @@ extension Ghostty {
         /// The best approach is to wrap this view in a GeometryReader and pass in the geo.size.
         let size: CGSize
 
-        #if canImport(AppKit)
-        func makeOSView(context: Context) -> SurfaceScrollView {
-            // On macOS, wrap the surface view in a scroll view
+        func makeNSView(context: Context) -> SurfaceScrollView {
             return SurfaceScrollView(contentSize: size, surfaceView: view)
         }
 
-        func updateOSView(_ scrollView: SurfaceScrollView, context: Context) {
+        func updateNSView(_ scrollView: SurfaceScrollView, context: Context) {
             // SwiftUI may defer frame updates under system load (e.g., memory
             // pressure, heavy I/O) or when external window managers trigger rapid
             // layout changes. When that happens, the scroll view's bounds can
@@ -766,16 +722,6 @@ extension Ghostty {
             guard scrollView.bounds.size != size else { return }
             scrollView.needsLayout = true
         }
-        #else
-        func makeOSView(context: Context) -> SurfaceView {
-            // On iOS, return the surface view directly
-            return view
-        }
-
-        func updateOSView(_ view: SurfaceView, context: Context) {
-            view.sizeDidChange(size)
-        }
-        #endif
     }
 
     /// The configuration for a surface. For any configuration not set, defaults will be chosen from
@@ -836,25 +782,11 @@ extension Ghostty {
         func withCValue<T>(view: SurfaceView, _ body: (inout ghostty_surface_config_s) throws -> T) rethrows -> T {
             var config = ghostty_surface_config_new()
             config.userdata = Unmanaged.passUnretained(view).toOpaque()
-#if os(macOS)
             config.platform_tag = GHOSTTY_PLATFORM_MACOS
             config.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
                 nsview: Unmanaged.passUnretained(view).toOpaque()
             ))
             config.scale_factor = NSScreen.main!.backingScaleFactor
-#elseif os(iOS)
-            config.platform_tag = GHOSTTY_PLATFORM_IOS
-            config.platform = ghostty_platform_u(ios: ghostty_platform_ios_s(
-                uiview: Unmanaged.passUnretained(view).toOpaque()
-            ))
-            // Note that UIScreen.main is deprecated and we're supposed to get the
-            // screen through the view hierarchy instead. This means that we should
-            // probably set this to some default, then modify the scale factor through
-            // libghostty APIs when a UIView is attached to a window/scene. TODO.
-            config.scale_factor = UIScreen.main.scale
-#else
-#error("unsupported target")
-#endif
 
             // Zero is our default value that means to inherit the font size.
             config.font_size = fontSize ?? 0
@@ -905,7 +837,6 @@ extension Ghostty {
         }
     }
 
-#if canImport(AppKit)
     /// Floating indicator that shows active key tables and pending key sequences.
     /// Displayed as a compact draggable pill that can be positioned at the top or bottom.
     struct KeyStateIndicator: View {
@@ -1123,7 +1054,6 @@ extension Ghostty {
             }
         }
     }
-#endif
 
     /// Visual overlay that shows a border around the edges when the bell rings with border feature enabled.
     struct BellBorderOverlay: View {
@@ -1287,7 +1217,6 @@ extension Ghostty {
         }
     }
 
-    #if canImport(AppKit)
     /// When changing the split state, or going full screen (native or non), the terminal view
     /// will lose focus. There has to be some nice SwiftUI-native way to fix this but I can't
     /// figure it out so we're going to do this hacky thing to bring focus back to the terminal
@@ -1341,7 +1270,6 @@ extension Ghostty {
             queue.async(execute: work)
         }
     }
-    #endif
 }
 
 // MARK: Surface Environment Keys
@@ -1400,12 +1328,12 @@ extension FocusedValues {
         typealias Value = String
     }
 
-    var ghosttySurfaceCellSize: OSSize? {
+    var ghosttySurfaceCellSize: CGSize? {
         get { self[FocusedGhosttySurfaceCellSize.self] }
         set { self[FocusedGhosttySurfaceCellSize.self] = newValue }
     }
 
     struct FocusedGhosttySurfaceCellSize: FocusedValueKey {
-        typealias Value = OSSize
+        typealias Value = CGSize
     }
 }

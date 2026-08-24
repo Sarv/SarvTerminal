@@ -15,11 +15,11 @@ pub fn build(b: *std.Build) !void {
         .root_module = b.createModule(.{
             .target = target,
             .optimize = optimize,
+            // zig 0.16: libc linkage is a module option; Compile.linkLibC() is gone.
+            .link_libc = true,
         }),
         .linkage = .static,
     });
-    lib.linkLibC();
-
     if (target.result.os.tag.isDarwin()) {
         const apple_sdk = @import("apple_sdk");
         try apple_sdk.addPaths(b, lib);
@@ -27,12 +27,12 @@ pub fn build(b: *std.Build) !void {
 
     if (b.lazyDependency("md4c", .{})) |upstream| {
         const inc = upstream.path("src");
-        lib.addIncludePath(inc);
+        lib.root_module.addIncludePath(inc);
         module.addIncludePath(inc);
 
         // The parser (md4c.c) + the HTML renderer (md4c-html.c) + its HTML
         // entity table (entity.c). No config header — md4c has no autoconf.
-        lib.addCSourceFiles(.{
+        lib.root_module.addCSourceFiles(.{
             .root = upstream.path(""),
             .flags = &.{},
             .files = &.{
@@ -53,7 +53,7 @@ pub fn build(b: *std.Build) !void {
             });
             test_mod.addIncludePath(inc);
             const test_exe = b.addTest(.{ .name = "test", .root_module = test_mod });
-            test_exe.linkLibrary(lib);
+            test_exe.root_module.linkLibrary(lib);
             const tests_run = b.addRunArtifact(test_exe);
             const test_step = b.step("test", "Run md4c tests");
             test_step.dependOn(&tests_run.step);

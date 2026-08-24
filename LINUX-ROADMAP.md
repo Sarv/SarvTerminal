@@ -795,6 +795,21 @@ Stock Ghostty treats a window/tab as ephemeral: close it and it's gone, quit and
 9. **Broadcasting:** open a 2-pane tab, enable broadcast, type → both shells receive input with no doubled characters; a pane still on the SSH connect popup receives nothing. Confirm broadcasting state is **not** restored after relaunch.
 10. **Legacy migration:** drop an old flat `TabSessionEntry`-format `session.json` in place and confirm it still restores as single-pane tabs.
 
+### Test-host guard (added 2026-08-24)
+
+**Symptom.** Running the macOS UI test suite popped the "Reopen your last session?" dialog on the developer's screen from a *second* app instance, and the test runner then failed with "The test runner timed out while preparing to run tests." Clicking the dialog appeared to do nothing, because the runner killed that instance.
+
+**Root cause & reasoning.** Two independent traps, both worth knowing before writing GTK tests. (1) A test runner launches the app and waits for it to finish launching and call back; any **blocking modal on the launch path** deadlocks that handshake. (2) The test host is built with the **same bundle/app id as the dev build**, so it reads and writes the dev app's state directory — meaning it can overwrite the developer's real `session.json` with the empty state of a freshly launched test instance, silently destroying their saved tabs.
+
+**Platform-agnostic logic.** Detect "running under a test harness" once, in a single shared predicate, and use it to suppress (a) every launch-time prompt and (b) **all session persistence**. Suppressing only the prompt is not enough: the test instance would still autosave its empty tab set over the real file. Leave the pending-restore list untouched rather than draining it, so nothing is consumed even in memory.
+
+**macOS→Linux equivalents.**
+- `isRunningXCTest()` in `macos/Sources/Helpers/AppInfo.swift` checks `ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"]`, sitting beside the existing `isRunningInXcode()`. The GTK equivalent is whatever the chosen harness exports (e.g. a `GHOSTTY_UNDER_TEST=1` set by the test entry point) — the env-var check is the portable part, the variable name is not.
+- Guard sites: `VaultsTabsModel.offerSessionRestoreIfNeeded()` (the prompt) and `VaultsTabsModel.persistSession()` (the single write choke point). Porting note: put the guard at the one function that writes the file, not at each caller.
+- Related macOS-only fix in the same change: `project.pbxproj` had `TEST_HOST` pointing at the pre-rename bundle/executable, and our `PRODUCT_NAME` rename had silently renamed the Swift module so `@testable import Ghostty` no longer resolved — fixed by pinning `PRODUCT_MODULE_NAME`. A GTK port has no analogue, but the lesson does: **renaming the product must not rename the module/library that tests import.**
+
+**How to verify on Linux.** Save two tabs, quit, note `session.json`. Run the UI test suite: it must complete without any dialog appearing, and `session.json` must be **byte-identical** afterwards. Then launch the app normally — the restore prompt appears and still restores both tabs.
+
 ## 12. Splits, panes & focus mode
 
 ### What it is
@@ -1923,6 +1938,64 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 **macOS→Linux.** GTK is naturally multi-window: each new window is a new top-level `GtkWindow`/`AdwApplicationWindow` with its own tab model, sharing the same in-process data stores. Mirror: (1) per-window tab model, a "front/active window" resolver for global actions, (2) shared host/group/snippet stores, (3) session save/restore owned by one window, (4) `⌘N`-equivalent = new tab, a distinct shortcut = new window. Do **not** implement this as multiple processes — the shared encrypted store is not multi-process safe.
 
 **How to verify.** ⇧⌘N and Dock → New Window each open a real second window; each window's tabs/scratchpad/focus-mode reflect *that* window; hosts/groups are shared; closing a secondary window keeps the app running; closing the last quits; the saved session isn't duplicated or wiped by opening/closing extra windows.
+
+
+## 38. Clipboard confirmation for **embedded** terminal surfaces
+
+**What it is.** libghostty asks the apprt to confirm before completing a clipboard action: an unsafe paste (e.g. a browser copy carrying a trailing newline while the shell is not in bracketed-paste mode) and OSC 52 clipboard reads/writes. Stock Ghostty answers this in `BaseTerminalController`, which only covers surfaces living in **its own** windows. SarvTerminal embeds terminal surfaces inside the Vaults window, which has no such controller — so with no handler the request is simply **dropped and the paste silently does nothing**. `VaultsTabsModel` answers it for embedded surfaces.
+
+**Key logic (platform-agnostic).**
+- The core hands out a **one-shot confirmation request** per surface, carrying: the clipboard `contents`, the request `kind` (`paste` / `osc_52_read` / `osc_52_write`), and a completion callback. Whoever owns the embedded surface must subscribe **per surface** (as tabs/panes are created) and resolve each request **exactly once**.
+- Resolve with *confirm* (proceed using the shown contents) or *refuse*. Resolution must be **idempotent**, and **dropping an unresolved request must cancel it** — otherwise raw core callback state leaks and the writing program can wait forever.
+- **Resolve on the UI thread, not inline.** The request is published *synchronously from inside the core callback that created it*; completing it in that callback can invalidate the callback's own state while it is still running. Hop to the main loop first.
+- Show a **truncated preview** (~300 chars), never the full contents — a paste can be arbitrarily large.
+- Title by kind: `paste` → "Potentially Unsafe Paste"; OSC 52 read/write → "Authorize Clipboard Access". Button labels also differ by kind (Paste/Cancel vs Allow/Deny).
+- **Do not write the system clipboard yourself.** For `osc_52_write` the completion performs the clipboard write; for `paste`/`osc_52_read` it answers the core. The handler only decides yes/no.
+
+**macOS→Linux/GTK equivalents.**
+
+| macOS | Why | Linux/GTK |
+|---|---|---|
+| `@Published var pendingClipboardConfirmation` on `SurfaceView` + Combine `sink` per surface | Per-surface delivery, auto-torn-down with the surface | A property-notify signal (or a small callback list) on the GTK surface widget; subscribe when a pane is created, drop with the pane. Keying the subscription by a **value id** rather than capturing the widget avoids extending its lifetime. |
+| `SarvAlert` modal | Ask the user | `AdwMessageDialog` / `GtkAlertDialog`, presented on the window owning the embedded surface |
+| `DispatchQueue.main` hop before resolving | Core publishes from inside its own callback | `g_idle_add` / GLib main-context invoke before resolving |
+| `ghostty_surface_complete_clipboard_request(surface, data, state, confirmed)` | **Shared core C API — identical on both apprts** | Call it exactly once per request. On refusal *or teardown*, still call it (empty data / not-confirmed) so the core stops waiting. |
+
+**Verify on Linux.**
+1. In an embedded Vaults terminal, paste multi-line text ending in a newline with bracketed paste off → confirmation appears. Confirm → text pastes. Deny → nothing pastes and the terminal stays usable.
+2. `printf '\033]52;c;'$(printf hello | base64)'\a'` → "Authorize Clipboard Access"; confirming puts `hello` on the system clipboard.
+3. Close the tab **while the dialog is open** → no hang and no leaked request (teardown must cancel it).
+4. Trigger a second request while one dialog is up → the first is superseded/cancelled, never two competing dialogs, and the terminal never wedges.
+
+> **Note (upstream sync `42a161aad`).** This behavior was re-implemented on upstream's new API: the old `Ghostty.Notification.confirmClipboard` post with `userInfo` keys was replaced by the one-shot `Ghostty.ClipboardConfirmationRequest` object described above. A GTK port should model the **request object**, not a broadcast notification — the object is what makes "resolve exactly once, cancel on drop" enforceable.
+
+## 39. Scrollback limits in Settings (Buffer size + Line limit, with Unlimited)
+
+**What it is.** Settings → General → Scrollback exposes both of upstream 1.4's limits: **Buffer size** (`scrollback-limit-bytes`, presets 10 MB → 4 GB plus Unlimited) and **Line limit** (`scrollback-limit-lines`, 10k → 5M plus Unlimited), each with a caption that changes when Unlimited is selected. Our default for the byte limit is **500 MB**, not upstream's 50 MB.
+
+**Root cause & reasoning.** Before this, the macOS settings row was a 1–100 MB slider bound to the pre-1.4 key `scrollback-limit`, and it always displayed a hardcoded fallback. Two independent reasons: the old key no longer exists (renamed to `scrollback-limit-bytes`), and the new type `Limit(usize, …)` is a **non-packed struct**, which `c_get` rejects — so `ghostty_config_get` returned false and the UI silently showed its own default, never the user's value. The fix adds `Limit.cval` on the Zig side (see UPSTREAM.md §8.6). The default was raised because 50 MB is ~48k lines at 120 columns: page memory measures ~1 KB per line regardless of content, so a log-heavy SSH session truncates almost immediately.
+
+**Platform-agnostic logic.**
+1. `unlimited` is the sentinel `maxInt(usize)`, NOT an optional. Compare against it to detect "no limit"; serialize it back to the config file as the literal string `unlimited`, and any other value as a plain integer.
+2. Both limits are independent and whichever is reached first trims history. The byte limit is the memory guard; the line limit is the *predictable* knob, because bytes/line scales with column count.
+3. Offer presets, but if the configured value isn't a preset (hand-edited config), inject that value into the list so the UI shows what's actually set instead of snapping to the nearest preset — snapping silently rewrites the user's config the next time anything is saved.
+4. When writing the byte limit, also **delete** any pre-1.4 `scrollback-limit` line. Both keys parse (the old one via a compatibility rename), so leaving both means the file's line order decides the winner.
+5. Changing either limit only affects **new** surfaces; existing ones keep the limit they were created with.
+
+**macOS→Linux equivalents.**
+- `ScrollbackLimit.swift` (pure helpers: sentinel, `configValue`, presets, labels, off-preset passthrough) → a plain Zig struct of pure functions in the GTK app. Keep it free of widget code so it stays unit-testable; `defaultBytes` MUST track the Zig default in `Config.zig` or the UI lies again.
+- SwiftUI `Picker(.menu)` bound to a `UInt` → `GtkDropDown` over a `[]const usize` model with a label callback. The tag IS the byte/line value, which is what makes off-preset passthrough trivial.
+- **GTK does not need `cval`.** The GTK app is Zig and reads `Config` directly, so it can use `.optional()` (null = unlimited) and skip the C-API limitation entirely. Only bindings that cross the C boundary need the sentinel dance.
+- Settings write path (`ConfigFileEditor.set`/`remove`) → whatever the GTK app uses to rewrite the config file; the "remove the legacy alias" step is the part that's easy to forget.
+
+**Measured behavior (macOS, for comparison when porting).** ~1 KB of page memory per line at 120 cols; `scrollback-compression` brings historical pages to ~6% of raw on realistic text; a 3M-line flood at `unlimited` maps ~3 GB and stays ~1.4 GB resident. Unlimited is genuinely unbounded — the OS kills the app rather than the terminal trimming — so it must stay opt-in, never a default.
+
+**Verify on Linux.**
+1. With no scrollback keys in the config, Settings shows **500 MB** and **Unlimited** — not a hardcoded placeholder. Hand-edit the config to an off-preset value (e.g. `333000000`) and confirm the picker displays it.
+2. Set Buffer size = Unlimited, restart, run `seq 1 300000`, scroll to the very top: the first line must be `1`. Then check RSS is in the ~300 MB range for that many lines.
+3. Set Buffer size = 50 MB, repeat: the top line must now be far into the sequence (history trimmed), proving the limit is actually applied to new surfaces.
+4. Put a legacy `scrollback-limit = 500000000` line in the config, change Buffer size in the UI, and confirm the legacy line is gone and only `scrollback-limit-bytes` remains.
+5. A Debug build makes step 2 crawl (integrity checks); build optimized for throughput testing or you'll misread slowness as data loss.
 
 ## Appendix A. Visual design reference
 

@@ -9,6 +9,7 @@
 .flatpak-builder/
 zig-cache/
 .zig-cache/
+zig-pkg/
 zig-out/
 # Release DMGs are built into dist/ and uploaded to the GitHub release page,
 # never committed (large binaries).
@@ -16,7 +17,7 @@ dist/
 build-cmake/
 CMakeCache.txt
 CMakeFiles/
-/build.zig.zon.bak
+build.zig.zon.bak
 /result*
 /.nixos-test-history
 example/*.wasm
@@ -41,3 +42,4 @@ macos/macos/
 signing/
 *.p12
 zig-out-linux/
+/sprite_face_test*

@@ -15,6 +15,7 @@ imported as one squashed commit; we do **not** carry upstream's commit history.
 |---|---|
 | Local baseline snapshot commit | `18b6f57` ("Initial commit") — pristine ghostty |
 | Ghostty version at baseline | **1.3.2-dev** (min zig 0.15.2) |
+| **Current min zig** | **0.16.0** (since upstream `e8525c0fd`) |
 | **Corresponding upstream commit** | **`b831ef6b`** (`ghostty-org/ghostty`) |
 | Upstream remote | `https://github.com/ghostty-org/ghostty.git` |
 
@@ -171,6 +172,48 @@ Record every guarded-file collision so the reconciliation is auditable.
 | →55a3e33a | `src/Surface.zig` | clean 3-way | `node.data`→`node.page()` API |
 | →55a3e33a | `src/shell-integration/…/ghostty.nu` | clean 3-way | nushell `@complete external` |
 | →55a3e33a | `src/termio/colorize.zig` (ours) | **build fix** | not an upstream file, but the new `PageList.Node.Data` union broke it: `&pin.node.data` → `pin.node.page()` |
+| →74d0c72f | `src/terminal/Terminal.zig` | clean 3-way | resize rework (`89b103dd5`) + cursor defaults moved into terminal state (`c594031d5`) |
+| →74d0c72f | `src/terminal/Screen.zig` | clean 3-way | safe resize-failure paths (`a3c1caba5`, `dde3d4d6b`) |
+| →74d0c72f | `src/terminal/PageList.zig` | clean 3-way | page-capacity error handling in `cursorScrollAbove`/`eraseRow` (`043326249`, `ee9d5b352`) |
+| →74d0c72f | `src/terminal/stream_terminal.zig` | clean 3-way | semantic stream failure marking (`439d35e27`) |
+| →74d0c72f | `src/terminal/c/terminal.zig` | clean 3-way | libghostty-vt resize/cursor API follow-through |
+| →74d0c72f | `src/terminal/kitty/graphics_{command,image,storage}.zig` | clean 3-way | transient usage hints (`a65e11cc9`) |
+| →74d0c72f | `src/config/Config.zig` | clean 3-way | `background-blur` default change (`2da02f4d2`); our fields preserved |
+| →74d0c72f | `src/crash/dir.zig` | clean 3-way | §8.4 `sarvterminal/crash` preserved |
+| →74d0c72f | `src/termio/{Termio,stream_handler}.zig` | clean 3-way | resize/stream plumbing |
+| →74d0c72f | `include/ghostty/vt/terminal.h` | clean 3-way | C API for the resize rework |
+| →74d0c72f | `build.zig.zon{,.json,.nix,.txt}`, `flatpak/zig-packages.json` | clean 3-way | iTerm2 colorschemes bump (`b513f1b20`); md4c dep + zig 0.15.2 preserved |
+| →42a161aa | 96 guarded files | clean 3-way | no manual intervention needed |
+| →42a161aa | `src/crash/dir.zig` | **re-applied** | upstream changed the signature to `(io, alloc, environ_map)`; kept `sarvterminal/crash` |
+| →42a161aa | `src/crash/sentry.zig` | **re-applied at new site** | upstream moved cache-dir resolution into a helper; re-applied `sarvterminal/sentry` + `.sarvcrash` there |
+| →42a161aa | `src/cli/ssh.zig`, `src/cli/ssh_cache.zig` | **re-applied at new site** | upstream refactored cache setup and re-hardcoded `"ghostty"`; restored `DiskCache.default_program` |
+| →42a161aa | `src/config/url.zig` | ours + restore | kept our two-tier path regex; upstream deleted `trailing_spaces_at_eol`, so its definition and the 2 test expectations were restored |
+| →42a161aa | `src/config/Config.zig` | kept both | our `output-colorize` + upstream's new `link-osc8` |
+| →42a161aa | `include/ghostty.h`, `src/apprt/action.zig` | kept both | our `reopen_closed_tab` + upstream's `move_tab_to_new_window` |
+| →42a161aa | `src/Surface.zig` | ours + 0.16 API | upstream's `lockUncancelable(global.io())` combined with our `reset_tty` and `linkAtPos(pos, false)` |
+| →42a161aa | `src/build/GhosttyXcodebuild.zig` | ours + 0.16 API | upstream's `b.graph.environ_map`; kept `Sarv Terminal.app` |
+| →42a161aa | `macos/…/Ghostty.Config.swift` | ours | kept `AppPaths.terminalCustomIconFile`; dropped the now-dead `#if os(macOS)` (see note below) |
+| →42a161aa | `macos/…/URLHoverBanner.swift` | ours | upstream added its own URL-preview banner; we keep the "⌘ click to open" hint (§8.5) |
+| →42a161aa | `macos/…/SurfaceView.swift`, `OSSurfaceView.swift` | ours | kept `showScrollToBottom` and the grep-filter state |
+| →42a161aa | `macos/…/Update/{UpdateDelegate,UpdateDriver,UpdatePopoverView}.swift` | ours | kept our SarvAlert-based update prompts |
+| →42a161aa | `macos/Ghostty.xcodeproj/project.pbxproj` | theirs | completed upstream's **iOS target removal**; validated with `plutil -lint`, 0 dangling iOS refs |
+| →42a161aa | `HACKING.md`, `PACKAGING.md`, `po/README_TRANSLATORS.md` | ours | our fork rewrites; upstream's versions reintroduce ghostty-org clone URLs and GitHub teams |
+| →42a161aa | `.gitignore` | kept both | then deduped |
+| →42a161aa | 4 guarded renames | `git mv` + clean 3-way | `macos/Sources/App/macOS/{AppDelegate,AppDelegate+Ghostty,main}.swift`, `MainMenu.xib` → `macos/Sources/App/` |
+| →42a161aa | `pkg/md4c/build.zig`, `src/build/SharedDeps.zig` (ours) | **zig 0.16 migration** | `link_libc` is a module option; `linkLibrary`/`addIncludePath`/`addCSourceFiles` moved to `root_module` |
+| →42a161aa | `src/main_c.zig` (ours) | **zig 0.16 migration** | `state.alloc` → `global.alloc()` |
+| →42a161aa | `macos/…/VaultsTabsModel.swift` (ours) | **API migration** | upstream replaced the `confirmClipboard` notification + userInfo keys with a one-shot `Ghostty.ClipboardConfirmationRequest` published on the surface; we now subscribe per-surface and call `complete()`/`cancel()` |
+| →42a161aa | `macos/…/UpdatePopoverView.swift` (ours) | **API migration** | `UpdateState.Installing.dismiss()` removed upstream; "Restart Later" just closes |
+| →42a161aa | `macos/…/SurfaceSearchFilter.swift` (ours) | **API migration** | `SearchState.needle` is now a `Needle` struct → `.needle.text` |
+| →42a161aa | `macos/…/SurfaceView.swift` (ours) | **API migration** | `OSColor` alias removed with iOS support → `NSColor` |
+| →42a161aa | 5 stale unowned files | **fast-forwarded (pre-existing gap)** | `images/Ghostty.icon/icon.json`, `macos/…/App Intents/{Entities/TerminalEntity,NewTerminalIntent,QuickTerminalIntent}.swift`, `macos/…/TitlebarTabsTahoeTerminalWindow.swift` — stale since BEFORE this sync (see §9) |
+| →42a161aa | `macos/Sources/App/AppDelegate.swift` | **completed the merge** | the clean 3-way brought upstream's `quickTerminalControllerState` machine but dropped the `quickControllerInitialized` computed property beside it; restored (upstream's `QuickTerminalIntent` needs it) |
+| →e77b2309 | `src/input/paste.zig` | **hand-merged** | upstream added +168 lines (`bracketed_prefix`/`suffix`, `max_frame_size`, `encodeWriter`, `isSafeWith`) in `a5bb22e23`; took theirs verbatim and re-applied our `isSafeAllowingTrailingNewline` (+ its test) into the function/test regions. Ours is orthogonal to their `isSafeWith`: theirs relaxes by bracketed-paste state, ours only forgives a single trailing newline. `src/Surface.zig:6001` is the caller |
+| →e77b2309 | `build.zig.zon` | clean (non-overlapping) | upstream moved the gobject dep to `deps.files.ghostty.org`; took theirs and re-added our `.md4c` line |
+| →e77b2309 | `.github/VOUCHED.td` | kept deleted | upstream keeps updating its vouch list; we deleted the whole `.github` CI surface |
+| →6a508fd5 | `macos/Sources/App/AppDelegate.swift` | clean 3-way | upstream's AppKit menu-shortcut translation; our menu branding/Vaults/Reset-Terminal setup and `quickControllerInitialized` preserved |
+| →6a508fd5 | `macos/Sources/Ghostty/Ghostty.App.swift` | clean 3-way | shortcut translation moved to AppKit; our `openURL` markdown routing preserved |
+| →6a508fd5 | `macos/Sources/Ghostty/Ghostty.Config.swift` | clean 3-way | our isolated `AppPaths.ghosttyConfigFile` load path preserved |
 
 ---
 
@@ -181,16 +224,121 @@ Update this section every time you reconcile.
 | | |
 |---|---|
 | Upstream base (fork point) | `b831ef6b` (ghostty 1.3.2-dev) |
-| **Reconciled up to** | `55a3e33a` (merged 2026-07-13 on branch `chore/upstream-sync-1.3.x`) |
-| Upstream tip at last check | `55a3e33a` |
-| Last checked | 2026-07-13 |
+| **Reconciled up to** | `6a508fd5e` (2026-08-24 on branch `chore/upstream-sync-1.4.x`) |
+| Upstream tip at last check | `6a508fd5e` (**fully reconciled**) |
+| Last checked | 2026-08-24 |
 
 Sync of 2026-07-13: 114 untouched files fast-forwarded to `55a3e33a`; 6 owned files
 3-way merged cleanly (see §6); 8 files we'd deleted left deleted; one build fix in
 our `colorize.zig` for the new `PageList.Node` union. zig core + full macOS app both
 build; new upstream option `scrollback-compression` added to Settings → General
-(`gtk-horizontal-tab-scroll` skipped — GTK/Linux only). **Next base for the following
-sync is `55a3e33a`.**
+(`gtk-horizontal-tab-scroll` skipped — GTK/Linux only).
+
+Sync of 2026-08-21 (`55a3e33a` → `74d0c72fd`, 24 commits): **deliberately stopped one
+commit short of upstream `e8525c0fd` ("Update to Zig 0.16.0")** so the tree still builds
+with zig 0.15.2. 31 files changed: 1 untouched file fast-forwarded, 12 `.github`
+workflow files we'd deleted left deleted, and 18 owned files 3-way merged — **all clean,
+zero conflicts** (see §6). Content is mostly terminal resize robustness and page-capacity
+error handling, plus kitty transient image hints and a macOS hidden-titlebar
+`NSScrollPocket` fix. All §8 anchors in range verified intact (`sarvterminal/crash`,
+`sarvterminal/themes`, `default_program`, `com.sarv.terminal`, md4c dep,
+`hover_activate_mods`). Verification: `zig build -Demit-macos-app=false` passes;
+`zig build test` = **3074/3090 passed, 16 skipped, 0 test failures**. The one failing
+build step, `xcodebuild test`, is **pre-existing and unrelated** — `project.pbxproj`
+(untouched by this sync) sets `TEST_HOST` to `SarvTerminal.app/…/ghostty`, but our
+executables are `SarvTerminalDev` (Debug) / `SarvTerminal` (Release) and the bundle is
+`Sarv Terminal.app`; the same broken setting is present on `main`. **Next base for the
+following sync is `74d0c72fd`, and that sync MUST begin with the zig 0.16.0 migration**
+— upstream's 499 post-bump commits migrated upstream files only; our ~227 added files
+need migrating by us.
+
+Sync of 2026-08-21, stage 2 (`74d0c72fd` → `42a161aad`, 499 commits): **crosses upstream
+`e8525c0fd` "Update to Zig 0.16.0"**, so the tree now requires zig 0.16.0. 687 files net
+(93 A / 16 D / 573 M / 5 R): 537 untouched files fast-forwarded, 14 upstream deletions
+applied, 12 `.github` workflows we'd deleted left deleted, and 119 owned files 3-way
+merged — 96 clean, 23 resolved by hand (see §6). The 4 guarded renames were handled as
+`git mv` + 3-way and all merged clean.
+
+**Upstream dropped iOS entirely.** `macos/Sources/App/iOS/` is gone, the `Ghostty-iOS`
+target was removed from `project.pbxproj`, and every `#if os(macOS)` / `#if canImport(AppKit)`
+platform guard was deleted (upstream tip has 0 of each). Two of our files kept a guard
+whose `#endif` upstream had removed, leaving them unbalanced — both guards were dropped to
+follow upstream. Watch for this pattern in any future Swift merge.
+
+**Zig 0.16 migration of our own files was small** — upstream migrated only upstream files,
+but our added code is mostly Swift, so only 4 Zig sites needed work (`pkg/md4c/build.zig`,
+`src/build/SharedDeps.zig`, `src/main_c.zig`, `src/Surface.zig`) plus 4 Swift API
+migrations (see §6). Key 0.16 idioms: `link_libc` is a `createModule` option and
+`Compile.linkLibC()` is gone; `linkLibrary`/`addIncludePath`/`addCSourceFiles` live on
+`root_module`; `renderer_state.mutex` is `lockUncancelable(global.io())` / `unlock(global.io())`;
+error formatting is `{t}`; `xdg.state`/`xdg.cache` take `(io, alloc, environ_map, …)`.
+
+Verification: `zig build` (core **and** the full macOS app) succeeds on zig 0.16.0 and
+produces `zig-out/Sarv Terminal.app`; `zig build test` = **3463/3480 passed, 17 skipped,
+0 failures**. All §8 anchors re-verified. The single failing build step, `xcodebuild test`,
+is the **same pre-existing failure as before this sync** — `project.pbxproj` sets
+`TEST_HOST` to `SarvTerminal.app/…/ghostty`, but our executables are `SarvTerminalDev`
+(Debug) / `SarvTerminal` (Release) and the bundle is `Sarv Terminal.app`. It fails
+identically on `main` and is unrelated to the merge; it deserves its own fix commit.
+
+---
+
+Sync of 2026-08-24 (`42a161aad` → `e77b2309f`, 75 commits): **86 files (17 A / 69 M / 0 D),
+and only 3 needed hands** — see §6. 83 files fast-forwarded verbatim, `.github/VOUCHED.td`
+left deleted, `build.zig.zon` and `src/input/paste.zig` hand-merged. Content is almost
+entirely **clipboard and paste**: the Kitty clipboard protocol (read + write), the Kitty
+drag-and-drop protocol (12 commits), a new `ghostty_terminal_paste` C API centralizing
+paste with mode 5522, `clipboard_read` effects, plus OSC 99 work, a GTK XKB modifier fix,
+`pkg/wuffs` updates and translation churn. `src/config/Config.zig` was NOT touched, so
+there are **no new config options to expose in Settings** this round.
+
+**Method note.** §2's M/D heuristic is computed against the pristine `18b6f57` baseline, so
+it now reports 608 "owned" files — every file any past sync fast-forwarded counts as
+modified. Following the §5 skeleton literally would halt on ~50 files in a range like this.
+The precise test is `git diff --name-only <RECONCILED_UP_TO> HEAD -- <upstream-changed
+files>`: only files where **our HEAD differs from the last sync point** can actually
+conflict. That reduced this range from 50 apparent collisions to 3 real ones. Use that
+refinement; the M/D list is still the right *safety net*, just not a work list.
+
+Verification: `zig build -Demit-macos-app=false` passes; full macOS app builds
+(`scripts/dev.sh --fast`); `zig build test` = **3696/3714 passed, 18 skipped, 0 test
+failures**. The one failing build step, `xcodebuild test`, is the **same pre-existing
+`TEST_HOST` breakage** documented for the previous sync (`project.pbxproj` points at
+`SarvTerminal.app/…/ghostty`; our executables are `SarvTerminalDev`/`SarvTerminal`) —
+untouched by this sync and equally broken on `main`. All §8 anchors verified intact
+(`sarvterminal/crash`, `sarvterminal/themes`, `com.sarv.terminal`, `default_program`,
+`md4c`, `hover_activate_mods`, `macos_app_debug`, `isSafeAllowingTrailingNewline`).
+
+---
+
+Sync of 2026-08-24, stage 2 (`e77b2309f` → `6a508fd5e`, 5 commits): upstream's **macOS
+menu-shortcut translation** rework (#13888) — physical-layout shortcut translation moved to
+AppKit, keyboard-layout actor isolation, simplified shortcut identity. 10 files: 7
+fast-forwarded (including the new `macos/Tests/Helpers/KeyboardLayoutTests.swift`) and the
+3 we diverge on — `AppDelegate.swift`, `Ghostty.App.swift`, `Ghostty.Config.swift` —
+3-way merged with `git merge-file` (base = `e77b2309f`), **0 conflicts**. Verified both
+directions: every upstream added line is present, and our anchors survived
+(`brandMenuFromBundleName`, `setupNewVaultsWindowMenuItem`, `quickControllerInitialized`,
+`AppPaths.ghosttyConfigFile`, markdown `openURL` routing).
+
+**`xcodebuild test` now runs** (it had been dead since the rename, see the note in the
+previous stage). Two things were wrong: `TEST_HOST` pointed at `SarvTerminal.app/…/ghostty`
+when the bundle is `Sarv Terminal.app` and the executables are `SarvTerminalDev` (Debug) /
+`SarvTerminal` (Release+ReleaseLocal); and `PRODUCT_NAME = "Sarv Terminal"` had silently
+renamed the Swift module to `Sarv_Terminal`, so every `@testable import Ghostty` failed.
+Fixed by correcting `TEST_HOST` per configuration and pinning `PRODUCT_MODULE_NAME = Ghostty`
+in all three app configurations — which also keeps upstream's test files merging verbatim.
+A third problem only showed up once the build worked: the app's session-restore modal blocks
+XCTest's launch handshake ("test runner timed out while preparing to run tests"), and the
+test host shares the debug bundle id, so it also popped a dialog over the running dev app
+and could overwrite the developer's saved session. `isRunningXCTest()` (`AppInfo.swift`) now
+gates both the restore prompt and `persistSession()`.
+
+Verification: `zig build test` = **all green, exit 0** (Zig + `xcodebuild test`) — the first
+fully green run. One caveat: `terminal.search.Thread.test_0` plus a viewport search test
+crashed on one run and passed on the next with a different seed; `src/terminal/search.zig`
+is pristine baseline (untouched by us and by these syncs), so treat it as a **flaky
+threaded test**, not a regression.
 
 ---
 
@@ -322,6 +470,51 @@ re-apply if an upstream refactor drops it.
     (`openURL` routes local `.md` to the viewer), `URLHoverBanner.swift` +
     `SurfaceView.swift` (cursor-adjacent "⌘ click to open" hint).
 
+### 8.6 Scrollback limits readable by the settings UI + 500 MB default (core divergence)
+- **Why:** two problems. (1) `Limit(usize, …)` (added upstream in 1.4 when
+  `scrollback-limit` split into `scrollback-limit-bytes` / `-lines`) is a
+  non-packed struct, and `c_get` rejects those — so every C-API reader, i.e. our
+  macOS settings UI, silently fell back to its own hardcoded default and could
+  never show or round-trip the real value. (2) Upstream's 50 MB default is about
+  48k lines at 120 columns (page memory runs ~1 KB/line); SarvTerminal is
+  SSH-first and log-heavy, where that truncates a normal session.
+- **What we do & anchors to preserve:**
+  - `src/config/limit.zig` — **guarded.** `Limit.cval` returns the raw value so
+    `c_get`'s struct branch accepts it; `unlimited` surfaces as `maxInt(T)`, the
+    same sentinel Zig uses. Without this the settings UI silently lies.
+  - `src/config/Config.zig` — **guarded.** `scrollback-limit-bytes` defaults to
+    **500 MB**, not upstream's 50 MB (doc comment carries the reasoning). Two
+    tests in the same file assert the default; they move with it.
+  - `src/config/CApi.zig` — **guarded.** `test "ghostty_config_get: scrollback
+    limits"` is the regression guard for the `cval` path; it fails if an upstream
+    refactor drops `cval` or changes the default.
+  - macOS UI (ours): `ScrollbackLimit.swift` (pure helpers: `UInt.max` sentinel,
+    `unlimited` serialization, presets, labels — `defaultBytes` MUST match the Zig
+    default), plus the Buffer size / Line limit pickers in `GeneralSectionView.swift`,
+    the diff in `SettingsView.swift` (writes the new keys and `remove`s the
+    pre-1.4 `scrollback-limit` alias), and `SettingsConfigExtensions.swift`.
+- **Measured, for future reference:** page memory is ~1 KB/line at 120 cols
+  regardless of content; `scrollback-compression` takes historical pages to ~6% of
+  raw on realistic text; `unlimited` maps ~3 GB for a 3M-line flood (macOS jetsams
+  the app rather than trimming). Keep `unlimited` opt-in only.
+
+### 8.7 Optimized dev build keeps the Dev identity (build divergence)
+- **Why:** a Debug core sets `slow_runtime_safety = true`, which enables
+  `PageList.assertIntegrity()` on every mutation — heavy output crawls, and it
+  reads like a product bug. But upstream derives the Xcode configuration straight
+  from `-Doptimize`, so `-Doptimize=ReleaseFast` silently switches the dev app to
+  the RELEASE identity (`SarvTerminal` executable, `com.sarv.terminal` bundle id)
+  — sharing UserDefaults and the config dir with the user's daily app, and
+  breaking `dev.sh`'s path-scoped `pkill`.
+- **What we do & anchors to preserve:**
+  - `src/build/Config.zig` — **guarded.** `-Dmacos-app-debug` option, defaulting
+    to `optimize == .Debug` so upstream behavior is unchanged when unset.
+  - `src/build/GhosttyXcodebuild.zig` — **guarded.** `xc_config` follows that
+    option instead of the optimize mode. Safe because every configuration links
+    the same `macos/GhosttyKit.xcframework`.
+  - `scripts/dev.sh` (ours): `--fast` = `-Doptimize=ReleaseFast -Dmacos-app-debug=true`.
+    Default stays Debug for real debugging.
+
 ### Upstream activity on our guarded **core** files (base → tip, at last check)
 
 | File | Upstream commits since base |
@@ -337,3 +530,48 @@ So the *core* hand-merge burden is small — concentrated in `Config.zig` and
 replace) or a file upstream hasn't changed. The larger review surface is our
 **modified macOS Swift files** (see the M list in §2), which upstream also
 evolves.
+
+---
+
+## 9. Completeness audit (added 2026-08-21)
+
+After the stage-2 sync, a full tree-vs-upstream audit found **5 files we do not own that
+were still on older upstream content**. They were **not** introduced by this sync — they
+predate it, and neither the 2026-07-13 sync nor stage 1/2 would have caught them, because
+upstream never modified them inside the reconciled ranges.
+
+**Root cause:** §1 states the baseline snapshot is byte-identical to `b831ef6b` for
+`src/`, `include/`, and `pkg/` — **that claim was never verified for `macos/`, `images/`,
+or the repo root**. The baseline import differs from `b831ef6b` in those trees, so any file
+there that upstream changed *before* our recorded fork point stays stale forever: it never
+appears in a `FROM..TO` diff.
+
+The 5 were pure upstream evolution with no SarvTerminal customization (an async
+`TerminalEntity(view:)` initializer, `"glass": false` icon keys), so they were replaced
+verbatim per §3. One follow-on was needed: upstream's `QuickTerminalIntent` calls
+`AppDelegate.quickControllerInitialized`, which a clean 3-way had silently dropped from our
+guarded `AppDelegate.swift` (it kept the `quickTerminalControllerState` machine but not the
+computed property). That is the general hazard of a *clean* 3-way on a heavily-diverged
+file: it can drop an upstream addition without ever reporting a conflict.
+
+**Run this audit at the end of every sync** — it is the only check that catches both
+failure modes (missed fast-forwards and silently-dropped additions):
+
+```sh
+TO=<the upstream SHA you reconciled to>
+BASE=18b6f57
+
+# Every path that differs between upstream's tree and our working tree
+git diff --name-only "$TO" | sort > /tmp/diff_vs_up.txt
+# Everything we legitimately own
+git diff --diff-filter=AM --name-only "$BASE" HEAD | sort > /tmp/owned.txt
+git diff --diff-filter=D  --name-only "$BASE" HEAD | sort > /tmp/deleted.txt
+
+# Anything left is a MISSED merge (expect only guarded renames + our own new files)
+comm -23 /tmp/diff_vs_up.txt /tmp/owned.txt | comm -23 - /tmp/deleted.txt
+```
+
+Expected residue after a complete sync: the guarded renames (they live at new paths, so the
+baseline diff cannot see them) and our own added-but-uncommitted files. Anything else is a
+real gap. Note this audit only proves *content* parity — it cannot prove a hand-merge was
+*semantically* right, so guarded files still need the §8 anchor checks and a build.

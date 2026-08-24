@@ -70,16 +70,77 @@ GhosttyClipboardWriteResult on_clipboard_write(
 }
 //! [effects-clipboard-write]
 
+//! [effects-clipboard-read]
+void on_clipboard_read(
+    GhosttyTerminal terminal,
+    void* userdata,
+    const GhosttyClipboardRead* read) {
+  (void)terminal;
+  (void)userdata;
+
+  // The read is synchronous: a real embedder would ask the user for
+  // permission here (unless read->granted) and the VT stream waits until
+  // this callback returns. The reply is sent to the program through the
+  // write_pty callback.
+  printf("  clipboard read (location=%d, mimes=%zu)\n",
+         (int)read->location, read->mimes_len);
+  for (size_t i = 0; i < read->mimes_len; i++) {
+    printf("    ");
+    fwrite(read->mimes[i].ptr, 1, read->mimes[i].len, stdout);
+    printf("\n");
+  }
+
+  // Reply with every requested representation we have. This example only
+  // has text.
+  const char* text = "Hello from the clipboard";
+  GhosttyClipboardContent content = {
+      .mime = {.ptr = (const uint8_t*)"text/plain", .len = 10},
+      .data = {.ptr = (const uint8_t*)text, .len = strlen(text)},
+  };
+  GhosttyClipboardReadReply reply = {
+      .size = sizeof(reply),
+      .result = GHOSTTY_CLIPBOARD_READ_RESULT_SUCCESS,
+      .contents = &content,
+      .contents_len = 1,
+      .available = NULL,
+      .available_len = 0,
+      .remember = false,
+  };
+  read->reply(read, &reply);
+}
+//! [effects-clipboard-read]
+
+//! [effects-unknown-sequence]
+void on_unknown_sequence(
+    GhosttyTerminal terminal,
+    void* userdata,
+    const GhosttyTerminalUnknownSequence* sequence) {
+  (void)terminal;
+  (void)userdata;
+
+  switch (sequence->tag) {
+  case GHOSTTY_TERMINAL_UNKNOWN_SEQUENCE_APC: {
+    const GhosttyTerminalUnknownStringSequence* apc = &sequence->value.apc;
+    printf("  unknown APC (truncated=%s, content=%zu bytes): ",
+           apc->truncated ? "yes" : "no",
+           apc->content.len);
+    if (apc->content.len > 0) {
+      fwrite(apc->content.ptr, 1, apc->content.len, stdout);
+    }
+    printf("\n");
+    break;
+  }
+  default:
+    break;
+  }
+}
+//! [effects-unknown-sequence]
+
 //! [effects-register]
 int main() {
   // Create a terminal
   GhosttyTerminal terminal = NULL;
-  GhosttyTerminalOptions opts = {
-    .cols = 80,
-    .rows = 24,
-    .max_scrollback = 0,
-  };
-  if (ghostty_terminal_new(NULL, &terminal, opts) != GHOSTTY_SUCCESS) {
+  if (ghostty_terminal_new(NULL, &terminal, 80, 24) != GHOSTTY_SUCCESS) {
     fprintf(stderr, "Failed to create terminal\n");
     return 1;
   }
@@ -97,6 +158,16 @@ int main() {
       (const void *)on_title_changed);
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
       (const void *)on_clipboard_write);
+  ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ,
+      (const void *)on_clipboard_read);
+  ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE,
+      (const void *)on_unknown_sequence);
+
+  // Unknown sequence capture is independently bounded and disabled by
+  // default. This limit will apply to every supported unknown sequence type.
+  size_t unknown_max_bytes = 256;
+  ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES,
+      &unknown_max_bytes);
 
   // Feed VT data that triggers effects:
 
@@ -125,7 +196,19 @@ int main() {
   ghostty_terminal_vt_write(terminal, (const uint8_t*)clipboard_seq,
                             strlen(clipboard_seq));
 
-  // 5. Another bell to show the counter increments
+  // 5. Clipboard read (OSC 52 ; c ; ? ST)
+  printf("Sending clipboard read:\n");
+  const char* clipboard_read_seq = "\x1B]52;c;?\x1B\\";
+  ghostty_terminal_vt_write(terminal, (const uint8_t*)clipboard_read_seq,
+                            strlen(clipboard_read_seq));
+
+  // 6. Unsupported APC sequence
+  printf("Sending unknown APC:\n");
+  const char* unknown_apc = "\x1B_private-command;payload\x1B\\";
+  ghostty_terminal_vt_write(terminal, (const uint8_t*)unknown_apc,
+                            strlen(unknown_apc));
+
+  // 7. Another bell to show the counter increments
   printf("Sending another BEL:\n");
   ghostty_terminal_vt_write(terminal, &bel, 1);
 
