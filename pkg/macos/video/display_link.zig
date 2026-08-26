@@ -34,6 +34,14 @@ pub const DisplayLink = opaque {
         return c.CVDisplayLinkIsRunning(@ptrCast(self)) != 0;
     }
 
+    /// The display this link is currently bound to, or 0 if none.
+    ///
+    /// Useful to avoid a redundant `setCurrentCGDisplay`, which restarts the
+    /// link's IO thread even when the display hasn't actually changed.
+    pub fn getCurrentCGDisplay(self: *DisplayLink) c.CGDirectDisplayID {
+        return c.CVDisplayLinkGetCurrentCGDisplay(@ptrCast(self));
+    }
+
     pub fn setCurrentCGDisplay(
         self: *DisplayLink,
         display_id: c.CGDirectDisplayID,
