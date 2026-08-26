@@ -451,6 +451,12 @@ fn drainMailbox(self: *Thread) !void {
                     try self.renderer.setMacOSDisplayID(v, &self.draw_now);
                 }
             },
+
+            .macos_vsync_external => |v| {
+                if (@hasDecl(rendererpkg.Renderer, "setMacOSVsyncExternal")) {
+                    self.renderer.setMacOSVsyncExternal(v);
+                }
+            },
         }
     }
 }

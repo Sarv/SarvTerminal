@@ -1997,6 +1997,55 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 4. Put a legacy `scrollback-limit = 500000000` line in the config, change Buffer size in the UI, and confirm the legacy line is gone and only `scrollback-limit-bytes` remains.
 5. A Debug build makes step 2 crawl (integrity checks); build optimized for throughput testing or you'll misread slowness as data loss.
 
+## 40. Vsync ownership: never call a display-link API from a render thread
+
+**What it is.** How frames get paced to the display, and who is allowed to talk to the pacing API. Two changes, one problem: (a) libghostty now shares **one CVDisplayLink per physical display** instead of one per surface, and every CoreVideo call is marshalled to the main thread; (b) on macOS 14+ the apprt takes vsync over entirely with a per-view `CADisplayLink`, and tells the core it has done so. GTK does not have CoreVideo, but it has the *same hazard* with `GdkFrameClock`, so the ownership rule below is the part that must port.
+
+**Symptom.** The app wedges permanently — not slowly, not intermittently. Every window stops redrawing, the Dock icon stays alive, and macOS's hang tracer re-counts the single stuck main thread as an ever-climbing "Recent hangs" number (observed passing 154 and still rising, on a process that had been dead for 22 hours). Trigger is always a **display configuration change**: plugging/unplugging an external monitor, a resolution or refresh-rate change, or a display wake.
+
+**Root cause & reasoning.** This is a lock-order inversion with no timeout on either side, so it is a true deadlock and cannot resolve itself.
+- CoreVideo installs its **own** display-reconfiguration handler. On any config change that handler runs **on the main thread** and calls `CVDisplayLinkStop` on every live link, holding a global CoreVideo lock while it waits on each link's IO thread via `_pthread_cond_wait` — **with no timeout**.
+- Meanwhile each renderer had its own link and called `CVDisplayLinkIsRunning` **on every draw, from its own render thread**. That takes the same global lock in the opposite order.
+- With 13 surfaces open there were 13 links and 13 IO threads racing one main-thread handler. Confirmed by five samples taken minutes apart, all identical: main thread in `CVDisplayLink::stop()` → `_pthread_cond_wait` → `__psynch_cvwait`, reached from CoreVideo's reconfiguration callback.
+- Two independent multipliers: more surfaces meant more links to stop *and* a wider window in which some render thread is inside CoreVideo. Reducing links to one per screen shrinks both. Removing the render-thread calls entirely closes the window.
+- **There is no recovery once it happens.** A timeout-less condvar offers no lever from outside the process; every display-reconfiguration trick was tried on a live wedged process and none worked. The process must be killed. That is why this has to be prevented structurally rather than mitigated.
+
+**Platform-agnostic logic.**
+1. **One link per display, not per surface.** Key the link by display id; surfaces *subscribe* to it. A link ticks once and fans out to every subscriber on that display. N surfaces on one screen must cost one timer, not N.
+2. **All pacing-API calls happen on the UI thread, always deferred, never inline.** Render threads only ever set atomics (`wants_running`, `wants_display`) and post a "please apply" message. Posting must be ordered (FIFO) so teardown can't overtake setup.
+3. **The hot-path query must never enter the pacing API.** "Am I vsynced?" runs on every draw on every render thread; it must be a plain atomic load of a mirror flag. This single rule is what removes the inversion — everything else is damage reduction.
+4. **Coalesce.** A reconfiguration produces a storm of focus/visibility/geometry changes. Drop redundant requests (already running, already on that display) so the storm cannot become a storm of API calls.
+5. **Re-assert state after a reconfiguration**, because the platform may have stopped links behind your back.
+6. **Freeing a subscriber requires proof its callback isn't running.** Clearing a slot is *not* enough — the IO thread may already hold the pointer. Only stopping the link proves it, because stop waits for an in-flight callback to return. Hence **stop-before-free**, and hence the callback must never block (see 7) or stop would deadlock in turn.
+7. **The tick callback must be non-blocking and allocation-free.** Ours is a mach send with a zero timeout that treats a full port as success. A pacing callback that can block can wedge the whole app.
+8. **Exactly one thing drives frames.** When the apprt takes over, the core must latch its own pacing off *for the life of the surface* and answer "am I vsynced?" from the apprt's report. Two frame sources at once is worse than either alone.
+9. **"Not currently ticking" is different from "not owning vsync."** The apprt must report `false` while paused rather than going silent, because the core uses that answer to decide whether to fall back to change-driven redraws. Going silent means an unfocused pane never repaints when its content changes.
+10. **Bound the fan-out and degrade loudly.** Fixed 64 subscribers per display; overflow logs a warning and falls back to timer-driven rendering rather than failing. Never silently drop a surface's frames.
+11. **Honour the vsync config on both paths.** With `window-vsync = false` the user asked for draw-on-change, so the apprt must not tick *at all* — a tick draws unconditionally, so ticking in that mode is strictly worse than either mode (observed: full refresh-rate redraws with nothing changing).
+
+**macOS→Linux/GTK equivalents.**
+
+| macOS | Why | Linux/GTK |
+|---|---|---|
+| `CVDisplayLink` (deprecated in macOS 15) | Fires on a dedicated **IO thread** — the thread whose existence creates the deadlock | `GdkFrameClock` per `GdkSurface`, via `gtk_widget_add_tick_callback`. **Already fires on the main loop**, so the IO-thread hazard does not exist. This is the target design, not a workaround. |
+| `NSView.displayLink(target:selector:)` → `CADisplayLink` (macOS 14+) | Main-thread, auto-follows the view between screens | `gtk_widget_add_tick_callback` — likewise per-widget and follows the widget's monitor automatically. **GTK should go straight here and never implement the per-display shared-link machinery at all.** |
+| Shared per-display link + 64-slot lock-free fan-out (`src/renderer/DisplayLink.zig`) | Only needed because CVDisplayLink is per-link-per-thread | **Not needed.** One tick callback per widget is already cheap. Port the *rules* (2, 3, 8, 9, 11), not this file. |
+| `dispatch_async` to the main queue + `objc.Block` | Marshal every API call off render threads, in order | `g_idle_add_full` / `g_main_context_invoke`, which are likewise FIFO. Same ordering guarantee, so the same teardown argument holds. |
+| `CGDisplayRegisterReconfigurationCallback` | Re-assert link state after a config change | `GdkDisplay::monitor-added`/`monitor-removed` + `GdkMonitor` geometry notify. Only needed if you keep an explicit link; with tick callbacks GTK handles it. |
+| `ghostty_surface_set_vsync_external(surface, running)` | **Shared core C API — identical on both apprts** | The GTK app is Zig and can call `renderer.setMacOSVsyncExternal` directly. **The name is macOS-specific and should be generalised when GTK adopts it** (e.g. `setVsyncExternal`), since the mechanism is not macOS-specific. |
+| `ghostty_surface_draw_now(surface)` | Non-blocking wake of the render thread from a tick | Same core call (`renderer_thread.draw_now.notify()`). It is a zero-timeout mach send on macOS / eventfd on Linux — **keep the non-blocking property**, per rule 7. |
+| `windowVsync` → `DerivedConfig` → gates the tick | Honour `window-vsync` (rule 11) | Read `config.@"window-vsync"` directly; GTK needs no C-API round trip. Re-read it on config reload so the toggle is live. |
+| Weak view reference in `SurfaceDisplayLink` | The run loop retains the link and the link retains its target, so a strong ref leaks the view **and** leaves a live tick firing at a freed surface | GTK's tick callback holds no strong ref to the widget, but you must still `gtk_widget_remove_tick_callback` on dispose. Same failure mode, different mechanism. |
+
+**Verify on Linux.**
+1. Open 10+ panes across two monitors of **different refresh rates**, then unplug/replug one monitor and change its resolution and refresh rate. The app must keep redrawing throughout — no freeze, no permanent stall. This is the exact scenario that wedged macOS.
+2. Confirm the timer count scales with **monitors, not panes**: with 10 panes on one monitor there must not be 10 independent frame sources. Check with `GDK_DEBUG=frames` or by counting tick callbacks.
+3. Drag a window between a high-refresh and a 60 Hz monitor. Pacing must follow the monitor it lands on — scrolling should not feel 60 Hz on the fast panel or tear on the slow one.
+4. Suspend/resume and blank/wake the displays. Frames must resume without a restart.
+5. Set `window-vsync = false`, reload config **without restarting**: redraws must become change-driven and CPU must stay near idle on a static screen. Then set it back to `true` and confirm pacing returns. A pegged core here means rule 11 was missed.
+6. Close panes and windows while output is streaming, and close a pane on a monitor that is being unplugged at the same time. No crash, no use-after-free — this is the path rule 6 protects.
+7. Unfocus a pane and write to it from another terminal (`echo hi > /dev/pts/N`). It must still repaint. If it doesn't, rule 9 was missed.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

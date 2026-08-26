@@ -97,7 +97,17 @@ extension Ghostty {
         ///
         /// We track this to restore surface occlusion state
         /// after this surface is dragged to another window
-        var isWindowVisible = false
+        var isWindowVisible = false {
+            didSet { syncDisplayLink() }
+        }
+
+        /// The display link pacing our frames on macOS 14 and later.
+        ///
+        /// Held loosely typed because `Ghostty.SurfaceDisplayLink` is only
+        /// available on macOS 14, and a stored property can't be. Reach it
+        /// through `syncDisplayLink` and `invalidateDisplayLink` rather than
+        /// casting at each call site.
+        private var displayLinkBox: NSObject?
 
         /// The configuration derived from the Ghostty config so we don't need to rely on references.
         @Published private(set) var derivedConfig: DerivedConfig
@@ -494,6 +504,10 @@ extension Ghostty {
 
             // Cancel progress report timer
             progressReportTimer?.invalidate()
+
+            // The run loop holds our display link until it's invalidated, and
+            // the link holds its target, so this is what breaks the chain.
+            invalidateDisplayLink()
         }
 
         override func endSearch() {
@@ -524,6 +538,10 @@ extension Ghostty {
 
             // Notify libghostty
             ghostty_surface_set_focus(surface, focused)
+
+            // An unfocused split doesn't need its frames paced, so this is the
+            // other half of the condition in SurfaceDisplayLink.sync.
+            syncDisplayLink()
 
             // Update our secure input state if we are a password input
             if passwordInput {
@@ -839,6 +857,10 @@ extension Ghostty {
                    cached != self.derivedConfig.backgroundColor {
                     self.backgroundColor = nil
                 }
+
+                // `window-vsync` may have been toggled, and it decides whether
+                // we pace frames at all.
+                self.syncDisplayLink()
             }
         }
 
@@ -883,7 +905,44 @@ extension Ghostty {
             }
         }
 
+        // MARK: - Display Link
+
+        /// Bring our display link in line with our current state, creating it on
+        /// first use.
+        ///
+        /// No-op before macOS 14, which has no per-view display link; there
+        /// libghostty paces frames itself with a CVDisplayLink.
+        private func syncDisplayLink() {
+            guard #available(macOS 14.0, *) else { return }
+
+            let link: Ghostty.SurfaceDisplayLink
+            if let existing = displayLinkBox as? Ghostty.SurfaceDisplayLink {
+                link = existing
+            } else {
+                link = Ghostty.SurfaceDisplayLink(view: self)
+                displayLinkBox = link
+            }
+
+            link.sync()
+        }
+
+        /// Stop pacing frames and release the link. Safe to call more than once.
+        private func invalidateDisplayLink() {
+            guard #available(macOS 14.0, *) else { return }
+            (displayLinkBox as? Ghostty.SurfaceDisplayLink)?.invalidate()
+            displayLinkBox = nil
+        }
+
         // MARK: - NSView
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+
+            // Entering a window gives AppKit a screen to pace against; leaving
+            // one takes it away. Either way the link has to be rebuilt, and
+            // `sync` handles both directions.
+            syncDisplayLink()
+        }
 
         override func becomeFirstResponder() -> Bool {
             let result = super.becomeFirstResponder()
@@ -1904,6 +1963,7 @@ extension Ghostty {
             let windowTitleFontFamily: String?
             let windowAppearance: NSAppearance?
             let scrollbar: Ghostty.Config.Scrollbar
+            let windowVsync: Bool
 
             init() {
                 self.backgroundColor = Color(NSColor.windowBackgroundColor)
@@ -1913,6 +1973,7 @@ extension Ghostty {
                 self.windowTitleFontFamily = nil
                 self.windowAppearance = nil
                 self.scrollbar = .system
+                self.windowVsync = true
             }
 
             init(_ config: Ghostty.Config) {
@@ -1923,6 +1984,7 @@ extension Ghostty {
                 self.windowTitleFontFamily = config.windowTitleFontFamily
                 self.windowAppearance = .init(ghosttyConfig: config)
                 self.scrollbar = config.scrollbar
+                self.windowVsync = config.windowVsync
             }
         }
 

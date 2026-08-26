@@ -398,6 +398,19 @@ extension Ghostty {
             return MacDockDropBehavior(rawValue: str) ?? defaultValue
         }
 
+        /// Whether frames should be paced to the display's refresh rate.
+        ///
+        /// The display link that does the pacing on macOS 14 and later lives on
+        /// this side of the boundary, so it has to consult this itself; the
+        /// renderer only reads it for its own CVDisplayLink fallback.
+        var windowVsync: Bool {
+            guard let config = self.config else { return true }
+            var v = true
+            let key = "window-vsync"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
         var macosWindowShadow: Bool {
             guard let config = self.config else { return false }
             var v = false

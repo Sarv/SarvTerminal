@@ -2135,6 +2135,40 @@ pub const CAPI = struct {
             surface.renderer_thread.wakeup.notify() catch {};
         }
 
+        /// Tell the surface that the apprt is driving vsync itself, and
+        /// whether it is currently delivering frames.
+        ///
+        /// Call this on macOS 14 and later, where AppKit can hand out a
+        /// per-view display link. It stops libghostty from running its own
+        /// CVDisplayLink, which cannot be driven from a background thread
+        /// without risking a CoreVideo deadlock during a display
+        /// reconfiguration. Frames are then delivered with
+        /// `ghostty_surface_draw_now`.
+        ///
+        /// Passing false is not the same as never calling: it still hands us
+        /// over to the apprt, and says nothing is ticking right now.
+        export fn ghostty_surface_set_vsync_external(ptr: *Surface, running: bool) void {
+            const surface = &ptr.core_surface;
+            _ = surface.renderer_thread.mailbox.push(
+                global.io(),
+                .{ .macos_vsync_external = running },
+                .{ .forever = {} },
+            );
+            surface.renderer_thread.wakeup.notify() catch {};
+        }
+
+        /// Deliver one vsync tick to a surface, waking its render thread to
+        /// draw a frame.
+        ///
+        /// Safe to call from any thread, and it never blocks: it is a mach
+        /// message send with a zero timeout that treats a full port as
+        /// success. It has to stay that way, because it is called from a
+        /// display link callback and a display link that blocks can wedge the
+        /// whole app.
+        export fn ghostty_surface_draw_now(ptr: *Surface) void {
+            ptr.core_surface.renderer_thread.draw_now.notify() catch {};
+        }
+
         /// This returns a CTFontRef that should be used for quicklook
         /// highlighted text. This is always the primary font in use
         /// regardless of the selected text. If coretext is not in use

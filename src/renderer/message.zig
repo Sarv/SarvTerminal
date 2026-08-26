@@ -67,6 +67,11 @@ pub const Message = union(enum) {
     /// The macOS display ID has changed for the window.
     macos_display_id: u32,
 
+    /// The apprt is driving vsync itself, and whether it is currently
+    /// delivering frames. The first of these latches the renderer out of
+    /// running its own CVDisplayLink for the life of the surface.
+    macos_vsync_external: bool,
+
     pub const SearchMatches = struct {
         arena: ArenaAllocator,
         matches: []const terminal.highlight.Flattened,

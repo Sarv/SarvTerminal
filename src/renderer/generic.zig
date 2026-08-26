@@ -208,6 +208,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// don't support a display link.
         display_link: ?DisplayLink = null,
 
+        /// Whether the apprt is driving vsync instead of us, and if so whether
+        /// it is currently delivering frames.
+        ///
+        /// Null means we drive vsync ourselves with a CVDisplayLink. Becoming
+        /// non-null latches that off for the life of the surface: macOS 14 and
+        /// later give AppKit a per-view display link that follows the view
+        /// between screens on its own and fires on the main thread, so it has
+        /// none of the cross-thread CoreVideo locking that
+        /// renderer/DisplayLink.zig exists to work around. Two things must
+        /// never drive frames at once, so whoever asks first wins.
+        vsync_external: ?bool = null,
+
         /// Health of the most recently completed frame.
         health: std.atomic.Value(Health) = .{ .raw = .healthy },
 
@@ -1002,6 +1014,28 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.syncDisplayLink(id, draw_now);
         }
 
+        /// Called when the apprt is driving frames itself, with whether it is
+        /// currently delivering them.
+        ///
+        /// `running` answers the same question `hasVsync` does, so the apprt
+        /// must call this whenever it starts or stops ticking. Reporting
+        /// `false` is not the same as not calling at all: it still means the
+        /// apprt owns vsync, and it tells us to draw on change in the
+        /// meantime, exactly as we would with a stopped display link.
+        pub fn setMacOSVsyncExternal(self: *Self, running: bool) void {
+            if (comptime DisplayLink == void) return;
+
+            self.vsync_external = running;
+
+            // Give up our own link for good. `hasVsync` now answers from the
+            // apprt, so a link of ours would be an invisible second source of
+            // frames that nothing consults.
+            if (self.display_link) |display_link| {
+                display_link.deinit();
+                self.display_link = null;
+            }
+        }
+
         /// The cadence of continuous (draw-only) animation wakes,
         /// i.e. 120fps, and the floor for any animation wake delay.
         pub const draw_interval_ms: u64 = 8;
@@ -1081,6 +1115,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// CoreVideo. See renderer/DisplayLink.zig.
         pub fn hasVsync(self: *const Self) bool {
             if (comptime DisplayLink == void) return false;
+            if (self.vsync_external) |running| return running;
             const display_link = self.display_link orelse return false;
             return display_link.isRunning();
         }
@@ -1115,6 +1150,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             draw_now: ?*xev.Async,
         ) void {
             if (comptime DisplayLink == void) return;
+
+            // The apprt owns vsync, so we must not create a link of our own.
+            if (self.vsync_external != null) return;
 
             const display_link = self.display_link orelse display_link: {
                 if (!self.config.vsync) return;
