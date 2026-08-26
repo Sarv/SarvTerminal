@@ -33,13 +33,17 @@ const getConstraint = @import("../font/nerd_font_attributes.zig").getConstraint;
 
 const FileType = @import("../file_type.zig").FileType;
 
-const macos = switch (builtin.os.tag) {
-    .macos => @import("macos"),
+/// This surface's subscription to the shared, per-display CVDisplayLink. See
+/// renderer/DisplayLink.zig for why the raw CoreVideo API must never be driven
+/// from a render thread, and why there is one link per screen rather than one
+/// per surface.
+const DisplayLinkImpl = switch (builtin.os.tag) {
+    .macos => @import("DisplayLink.zig"),
     else => void,
 };
 
 const DisplayLink = switch (builtin.os.tag) {
-    .macos => *macos.video.DisplayLink,
+    .macos => *DisplayLinkImpl,
     else => void,
 };
 
@@ -199,7 +203,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// Graphics API state.
         api: GraphicsAPI,
 
-        /// The CVDisplayLink used to drive the rendering loop in
+        /// The display link used to drive the rendering loop in
         /// sync with the display. This is void on platforms that
         /// don't support a display link.
         display_link: ?DisplayLink = null,
@@ -817,10 +821,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.swap_chain.deinit();
 
             if (DisplayLink != void) {
-                if (self.display_link) |display_link| {
-                    display_link.stop() catch {};
-                    display_link.release();
-                }
+                if (self.display_link) |display_link| display_link.deinit();
             }
 
             self.cells.deinit(self.alloc);
@@ -928,11 +929,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // If we don't support a display link we have no work to do.
             if (comptime DisplayLink == void) return;
 
-            // Stop our display link. If this fails its okay it just means
-            // that we either never started it or the view its attached to
-            // is gone which is fine.
+            // Stop our display link. This is a request, applied on the main
+            // thread, so it's fine if we never started it or the view it was
+            // attached to is already gone.
             const display_link = self.display_link orelse return;
-            display_link.stop() catch {};
+            display_link.setRunning(false);
         }
 
         /// This is called by the GTK apprt after the surface is
@@ -984,16 +985,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // can't be double-freed or used in draw calls.
             self.swap_chain.deinit();
             self.shaders.deinit(self.alloc);
-        }
-
-        fn displayLinkCallback(
-            _: *macos.video.DisplayLink,
-            ud: ?*xev.Async,
-        ) void {
-            const draw_now = ud orelse return;
-            draw_now.notify() catch |err| {
-                log.err("error notifying draw_now err={}", .{err});
-            };
         }
 
         /// Mark the full screen as dirty so that we redraw everything.
@@ -1084,6 +1075,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// True if our renderer is using vsync. If true, the renderer or apprt
         /// is responsible for triggering draw_now calls to the render thread.
         /// That is the only way to trigger a drawFrame.
+        ///
+        /// This is on the hot path -- it runs on every draw, on every render
+        /// thread -- so it must stay a cheap atomic load and never call into
+        /// CoreVideo. See renderer/DisplayLink.zig.
         pub fn hasVsync(self: *const Self) bool {
             if (comptime DisplayLink == void) return false;
             const display_link = self.display_link orelse return false;
@@ -1124,43 +1119,25 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const display_link = self.display_link orelse display_link: {
                 if (!self.config.vsync) return;
                 const callback = draw_now orelse return;
-                const result = macos.video.DisplayLink.createWithActiveCGDisplays() catch |err| {
-                    // A locked macOS session can temporarily have no active
-                    // displays. Rendering can continue without vsync and a
-                    // later display update will retry this method.
-                    log.warn("error creating display link; using fallback rendering err={}", .{err});
-                    return;
-                };
-                result.setOutputCallback(
-                    xev.Async,
-                    &displayLinkCallback,
-                    callback,
-                ) catch |err| {
-                    log.warn("error configuring display link err={}", .{err});
-                    result.release();
+                const result = DisplayLinkImpl.create(self.alloc, callback) catch |err| {
+                    log.warn("error creating display link err={}", .{err});
                     return;
                 };
 
                 self.display_link = result;
-                log.info("created display link", .{});
                 break :display_link result;
             };
 
-            if (display_id) |id| {
-                log.info("updating display link display id={}", .{id});
-                display_link.setCurrentCGDisplay(id) catch |err| {
-                    log.warn("error setting display link display id err={}", .{err});
-                };
-            }
+            if (display_id) |id| display_link.setDisplay(id);
 
             // If we're not visible, then we want to stop the display link
             // because it is a waste of resources and we can move to pure
             // change-driven updates.
-            if (self.visible and self.focused) {
-                display_link.start() catch {};
-            } else {
-                display_link.stop() catch {};
-            }
+            //
+            // These are all coalesced by the wrapper, so the storm of focus
+            // and visibility changes that arrives during a display
+            // reconfiguration doesn't turn into CoreVideo calls.
+            display_link.setRunning(self.visible and self.focused);
         }
 
         /// Set the new font grid.
