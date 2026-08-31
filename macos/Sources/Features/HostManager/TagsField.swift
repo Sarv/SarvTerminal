@@ -16,6 +16,13 @@ struct TagsField: View {
     @State private var highlighted: Int = -1
     /// Backspace-on-empty monitor, installed only while the input is focused.
     @State private var deleteMonitor: Any? = nil
+    /// Mouse-down monitor that dismisses the suggestion list on an outside
+    /// click, installed only while the input is focused.
+    @State private var outsideClickMonitor: Any? = nil
+    /// Whether the pointer is over the control (chips row + suggestion list).
+    /// Cheaper and more reliable than converting SwiftUI frames into AppKit
+    /// window coordinates to hit-test the click.
+    @State private var hoveringControl = false
 
     /// The rows currently shown in the suggestion list: matching known tags,
     /// plus a trailing "Create Tag …" entry for a genuinely new value. ONE
@@ -38,6 +45,9 @@ struct TagsField: View {
                 suggestionList
             }
         }
+        // Tracks the pointer across chips row *and* suggestion list, so an
+        // outside mouse-down can be told apart from a click on a row.
+        .onHover { hoveringControl = $0 }
     }
 
     // MARK: - Chips + input
@@ -71,9 +81,18 @@ struct TagsField: View {
                 // the field editor consumes Backspace before SwiftUI key
                 // handling ever sees it.
                 .onChange(of: focused) { isFocused in
-                    if isFocused { installDeleteMonitor() } else { removeDeleteMonitor() }
+                    if isFocused {
+                        installDeleteMonitor()
+                        installOutsideClickMonitor()
+                    } else {
+                        removeDeleteMonitor()
+                        removeOutsideClickMonitor()
+                    }
                 }
-                .onDisappear { removeDeleteMonitor() }
+                .onDisappear {
+                    removeDeleteMonitor()
+                    removeOutsideClickMonitor()
+                }
                 .frame(minWidth: 80)
         }
         .padding(.horizontal, 12)
@@ -191,6 +210,42 @@ struct TagsField: View {
             NSEvent.removeMonitor(m)
             deleteMonitor = nil
         }
+    }
+
+    // MARK: - Click-outside dismissal (AppKit monitor)
+
+    /// SwiftUI keeps a text field first responder when the click lands on
+    /// non-focusable chrome, so the suggestion list would otherwise stay open
+    /// until another field was clicked. Watch mouse-downs and resign focus
+    /// whenever one happens away from the control.
+    private func installOutsideClickMonitor() {
+        guard outsideClickMonitor == nil else { return }
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        outsideClickMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { event in
+            guard !hoveringControl else { return event }
+            // Dismiss *after* the click is dispatched: collapsing the list
+            // shifts everything below it, and closing first would move the
+            // control the user actually aimed at out from under the cursor.
+            DispatchQueue.main.async { dismissSuggestions() }
+            return event
+        }
+    }
+
+    private func removeOutsideClickMonitor() {
+        if let m = outsideClickMonitor {
+            NSEvent.removeMonitor(m)
+            outsideClickMonitor = nil
+        }
+    }
+
+    private func dismissSuggestions() {
+        highlighted = -1
+        // Clear the editor's shared focus tag first — leaving it pointed at
+        // this field would immediately re-focus the input.
+        if let focus, let field, focus.wrappedValue == field {
+            focus.wrappedValue = nil
+        }
+        focused = false
     }
 }
 

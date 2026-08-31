@@ -2046,6 +2046,33 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 6. Close panes and windows while output is streaming, and close a pane on a monitor that is being unplugged at the same time. No crash, no use-after-free — this is the path rule 6 protects.
 7. Unfocus a pane and write to it from another terminal (`echo hi > /dev/pts/N`). It must still repaint. If it doesn't, rule 9 was missed.
 
+## 41. Inline dropdowns must dismiss on an outside click (tags autocomplete)
+
+**What it is.** The host editor's tag field (`TagsField.swift`) shows its autocomplete list *inline* — the list is part of the form flow, not a popover — and its visibility is gated on the text field being focused. That gating is the bug: an inline dropdown owned by a focused text field never closes on its own.
+
+**Symptom.** Click into **Tags**, then click anywhere on empty panel chrome (background, a section label, a header). The suggestion list stays open and the field keeps its focus ring; only clicking another *focusable* control closes it.
+
+**Root cause & reasoning.** A click on non-focusable chrome does not resign the text field's first responder — the toolkit has nothing to move focus *to*, so it leaves it where it is. Since the dropdown is derived from focus, "focus never drops" means "dropdown never closes". A real popover would get platform-provided dismissal; an inline list must implement it.
+
+**Platform-agnostic logic.**
+1. While the input is focused, watch button-press events and, for any press that lands **outside the whole control**, resign focus (which collapses the list). Clear any keyboard highlight at the same time.
+2. "Outside" must be measured against the **control plus its dropdown**, not just the input row — otherwise clicking a suggestion is read as an outside click and the row's activation is lost to the dismissal.
+3. Do **not** consume the event, and apply the dismissal **after** the event is dispatched (defer to the next main-loop iteration). Collapsing an inline list removes its height from the layout, so closing first shifts every control below it upward and the click lands on the wrong widget — the user aims at the field under the list and hits something else.
+4. If the form also drives focus through a **shared focus tag** for its Tab chain, clear that tag when it points at this field before dropping focus; leaving it set re-focuses the input immediately and the list reopens.
+5. Install the watcher only while focused, and remove it on unfocus *and* on teardown, so no monitor outlives the view.
+
+**macOS→Linux/GTK equivalents.**
+
+| macOS | Why | Linux/GTK |
+|---|---|---|
+| `NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown])` | See presses anywhere in the app before the field's own handling | A root-level `GtkEventControllerLegacy`/`GtkGestureClick` on the toplevel in the **capture** phase, or simply a `GtkPopover` (see below), which needs none of this. |
+| `.onHover` on the outer `VStack` (chips row + list) as the inside/outside test | Avoids converting SwiftUI frames into flipped AppKit window coordinates | `gtk_widget_contains` / `gtk_widget_compute_bounds` against the press coordinates — GTK coordinates are already top-left, so hit-test directly instead of tracking hover. |
+| `DispatchQueue.main.async { dismiss() }` | Rule 3 — dismiss after dispatch so layout doesn't shift under the cursor | `g_idle_add` / `g_main_context_invoke`. |
+| SwiftUI `@FocusState` + the editor's shared `HostEditorFocusField` tag | Rule 4 — two focus sources on one field | `gtk_widget_grab_focus` plus whatever holds the editor's Tab-chain state; clear both. |
+| Inline `VStack` dropdown | Why any of this is needed at all | **Prefer a `GtkPopover` anchored to the entry.** GTK dismisses popovers on outside click for free, and a popover overlays instead of reflowing, which removes rules 2 and 3 entirely. Only reproduce the monitor logic if the list must stay in the form flow. |
+
+**Verify on Linux.** Open a host, click into Tags: the list appears. Click empty panel background — list closes and the focus ring clears. Click a suggestion row — the tag commits (it must **not** be swallowed as an outside click). Click directly on the **Description** field that sits *under* the open list — focus must land in Description, not in whatever moves into that spot after the list collapses. Tab into and out of Tags — no stale list, and no watcher left behind after closing the editor.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
