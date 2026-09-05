@@ -684,21 +684,24 @@ final class VaultsTabsModel: ObservableObject {
     /// Create a new embedded terminal tab, select it, and bring the Vaults
     /// window forward. `name` is the base tab label ("Terminal" for a local
     /// shell, the host label for SSH) — deduped with "(1)", "(2)", … suffixes.
-    /// Optionally inject a command once the shell is ready.
+    /// Optionally inject a command once the shell is ready. `index` places the
+    /// tab at a specific slot (Duplicate Tab puts it next to its source);
+    /// `nil` appends.
     @discardableResult
     func newTerminal(
         command: String? = nil,
         name: String = "Terminal",
         host: SavedHost? = nil,
         staged: Bool = false,
-        workingDirectory: String? = nil
+        workingDirectory: String? = nil,
+        at index: Int? = nil
     ) -> TerminalTab? {
         guard let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return nil }
 
         // Staged SSH connect: run ssh directly with the password fed via askpass
         // (no TTY prompt, no shell echo), driven by the connection popup.
         if staged, let command, command.hasPrefix("ssh ") {
-            return startSSHConnection(app: app, command: command, name: name, host: host)
+            return startSSHConnection(app: app, command: command, name: name, host: host, at: index)
         }
 
         // Plain local terminal / non-staged command typed into a shell. When a
@@ -718,8 +721,7 @@ final class VaultsTabsModel: ObservableObject {
         let tab = TerminalTab(surface: surface, name: uniqueTabName(base: name))
         tab.launchCommand = command
         tab.connectHost = host
-        terminals.append(tab)
-        selection = .terminal(tab.id)
+        place(tab, at: index)
         HostManagerController.shared.show()
         Ghostty.moveFocus(to: surface)
         if let command {
@@ -742,8 +744,7 @@ final class VaultsTabsModel: ObservableObject {
         let surface = Ghostty.SurfaceView(app, baseConfig: cfg)
         let tab = TerminalTab(surface: surface, name: uniqueTabName(base: "Serial \(SerialPorts.label(device))"))
         tab.launchCommand = cfg.command
-        terminals.append(tab)
-        selection = .terminal(tab.id)
+        place(tab, at: nil)
         HostManagerController.shared.show()
         Ghostty.moveFocus(to: surface)
         return tab
@@ -763,11 +764,24 @@ final class VaultsTabsModel: ObservableObject {
         let surface = Ghostty.SurfaceView(app, baseConfig: cfg)
         let tab = TerminalTab(surface: surface, name: uniqueTabName(base: name))
         tab.launchCommand = command
-        terminals.append(tab)
-        selection = .terminal(tab.id)
+        place(tab, at: nil)
         HostManagerController.shared.show()
         Ghostty.moveFocus(to: surface)
         return tab
+    }
+
+    /// The single insertion point for a freshly built tab: put it at `index`
+    /// (clamped) or at the end when nil, then make it current. Never append a
+    /// tab and move it afterwards — the tab strip scrolls to whatever the
+    /// selection change finds, so a transient end position parks the strip at
+    /// the last tab even though the tab lands beside its source.
+    private func place(_ tab: TerminalTab, at index: Int?) {
+        if let index {
+            terminals.insert(tab, at: min(max(0, index), terminals.count))
+        } else {
+            terminals.append(tab)
+        }
+        selection = .terminal(tab.id)
     }
 
     // MARK: - Staged SSH connection
@@ -834,7 +848,8 @@ final class VaultsTabsModel: ObservableObject {
         try? FileManager.default.removeItem(atPath: path)
     }
 
-    private func startSSHConnection(app: ghostty_app_t, command: String, name: String, host: SavedHost?) -> TerminalTab? {
+    private func startSSHConnection(app: ghostty_app_t, command: String, name: String,
+                                    host: SavedHost?, at index: Int? = nil) -> TerminalTab? {
         let needsPassword = sshNeedsPassword(host)
         // Always start over a blank placeholder surface; ssh is spawned only
         // after the pre-flight host-key check (and password step) resolve.
@@ -842,8 +857,7 @@ final class VaultsTabsModel: ObservableObject {
         let tab = TerminalTab(surface: surface, name: uniqueTabName(base: host?.label ?? name))
         tab.launchCommand = command
         tab.connectHost = host
-        terminals.append(tab)
-        selection = .terminal(tab.id)
+        place(tab, at: index)
         HostManagerController.shared.show()
 
         let model = SSHConnectionModel(title: host?.label ?? name, host: host, needsPassword: needsPassword)
@@ -1775,7 +1789,8 @@ final class VaultsTabsModel: ObservableObject {
 
     /// Duplicate a tab (right-click → Duplicate Tab). An SSH/command tab
     /// re-runs its launch command; a local tab opens a fresh shell at the
-    /// focused pane's current directory.
+    /// focused pane's current directory. The duplicate is CREATED immediately
+    /// to the right of its source — never appended and moved.
     func duplicateTab(_ id: UUID) {
         guard let sourceIndex = terminals.firstIndex(where: { $0.id == id }) else { return }
         let tab = terminals[sourceIndex]
@@ -1785,25 +1800,19 @@ final class VaultsTabsModel: ObservableObject {
             // connection popup just like connecting from the hosts list — it's
             // not a local shell we can clone in place.
             let staged = command.hasPrefix("ssh ")
-            newTab = newTerminal(command: command, name: tab.displayName, host: tab.connectHost, staged: staged)
+            newTab = newTerminal(command: command, name: tab.displayName, host: tab.connectHost,
+                                 staged: staged, at: sourceIndex + 1)
         } else {
             // Local shell: reopen in the focused pane's cwd (set at spawn, not via
             // a typed `cd` that the shell's login startup can swallow).
             let cwd = (tab.focusedSurface ?? tab.surfaceTree.root?.leftmostLeaf())?.pwd
-            newTab = newTerminal(command: nil, name: tab.displayName, workingDirectory: cwd)
+            newTab = newTerminal(command: nil, name: tab.displayName, workingDirectory: cwd,
+                                 at: sourceIndex + 1)
         }
         guard let newTab else { return }
         // A duplicate should look like its original: carry over the accent color
         // too, matching how it already clones name / path / host.
         newTab.color = tab.color
-        // Place the duplicate immediately to the right of the tab it came from
-        // (newTerminal appended it at the very end).
-        if let from = terminals.firstIndex(where: { $0.id == newTab.id }), from != sourceIndex + 1 {
-            withAnimation(.smooth(duration: 0.2)) {
-                let moved = terminals.remove(at: from)
-                terminals.insert(moved, at: min(sourceIndex + 1, terminals.count))
-            }
-        }
     }
 
     /// Rename a tab (right-click → Rename Tab…). Empty clears the override.
@@ -2478,12 +2487,7 @@ extension VaultsTabsModel {
         tab.sessionID = session.linkedSessionID ?? session.id
         tab.paneTitleOverrides = titleOverrides
         tab.color = session.colorID.flatMap { color(forOptionID: $0) }
-        if let index, index >= 0, index <= terminals.count {
-            terminals.insert(tab, at: index)
-        } else {
-            terminals.append(tab)
-        }
-        selection = .terminal(tab.id)
+        place(tab, at: index)
         HostManagerController.shared.show()
         if let first = tab.surfaceTree.root?.leftmostLeaf() {
             Ghostty.moveFocus(to: first)
