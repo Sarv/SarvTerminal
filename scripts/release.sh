@@ -278,7 +278,7 @@ $BODY
 
     esc(){ sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
     prettify(){ case "$1" in
-        ssh|ssl|api|ui|dmg|url) tr '[:lower:]' '[:upper:]' <<<"$1" ;;
+        ssh|sftp|ssl|api|ui|dmg|url) tr '[:lower:]' '[:upper:]' <<<"$1" ;;
         general) echo "General" ;;
         *) echo "$(tr '[:lower:]' '[:upper:]' <<<"${1:0:1}")${1:1}" ;;
       esac; }
