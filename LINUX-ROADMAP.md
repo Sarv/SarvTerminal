@@ -2171,6 +2171,29 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **Verify on Linux.** Open a remote host's file browser and close it, or navigate rapidly between folders, while listings are in flight, repeatedly (≥50 times). No crash, no orphan `ssh`/`sftp` processes left behind (`pgrep -fa 'ssh|sftp'`), and every closed listing's helper is gone within a second.
 
+## 45. Copy SSH Key to Server (ssh-copy-id from the host list)
+
+**What it is.** A host's context menu (card and list rows) has **Copy SSH Key to Server ▸**, listing every local key in `~/.ssh` that has a `.pub`, titled `name (TYPE)`. Picking one opens a tab running `ssh-copy-id` for that host. The user types the server password once, and from then on the host logs in with the key. Disabled when the host can't connect. With no public keys, the submenu shows a single disabled "No public keys in ~/.ssh" item.
+
+**Platform-agnostic logic.**
+1. **Candidates** = local keys with a public half, ranked: the host's configured identity file first (tilde-expanded path match), then ssh's defaults `id_ed25519`, `id_ecdsa`, `id_rsa` in that order, then the rest alphabetically. Keep this a pure function over the key list (`copyableKeys`) so it is unit-testable.
+2. **Command** is built from the same host fields as the connect command, so it reaches the server the same way:
+   `ssh-copy-id -i '<pub>' [-p <port> if ≠22] [-o ProxyJump='<jump>'] [-o ConnectTimeout=<n> if >0] -o StrictHostKeyChecking=<mode> '<user@host or host>'`.
+   Shell-quote the key path, jump host and target. Build `user@host` in **one** helper shared with the ssh connect command (`sshTarget`), never twice.
+3. **Run it interactively in a normal terminal tab**, not staged or headless: `ssh-copy-id` prompts for the password (and possibly host-key confirmation), and the user must see its output ("Number of key(s) added: 1").
+4. Refresh the key list when the host list appears, so newly generated keys show up.
+
+**macOS→Linux/GTK equivalents.**
+
+| macOS | Why | Linux/GTK |
+|---|---|---|
+| SwiftUI `.contextMenu` + nested `Menu` | Per-host submenu | `GMenu` section with a submenu, items as `GAction`s with the key path as the parameter |
+| `SSHKeyManager.shared.refresh()` (scans `~/.ssh` via `ssh-keygen -l`) | Source of truth is the disk | The same scan from Zig. No registry of our own. |
+| `SavedHost.sshCopyIdCommand(publicKeyPath:)` | Pure string builder | A pure Zig function; test port 22 omission, ProxyJump and quoting |
+| `HostConnect.run(command:name:)` | New tab running a command | The GTK "open tab with command" path used for host connects |
+
+**Verify on Linux.** On a host with port 2011 and a ProxyJump, pick `id_ed25519 (ED25519)`: the tab runs `ssh-copy-id -i '~/.ssh/id_ed25519.pub' -p 2011 -o ProxyJump=… -o StrictHostKeyChecking=… 'root@<ip>'`, with `~` expanded. After the password, `ssh -p 2011 root@<ip>` logs in without a password. Set the host's identity file to a non-default key and confirm it moves to the top of the submenu. Empty `~/.ssh` gives the single disabled item. A host that can't connect has the whole submenu disabled.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

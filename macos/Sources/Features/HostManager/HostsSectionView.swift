@@ -15,6 +15,7 @@ struct HostsSectionView: View {
     @ObservedObject private var hostsStore  = SavedHostsStore.shared
     @ObservedObject private var groupsStore = HostGroupsStore.shared
     @ObservedObject private var hostSelection = HostManagerSelection.shared
+    @ObservedObject private var sshKeys = SSHKeyManager.shared
 
     /// Single input that doubles as filter (live, as you type) and as an
     /// ssh-command runner (press Enter / click Connect). Matches the
@@ -178,6 +179,8 @@ struct HostsSectionView: View {
         // open its editor when we appear / when it changes (using the freshest
         // host from the store so a just-saved password shows).
         .onAppear { openPendingEditHostIfNeeded() }
+        // Keys for the "Copy SSH Key" submenu.
+        .task { await sshKeys.refresh() }
         .onChange(of: hostSelection.pendingEditHostID) { _ in openPendingEditHostIfNeeded() }
         .sheet(isPresented: $showImporter) { ImportHostsView(targetGroupID: focusedGroupID) }
     }
@@ -663,7 +666,8 @@ struct HostsSectionView: View {
                 editExistingHost(copy)
             },
             onDelete:  { confirmDeleteHost(host, fromEditor: false) },
-            onMoveToBuilder: { moveMenuContent(for: host) }
+            onMoveToBuilder: { moveMenuContent(for: host) },
+            onCopyIdBuilder: { copyIdMenuContent(for: host) }
         )
     }
 
@@ -678,7 +682,8 @@ struct HostsSectionView: View {
                 editExistingHost(copy)
             },
             onDelete:  { confirmDeleteHost(host, fromEditor: false) },
-            onMoveToBuilder: { moveMenuContent(for: host) }
+            onMoveToBuilder: { moveMenuContent(for: host) },
+            onCopyIdBuilder: { copyIdMenuContent(for: host) }
         )
     }
 
@@ -782,6 +787,29 @@ struct HostsSectionView: View {
             }
             .disabled(blocked.contains(g.id) || group.parentID == g.id)
         }
+    }
+
+    // MARK: - "Copy SSH Key" submenu
+
+    /// One entry per local key with a public half, the likeliest default
+    /// first; picking one runs `ssh-copy-id` for it in a new tab.
+    @ViewBuilder
+    private func copyIdMenuContent(for host: SavedHost) -> some View {
+        let keys = copyableKeys(sshKeys.keys, preferredIdentity: host.identityFile)
+        if keys.isEmpty {
+            Button("No public keys in ~/.ssh") {}.disabled(true)
+        } else {
+            ForEach(keys) { key in
+                Button("\(key.name) (\(key.type))") { copyId(key, to: host) }
+            }
+        }
+    }
+
+    private func copyId(_ key: SSHKey, to host: SavedHost) {
+        guard host.canConnect, let publicPath = key.publicPath else { return }
+        HostConnect.run(
+            command: host.sshCopyIdCommand(publicKeyPath: publicPath),
+            name: "Copy Key · \(host.label)")
     }
 
     // MARK: - Empty / state actions
@@ -1233,7 +1261,7 @@ enum HostConnectClickMode: String, CaseIterable, Identifiable {
     }
 }
 
-private struct HostCard<MoveMenu: View>: View {
+private struct HostCard<MoveMenu: View, CopyIdMenu: View>: View {
     let host: SavedHost
     let groupPath: String
     let onOpen: () -> Void
@@ -1241,6 +1269,7 @@ private struct HostCard<MoveMenu: View>: View {
     let onDuplicate: () -> Void
     let onDelete: () -> Void
     let onMoveToBuilder: () -> MoveMenu
+    let onCopyIdBuilder: () -> CopyIdMenu
 
     @State private var hovering = false
     @AppStorage(HostConnectClickMode.storageKey)
@@ -1288,6 +1317,8 @@ private struct HostCard<MoveMenu: View>: View {
             Button("Edit", action: onOpen)
             Button("Duplicate", action: onDuplicate)
             Menu("Move to") { onMoveToBuilder() }
+            Menu("Copy SSH Key to Server") { onCopyIdBuilder() }
+                .disabled(!host.canConnect)
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
         }
@@ -1317,7 +1348,7 @@ private struct HostCard<MoveMenu: View>: View {
     }
 }
 
-private struct HostListRow<MoveMenu: View>: View {
+private struct HostListRow<MoveMenu: View, CopyIdMenu: View>: View {
     let host: SavedHost
     let groupPath: String
     let onOpen: () -> Void
@@ -1325,6 +1356,7 @@ private struct HostListRow<MoveMenu: View>: View {
     let onDuplicate: () -> Void
     let onDelete: () -> Void
     let onMoveToBuilder: () -> MoveMenu
+    let onCopyIdBuilder: () -> CopyIdMenu
 
     @State private var hovering = false
     @AppStorage(HostConnectClickMode.storageKey)
@@ -1380,6 +1412,8 @@ private struct HostListRow<MoveMenu: View>: View {
             Button("Edit", action: onOpen)
             Button("Duplicate", action: onDuplicate)
             Menu("Move to") { onMoveToBuilder() }
+            Menu("Copy SSH Key to Server") { onCopyIdBuilder() }
+                .disabled(!host.canConnect)
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
         }

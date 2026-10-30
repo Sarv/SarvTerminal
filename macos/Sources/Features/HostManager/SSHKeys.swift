@@ -17,6 +17,23 @@ struct SSHKey: Identifiable, Hashable {
     var hasPublicKey: Bool { publicPath != nil }
 }
 
+/// Keys that `ssh-copy-id` can install (they have a `.pub`), ordered so the
+/// most likely choice comes first: the host's configured identity file, then
+/// ssh's default identities (`id_ed25519`, `id_ecdsa`, `id_rsa`), then the
+/// rest alphabetically.
+func copyableKeys(_ keys: [SSHKey], preferredIdentity: String) -> [SSHKey] {
+    let defaultOrder = ["id_ed25519", "id_ecdsa", "id_rsa"]
+    let preferredPath = (preferredIdentity as NSString).expandingTildeInPath
+    func rank(_ key: SSHKey) -> Int {
+        if !preferredIdentity.isEmpty && key.privatePath == preferredPath { return 0 }
+        if let index = defaultOrder.firstIndex(of: key.name) { return index + 1 }
+        return defaultOrder.count + 1
+    }
+    return keys
+        .filter(\.hasPublicKey)
+        .sorted { (rank($0), $0.name) < (rank($1), $1.name) }
+}
+
 /// The algorithm offered when generating a new key. ed25519 is the modern
 /// default; RSA-4096 is kept for older servers that don't accept ed25519.
 enum SSHKeyType: String, CaseIterable, Identifiable {

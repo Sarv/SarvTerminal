@@ -178,6 +178,26 @@ struct SavedHost: Codable, Identifiable, Hashable {
     /// connection popup), add `NumberOfPasswordPrompts=1` so a wrong password
     /// makes ssh exit immediately — giving the popup a clean failure + Reconnect
     /// instead of leaving ssh re-prompting in the background.
+    /// `user@hostname`, or just `hostname` when no user is set.
+    var sshTarget: String { username.isEmpty ? hostname : "\(username)@\(hostname)" }
+
+    /// `ssh-copy-id` invocation installing `publicKeyPath` into this host's
+    /// `authorized_keys`, e.g. `ssh-copy-id -i ~/.ssh/id_ed25519.pub -p 2011 root@1.2.3.4`.
+    /// Reaches the host the same way `sshCommand` does (port, jump host,
+    /// host-key policy) and runs in a plain tab so the user answers the
+    /// password prompt interactively.
+    func sshCopyIdCommand(publicKeyPath: String) -> String {
+        var args: [String] = ["ssh-copy-id", "-i \(shellQuote(expandTilde(publicKeyPath)))"]
+        if port != 22 { args.append("-p \(port)") }
+        if !proxyJump.isEmpty { args.append("-o ProxyJump=\(shellQuote(proxyJump))") }
+        if connectTimeoutSeconds > 0 {
+            args.append("-o ConnectTimeout=\(connectTimeoutSeconds)")
+        }
+        args.append("-o StrictHostKeyChecking=\(strictHostKeyChecking.rawValue)")
+        args.append(shellQuote(sshTarget))
+        return args.joined(separator: " ")
+    }
+
     func sshCommand(staged: Bool = false) -> String {
         var args: [String] = ["ssh"]
         if port != 22 { args.append("-p \(port)") }
@@ -236,8 +256,7 @@ struct SavedHost: Codable, Identifiable, Hashable {
             args.append("-o SetEnv=COLORTERM=truecolor")
         }
 
-        let target = username.isEmpty ? hostname : "\(username)@\(hostname)"
-        args.append(target)
+        args.append(sshTarget)
 
         // NOTE: `initialCommand` is intentionally NOT passed as ssh's remote
         // command — that would replace the interactive login shell (no prompt,
