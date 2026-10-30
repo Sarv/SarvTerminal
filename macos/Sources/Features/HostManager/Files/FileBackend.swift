@@ -319,19 +319,32 @@ final class RemoteFileBackend: FileBackend {
     struct ProcessResult { let status: Int32; let stdout: String; let stderr: String }
 
     /// Thread-safe holder so a cancelled Task can terminate the running process.
+    /// `terminate()` is only ever sent after `run()` succeeded: on a process
+    /// that was never launched it raises an uncaught ObjC exception that
+    /// kills the app.
     private final class ProcessBox: @unchecked Sendable {
         private let lock = NSLock()
         private var proc: Process?
         private var cancelled = false
-        func attach(_ p: Process) {
+        private var launched = false
+        /// Returns false if the Task was already cancelled, so the caller
+        /// skips launching altogether.
+        func attach(_ p: Process) -> Bool {
             lock.lock(); defer { lock.unlock() }
+            if cancelled { return false }
             proc = p
-            if cancelled { p.terminate() }
+            return true
+        }
+        /// Call right after `run()` succeeds; honors a cancel that raced the launch.
+        func markLaunched() {
+            lock.lock(); defer { lock.unlock() }
+            launched = true
+            if cancelled { proc?.terminate() }
         }
         func cancel() {
             lock.lock(); defer { lock.unlock() }
             cancelled = true
-            proc?.terminate()
+            if launched { proc?.terminate() }
         }
     }
 
@@ -350,8 +363,9 @@ final class RemoteFileBackend: FileBackend {
                     proc.standardOutput = outPipe
                     proc.standardError = errPipe
                     proc.standardInput = FileHandle.nullDevice
-                    box.attach(proc)   // lets a cancel terminate it
+                    guard box.attach(proc) else { cont.resume(throwing: CancellationError()); return }
                     do { try proc.run() } catch { cont.resume(throwing: error); return }
+                    box.markLaunched()   // from here a cancel terminates it
                     let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
                     let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
                     proc.waitUntilExit()

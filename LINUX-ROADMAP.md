@@ -2145,6 +2145,32 @@ The user-facing consequence is worse than the drop itself: remote processes are 
 
 **Verify on Linux.** Connect a host, run `redis-cli` (or `top`) on it, then kill the session from the server side (`sudo ss -K dst <your-ip> dport = 22`) or locally (`pkill -f 'ssh .*<host>'`). The pane must be replaced **and** the top of the new terminal must show both dim lines with the correct drop time, elapsed age and attempt number — then the fresh prompt. Check the guards: give a host a label/username containing `%s` and a single quote and confirm it prints literally and ssh still connects; confirm the handshake is not declared connected early (the banner is on screen while ssh authenticates); open "Show logs" after the recovery and confirm the drop and retry entries survived; confirm the activity log holds a Disconnected/Connected pair. Finally, a *first* connect and a wrong-password retry must show **no** banner.
 
+## 44. Never terminate a helper process that was never launched
+
+**What it is.** The remote file browser runs short-lived `ssh`/`sftp` helper processes through one async runner (`RemoteFileBackend.runProcess`). A cancelled caller (closing the browser, navigating away, a superseded listing) must kill the helper it started.
+
+**Symptom.** The app died a moment after launch, with no crash report: `NSInvalidArgumentException: -[NSConcreteTask terminate]: task not launched`, thrown from `ProcessBox.attach` on a dispatch worker thread.
+
+**Root cause & reasoning.** The cancel handler can fire at any point relative to the launch. The old holder called `terminate()` whenever it saw a cancel, including (a) a cancel that arrived before the process was attached, so `attach` terminated it immediately, and (b) a cancel between `attach` and `run()`. On macOS, terminating an unlaunched `Process` is an uncaught ObjC exception, which aborts the whole app. Startup reliably cancels a stale listing, so it lost the race on launch.
+
+**Platform-agnostic logic.** Track two flags under one lock: `cancelled` and `launched`.
+1. Before launching, *attach*: if already cancelled, do not launch at all; fail the call with a cancellation error.
+2. Right after the launch succeeds, *mark launched*: if a cancel raced in meanwhile, kill the process now.
+3. *Cancel* sets `cancelled` and kills the process only if `launched`.
+Every interleaving then either never starts the process or kills a process that exists. Killing an already-exited process is harmless; killing a never-started one is the bug.
+
+**macOS→Linux/GTK equivalents.**
+
+| macOS | Why | Linux/GTK |
+|---|---|---|
+| `Process.run()` / `terminate()` | Launch and kill the helper | `GSubprocess` (`g_subprocess_new` / `g_subprocess_force_exit`), or `posix_spawn` + `kill(pid, SIGTERM)` from Zig |
+| `withTaskCancellationHandler` | Cancel can arrive on any thread, at any time | `GCancellable` connected to the operation; its callback runs on the cancelling thread |
+| `NSLock` around both flags | Attach, launch and cancel race | `GMutex`, or `std.Thread.Mutex` |
+
+On Linux the failure mode differs: `kill()` on a pid that was never spawned, or on a pid that has been reaped and reused, can signal an **unrelated process**. Same rule, higher stakes: only signal a pid you spawned and have not yet reaped.
+
+**Verify on Linux.** Open a remote host's file browser and close it, or navigate rapidly between folders, while listings are in flight, repeatedly (≥50 times). No crash, no orphan `ssh`/`sftp` processes left behind (`pgrep -fa 'ssh|sftp'`), and every closed listing's helper is gone within a second.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
