@@ -439,11 +439,11 @@ pub const Header = struct {
         try io.writeInt(writer, u16, self.scrolling_region_right);
 
         // Status display, screen routing, and character context.
-        try writer.writeByte(@intCast(@intFromEnum(self.status_display)));
+        try writer.writeByte(@intCast(@backingInt(self.status_display)));
         try io.writeInt(
             writer,
             u16,
-            @intCast(@intFromEnum(self.active_screen_key)),
+            @intCast(@backingInt(self.active_screen_key)),
         );
         try io.writeInt(writer, u16, self.screen_count);
         try io.writeInt(
@@ -458,17 +458,17 @@ pub const Header = struct {
         // Cursor presentation defaults shared by the screens.
         try writer.writeByte(@intFromBool(self.cursor_is_default));
         try writer.writeByte(
-            @intCast(@intFromEnum(self.cursor_default_style)),
+            @intCast(@backingInt(self.cursor_default_style)),
         );
         try writer.writeByte(encodeOptionalBool(self.cursor_default_blink));
 
         // Terminal input, semantic redraw, and pointer behavior.
-        try writer.writeByte(@intCast(@intFromEnum(self.shell_redraw)));
+        try writer.writeByte(@intCast(@backingInt(self.shell_redraw)));
         try writer.writeByte(@intFromBool(self.modify_other_keys_2));
-        try writer.writeByte(@intCast(@intFromEnum(self.mouse_event)));
-        try writer.writeByte(@intCast(@intFromEnum(self.mouse_format)));
+        try writer.writeByte(@intCast(@backingInt(self.mouse_event)));
+        try writer.writeByte(@intCast(@backingInt(self.mouse_format)));
         try writer.writeByte(encodeOptionalBool(self.mouse_shift_capture));
-        try writer.writeByte(@intCast(@intFromEnum(self.mouse_shape)));
+        try writer.writeByte(@intCast(@backingInt(self.mouse_shape)));
         try writer.writeByte(@intFromBool(self.password_input));
 
         // Runtime, saved, and reset mode sets. ModePacked occupies 43 bits;
@@ -761,7 +761,7 @@ pub const Header = struct {
 
 /// Allocator-owned semantic state decoded from one TERMINAL payload.
 ///
-/// The palette and fixed header are values. `tabstops`, `pwd`, and `title`
+/// The fixed header is a value. `tabstops`, `palette`, `pwd`, and `title`
 /// own allocations and are released by `deinit`.
 const DecodedPayload = struct {
     header: Header,
@@ -772,6 +772,7 @@ const DecodedPayload = struct {
 
     fn deinit(self: *DecodedPayload, alloc: Allocator) void {
         self.tabstops.deinit(alloc);
+        self.palette.deinit(alloc);
         alloc.free(self.pwd);
         alloc.free(self.title);
         self.* = undefined;
@@ -874,7 +875,8 @@ fn decodePayload(
     var override_mask: [32]u8 = undefined;
     try reader.readSliceAll(&override_mask);
 
-    var palette: terminal_color.DynamicPalette = .init(original);
+    var palette: terminal_color.DynamicPalette = try .init(alloc, original);
+    errdefer palette.deinit(alloc);
     for (0..256) |index| {
         const mask = @as(u8, 1) << @intCast(index % 8);
         if (override_mask[index / 8] & mask != 0) {
@@ -991,6 +993,10 @@ pub fn decode(
         .default_cursor_blink = header.cursor_default_blink,
     });
     errdefer result.deinit(alloc);
+
+    // The terminal owns the decoded palette now, so the payload must not
+    // release it.
+    payload.palette = .default;
 
     // Recreate the optional screen now so ScreenSet routing is complete before
     // its empty screens are replaced by the following SCREEN records.
@@ -1445,9 +1451,7 @@ test "TERMINAL payload round trip" {
     tabstops.set(test_header.columns - 1);
 
     // Use overrides at both ends of the palette to make ordering explicit.
-    var palette: terminal_color.DynamicPalette = .init(
-        terminal_color.default,
-    );
+    var palette: terminal_color.DynamicPalette = .default;
     palette.set(0, .{ .r = 1, .g = 2, .b = 3 });
     palette.set(255, .{ .r = 4, .g = 5, .b = 6 });
 
@@ -1512,9 +1516,7 @@ test "TERMINAL payload rejects noncanonical state" {
         0,
     );
     defer tabstops.deinit(testing.allocator);
-    var palette: terminal_color.DynamicPalette = .init(
-        terminal_color.default,
-    );
+    var palette: terminal_color.DynamicPalette = .default;
     var encoded: [2048]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&encoded);
     try testing.expectError(
@@ -1557,9 +1559,7 @@ test "TERMINAL payload ignores tab-stop padding" {
         0,
     );
     defer tabstops.deinit(testing.allocator);
-    var palette: terminal_color.DynamicPalette = .init(
-        terminal_color.default,
-    );
+    var palette: terminal_color.DynamicPalette = .default;
     palette.set(1, .{ .r = 1, .g = 2, .b = 3 });
 
     var destination: std.Io.Writer.Allocating = .init(testing.allocator);

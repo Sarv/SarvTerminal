@@ -50,7 +50,11 @@ pub fn encode(
     // Continuation errors must not emit even the snapshot envelope.
     try continuation.validate(options.continuation);
 
-    var stream: record.Writer = .init(alloc, destination);
+    // A measured 512-byte buffer handles our smallest records on the stack
+    // before larger records fall back to the heap.
+    var stack_alloc_buf: [512]u8 = undefined;
+    var stack_alloc: std.heap.BufferFirstAllocator = .init(&stack_alloc_buf, alloc);
+    var stream: record.Writer = .init(stack_alloc.allocator(), destination);
     defer stream.deinit();
 
     // 1. Envelope
@@ -100,6 +104,21 @@ pub const DecodeOptions = struct {
     /// Largest non-ground continuation the decoder may allocate and return.
     /// Set this to zero when only ground-state snapshots are acceptable.
     max_continuation_bytes: usize,
+
+    /// Compress each history page as soon as it is restored.
+    ///
+    /// Without this, restored history stays uncompressed until the caller
+    /// runs `Terminal.compress`. With it, the decode holds at most one
+    /// uncompressed history page at a time and the restored terminal starts
+    /// out compressed.
+    ///
+    /// A page that is on screen when it is restored stays uncompressed.
+    /// This only happens with `Decoder` if the caller scrolls the viewport
+    /// to the top of the scrollback between `next` calls.
+    ///
+    /// The snapshot format is unchanged, so this works with any snapshot.
+    /// It has no effect on platforms that do not support compression.
+    compress_history: bool = false,
 };
 
 /// One decoded Terminal and the bytes needed to resume its Stream.
@@ -241,6 +260,9 @@ pub const Decoder = struct {
         /// Terminal width at READY. Encoded pages assume this width and are
         /// dropped rather than mixed into a screen reflowed to another.
         cols: size.CellCountInt,
+
+        /// Options for each history page, taken from `ready`.
+        page_options: history.DecodeOptions,
     };
 
     const Sequence = struct {
@@ -325,7 +347,7 @@ pub const Decoder = struct {
             };
         };
 
-        var routed: std.EnumSet(TerminalScreenKey) = .initEmpty();
+        var routed: std.EnumSet(TerminalScreenKey) = .empty;
         var history_rows: std.EnumMap(TerminalScreenKey, u64) = .init(.{});
         for (0..screen_count) |_| {
             var decoded = try screen.decode(
@@ -375,10 +397,11 @@ pub const Decoder = struct {
 
         self.state = .{ .history = .{
             .generations = generations,
-            .routed = .initEmpty(),
+            .routed = .empty,
             .pending = screen_count,
             .current = null,
             .cols = result.cols,
+            .page_options = .{ .compress = options.compress_history },
         } };
         return .{
             .terminal = result,
@@ -558,6 +581,7 @@ pub const Decoder = struct {
                 self.source,
                 alloc,
                 restored,
+                state.page_options,
             ) catch |err| switch (err) {
                 // The page no longer fits the screen's scrollback limits,
                 // e.g. because post-cut output consumed the budget, so it

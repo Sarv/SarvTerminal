@@ -11,6 +11,7 @@ pub const Application = @import("class/application.zig").Application;
 pub const Window = @import("class/window.zig").Window;
 pub const Config = @import("class/config.zig").Config;
 pub const Surface = @import("class/surface.zig").Surface;
+pub const RenderSurface = @import("class/render_surface.zig").RenderSurface;
 
 /// Common methods for all GObject classes we create.
 pub fn Common(
@@ -145,12 +146,12 @@ pub fn Common(
                 /// as the virtual method but the self parameter points to the
                 /// target instead of the original class.
                 fn ImplementFunc(comptime T: type) type {
-                    var types: [fn_info.params.len]type = undefined;
-                    var attrs: [fn_info.params.len]std.builtin.Type.Fn.Param.Attributes = undefined;
+                    var types: [fn_info.param_types.len]type = undefined;
+                    var attrs: [fn_info.param_types.len]std.lang.Type.Fn.ParamAttributes = undefined;
 
-                    for (fn_info.params, &types, &attrs) |info, *ty, *attr| {
-                        ty.* = info.type.?;
-                        attr.* = .{ .@"noalias" = info.is_noalias };
+                    inline for (fn_info.param_types, fn_info.param_attrs, &types, &attrs) |param_type, param_attr, *ty, *attr| {
+                        ty.* = param_type.?;
+                        attr.* = .{ .@"noalias" = param_attr.@"noalias" };
                     }
                     types[0] = *ClassInstance(T);
 
@@ -159,8 +160,8 @@ pub fn Common(
                         &attrs,
                         fn_info.return_type.?,
                         .{
-                            .@"callconv" = fn_info.calling_convention,
-                            .varargs = fn_info.is_var_args,
+                            .@"callconv" = fn_info.attrs.@"callconv",
+                            .varargs = fn_info.attrs.varargs,
                         },
                     );
                 }

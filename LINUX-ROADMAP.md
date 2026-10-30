@@ -1978,6 +1978,8 @@ Explicitly **do not** port this as a second `GtkWindow` layered over the main on
 
 > **Note (upstream sync `42a161aad`).** This behavior was re-implemented on upstream's new API: the old `Ghostty.Notification.confirmClipboard` post with `userInfo` keys was replaced by the one-shot `Ghostty.ClipboardConfirmationRequest` object described above. A GTK port should model the **request object**, not a broadcast notification — the object is what makes "resolve exactly once, cancel on drop" enforceable.
 
+> **Note (upstream sync `3d07ef9e2`).** The request `kind` gained `kitty_read` / `kitty_write` (the Kitty clipboard protocol). Treat them exactly like OSC 52 read/write: title "Authorize Clipboard Access", Allow/Deny labels. A GTK `switch` over the kind must stay exhaustive so the next kind upstream adds is a compile error, not a silently dropped request.
+
 ## 39. Scrollback limits in Settings (Buffer size + Line limit, with Unlimited)
 
 **What it is.** Settings → General → Scrollback exposes both of upstream 1.4's limits: **Buffer size** (`scrollback-limit-bytes`, presets 10 MB → 4 GB plus Unlimited) and **Line limit** (`scrollback-limit-lines`, 10k → 5M plus Unlimited), each with a caption that changes when Unlimited is selected. Our default for the byte limit is **500 MB**, not upstream's 50 MB.

@@ -41,6 +41,7 @@ const paste = @import("paste.zig");
 const render = @import("render.zig");
 const result = @import("result.zig");
 const row = @import("row.zig");
+const search = @import("search.zig");
 const selection = @import("selection.zig");
 const selection_gesture = @import("selection_gesture.zig");
 const size_report = @import("size_report.zig");
@@ -178,6 +179,7 @@ const type_decls = [_]TypeDecl{
     .initStruct("GhosttyClipboardRead", terminal.ClipboardRead),
     .initStruct("GhosttyClipboardReadReply", terminal.ClipboardReadReply),
     .initStruct("GhosttyClipboardWrite", terminal.ClipboardWrite),
+    .initStruct("GhosttyClipboardWriteReply", terminal.ClipboardWriteReply),
     .initStruct("GhosttyCodepoints", Codepoints),
     .initStruct("GhosttyColorPaletteMask", color_c.PaletteMask),
     .initStruct("GhosttyColorRgb", color.RGB.C),
@@ -201,8 +203,11 @@ const type_decls = [_]TypeDecl{
     .initStruct("GhosttyReader", io.Reader),
     .initStruct("GhosttyRenderStateColors", render.Colors),
     .initStruct("GhosttyRenderStateCursor", render.Cursor),
+    .initStruct("GhosttyRenderStateOverscan", render.Overscan),
+    .initStruct("GhosttyRenderStateRowId", render.RowId),
     .initStruct("GhosttyRenderStateRowSelection", render.RowSelection),
     .initStruct("GhosttySelection", selection.CSelection),
+    .initStruct("GhosttySelectionBuffer", selection.CSelectionBuffer),
     .initStruct("GhosttySelectionGestureBehaviors", selection_gesture.Behaviors),
     .initStruct("GhosttySelectionGestureGeometry", selection_gesture.Geometry),
     .initTaggedStruct("GhosttySgrAttribute", sgr.Attribute.C, "tag", "value", .generated),
@@ -216,9 +221,19 @@ const type_decls = [_]TypeDecl{
     .initUnion("GhosttyStyleColorValue", style.ColorValue, null),
     .initStruct("GhosttySysImage", sys.Image),
     .initStruct("GhosttyTerminalDesktopNotification", terminal.DesktopNotification),
+    .initStruct("GhosttyTerminalMemoryUsage", terminal.TerminalMemoryUsage),
     .initStruct("GhosttyTerminalModeConfig", terminal.ModeConfig),
+    .initStruct("GhosttyTerminalProgramStatus", terminal.ProgramStatus),
     .initStruct("GhosttyTerminalProgressReport", terminal.ProgressReport),
+    .initTaggedStruct("GhosttyTerminalResizeWindow", terminal.ResizeWindow.C, "tag", "value", .generated),
+    .initStruct("GhosttyTerminalResizeWindowGrid", terminal.ResizeWindowGrid),
+    .initUnion(
+        "GhosttyTerminalResizeWindowValue",
+        terminal.ResizeWindow.CValue,
+        terminal.ResizeWindow.C,
+    ),
     .initStruct("GhosttyTerminalScrollbar", terminal.TerminalScrollbar),
+    .initStruct("GhosttyTerminalSemanticPrompt", terminal.SemanticPrompt),
     .initTaggedStruct("GhosttyTerminalScrollViewport", terminal.ScrollViewport, "tag", "value", .generated),
     .initUnion(
         "GhosttyTerminalScrollViewportValue",
@@ -230,6 +245,7 @@ const type_decls = [_]TypeDecl{
     .initStruct("GhosttyTerminalSelectWordOptions", selection.SelectWordOptions),
     .initStruct("GhosttyTerminalSelectionFormatOptions", selection.FormatOptions),
     .initTaggedStruct("GhosttyTerminalUnknownSequence", terminal.UnknownSequence.C, "tag", "value", .generated),
+    .initStruct("GhosttyTerminalUnknownOscSequence", terminal.UnknownOscSequence),
     .initStruct("GhosttyTerminalUnknownStringSequence", terminal.UnknownStringSequence),
     .initUnion(
         "GhosttyTerminalUnknownSequenceValue",
@@ -247,7 +263,7 @@ const type_decls = [_]TypeDecl{
     .initEnum("GhosttyCellWide", cell.Wide, "GHOSTTY_CELL_WIDE_"),
     .initEnum("GhosttyClipboardLocation", clipboard.Location, "GHOSTTY_CLIPBOARD_LOCATION_"),
     .initEnum("GhosttyClipboardReadResult", clipboard.Read.Status, "GHOSTTY_CLIPBOARD_READ_RESULT_"),
-    .initEnum("GhosttyClipboardWriteResult", clipboard.WriteResult, "GHOSTTY_CLIPBOARD_WRITE_RESULT_"),
+    .initEnum("GhosttyClipboardWriteResult", clipboard.Write.Status, "GHOSTTY_CLIPBOARD_WRITE_RESULT_"),
     .initEnum("GhosttyColorScheme", device_status.ColorScheme, "GHOSTTY_COLOR_SCHEME_"),
     .initEnum("GhosttyFocusEvent", focus_pkg.Event, "GHOSTTY_FOCUS_"),
     .initEnum("GhosttyFormatterFormat", formatter_pkg.Format, "GHOSTTY_FORMATTER_FORMAT_"),
@@ -266,9 +282,12 @@ const type_decls = [_]TypeDecl{
     .initEnum("GhosttyMouseButton", input_mouse.Button, "GHOSTTY_MOUSE_BUTTON_"),
     .initEnum("GhosttyMouseEncoderOption", mouse_encode.Option, "GHOSTTY_MOUSE_ENCODER_OPT_"),
     .initEnum("GhosttyMouseFormat", mouse_pkg.Format, "GHOSTTY_MOUSE_FORMAT_"),
+    .initEnum("GhosttyMouseShape", mouse_pkg.Shape, "GHOSTTY_MOUSE_SHAPE_"),
     .initEnum("GhosttyMouseTrackingMode", mouse_pkg.Event, "GHOSTTY_MOUSE_TRACKING_"),
     .initEnum("GhosttyOptionAsAlt", input_config.OptionAsAlt, "GHOSTTY_OPTION_AS_ALT_"),
     .initEnum("GhosttyOscCommandData", osc.CommandData, "GHOSTTY_OSC_DATA_"),
+    .initEnum("GhosttyOscOption", osc.Option, "GHOSTTY_OSC_OPT_"),
+    .initEnum("GhosttyOscTerminator", osc.Terminator, "GHOSTTY_OSC_TERMINATOR_"),
     .initEnumSentinel(
         "GhosttyOscCommandType",
         osc.CommandType,
@@ -277,6 +296,8 @@ const type_decls = [_]TypeDecl{
     ),
     .initEnum("GhosttyPasteSource", paste.Source, "GHOSTTY_PASTE_SOURCE_"),
     .initEnum("GhosttyPointTag", point.Tag, "GHOSTTY_POINT_TAG_"),
+    .initEnum("GhosttyProgramStatusKind", terminal.ProgramStatusKind, "GHOSTTY_PROGRAM_STATUS_KIND_"),
+    .initEnum("GhosttyProgramStatusState", terminal.ProgramStatusState, "GHOSTTY_PROGRAM_STATUS_STATE_"),
     .initEnum("GhosttyRenderStateCursorVisualStyle", render.CursorVisualStyle, "GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_"),
     .initEnum("GhosttyRenderStateData", render.Data, "GHOSTTY_RENDER_STATE_DATA_"),
     .initEnum("GhosttyRenderStateDirty", render.Dirty, "GHOSTTY_RENDER_STATE_DIRTY_"),
@@ -286,6 +307,10 @@ const type_decls = [_]TypeDecl{
     .initEnum("GhosttyRenderStateRowOption", render.RowOption, "GHOSTTY_RENDER_STATE_ROW_OPTION_"),
     .initEnum("GhosttyRowData", row.RowData, "GHOSTTY_ROW_DATA_"),
     .initEnum("GhosttyRowSemanticPrompt", row.SemanticPrompt, "GHOSTTY_ROW_SEMANTIC_"),
+    .initEnum("GhosttySearchData", search.Data, "GHOSTTY_SEARCH_DATA_"),
+    .initEnum("GhosttySearchOption", search.Option, "GHOSTTY_SEARCH_OPT_"),
+    .initEnum("GhosttySearchScroll", search.Scroll, "GHOSTTY_SEARCH_SCROLL_"),
+    .initEnum("GhosttySearchStatus", search.Status, "GHOSTTY_SEARCH_STATUS_"),
     .initEnum("GhosttySelectionAdjust", Selection.Adjustment, "GHOSTTY_SELECTION_ADJUST_"),
     .initEnum("GhosttySelectionGestureAutoscroll", selection_gesture.Autoscroll, "GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_"),
     .initEnum("GhosttySelectionGestureBehavior", selection_gesture.Behavior, "GHOSTTY_SELECTION_GESTURE_BEHAVIOR_"),
@@ -293,6 +318,8 @@ const type_decls = [_]TypeDecl{
     .initEnum("GhosttySelectionGestureEventOption", selection_gesture.EventOption, "GHOSTTY_SELECTION_GESTURE_EVENT_OPT_"),
     .initEnum("GhosttySelectionGestureEventType", selection_gesture.EventType, "GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_"),
     .initEnum("GhosttySelectionOrder", Selection.Order, "GHOSTTY_SELECTION_ORDER_"),
+    .initEnum("GhosttySemanticPromptKind", terminal.SemanticPromptKind, "GHOSTTY_SEMANTIC_PROMPT_"),
+    .initEnum("GhosttySemanticPromptPromptKind", terminal.SemanticPromptPromptKind, "GHOSTTY_SEMANTIC_PROMPT_PROMPT_"),
     .initEnum("GhosttySgrAttributeTag", sgr.Attribute.Tag, "GHOSTTY_SGR_ATTR_"),
     .initEnum("GhosttySgrUnderline", sgr.Attribute.Underline, "GHOSTTY_SGR_UNDERLINE_"),
     .initEnumSentinel("GhosttySizeReportStyle", size_report.Style, "GHOSTTY_SIZE_REPORT_", "STYLE_MAX_VALUE"),
@@ -308,6 +335,7 @@ const type_decls = [_]TypeDecl{
     .initEnum("GhosttyTerminalOption", terminal.Option, "GHOSTTY_TERMINAL_OPT_"),
     .initEnum("GhosttyTerminalProgressState", terminal.ProgressState, "GHOSTTY_TERMINAL_PROGRESS_STATE_"),
     .initEnum("GhosttyTerminalScreen", terminal.TerminalScreen, "GHOSTTY_TERMINAL_SCREEN_"),
+    .initEnum("GhosttyTerminalResizeWindowTag", terminal.ResizeWindow.Tag, "GHOSTTY_TERMINAL_RESIZE_WINDOW_"),
     .initEnum("GhosttyTerminalScrollViewportTag", terminal.ZigTerminal.ScrollViewport.Tag, "GHOSTTY_SCROLL_VIEWPORT_"),
     .initEnum("GhosttyTerminalUnknownSequenceTag", terminal.UnknownSequence.Tag, "GHOSTTY_TERMINAL_UNKNOWN_SEQUENCE_"),
 
@@ -332,6 +360,7 @@ const type_decls = [_]TypeDecl{
     .initOpaque("GhosttyRenderState"),
     .initOpaque("GhosttyRenderStateRowCells"),
     .initOpaque("GhosttyRenderStateRowIterator"),
+    .initOpaque("GhosttySearch"),
     .initOpaque("GhosttySelectionGesture"),
     .initOpaque("GhosttySelectionGestureEvent"),
     .initOpaque("GhosttySgrParser"),
@@ -421,17 +450,17 @@ const Json = struct {
                 if (decl.union_field_names_T != null) {
                     try writeMappedUnionFields(decl, jws);
                 } else {
-                    const fields = switch (decl.kind) {
-                        .@"struct" => @typeInfo(decl.T).@"struct".fields,
-                        .@"union" => @typeInfo(decl.T).@"union".fields,
+                    const info = switch (decl.kind) {
+                        .@"struct" => @typeInfo(decl.T).@"struct",
+                        .@"union" => @typeInfo(decl.T).@"union",
                         else => unreachable,
                     };
-                    inline for (fields) |field| {
+                    inline for (info.field_names, info.field_types) |name, ty| {
                         try writeField(
                             decl,
-                            field.name,
-                            field.type,
-                            if (decl.kind == .@"union") 0 else @offsetOf(decl.T, field.name),
+                            name,
+                            ty,
+                            if (decl.kind == .@"union") 0 else @offsetOf(decl.T, name),
                             jws,
                         );
                     }
@@ -446,9 +475,10 @@ const Json = struct {
                 try jws.write(decl.prefix);
                 try jws.objectField("values");
                 try jws.beginObject();
-                inline for (@typeInfo(decl.T).@"enum".fields) |field| {
-                    try writeEnumObjectField(decl.name, field.name, jws);
-                    try jws.write(field.value);
+                const info = @typeInfo(decl.T).@"enum";
+                inline for (info.field_names, info.field_values) |field, value| {
+                    try writeEnumObjectField(decl.name, field, jws);
+                    try jws.write(value);
                 }
                 try jws.objectField(decl.sentinel_suffix);
                 try jws.write(std.math.maxInt(c_int));
@@ -482,8 +512,8 @@ const Json = struct {
         comptime Layout: type,
         jws: *std.json.Stringify,
     ) std.Io.Writer.Error!void {
-        inline for (@typeInfo(Layout.Zig).@"struct".fields) |field| {
-            const field_tag = @field(Layout.Field, field.name);
+        inline for (@typeInfo(Layout.Zig).@"struct".field_names) |field| {
+            const field_tag = @field(Layout.Field, field);
             const name = comptime Layout.fieldName(field_tag) orelse continue;
             const options = Layout.fieldOptions(field_tag);
 
@@ -497,7 +527,7 @@ const Json = struct {
             switch (options.encoding) {
                 .scalar => {
                     try jws.objectField("type");
-                    try jws.write(options.type_name orelse publicTypeName(field.type));
+                    try jws.write(options.type_name orelse publicTypeName(@FieldType(Layout.Zig, field)));
                 },
                 .@"packed" => |Nested| {
                     try jws.objectField("kind");
@@ -527,9 +557,9 @@ const Json = struct {
 
         const tag_options = Layout.fieldOptions(UnionLayout.tag_field);
         const tag_type_name = tag_options.type_name orelse publicTypeName(UnionLayout.Tag);
-        inline for (@typeInfo(UnionLayout.Tag).@"enum".fields) |tag| {
-            try writeEnumObjectField(tag_type_name, tag.name, jws);
-            const arm = UnionLayout.arm(@field(UnionLayout.Tag, tag.name)) orelse {
+        inline for (@typeInfo(UnionLayout.Tag).@"enum".field_names) |tag| {
+            try writeEnumObjectField(tag_type_name, tag, jws);
+            const arm = UnionLayout.arm(@field(UnionLayout.Tag, tag)) orelse {
                 try jws.write(null);
                 continue;
             };
@@ -587,12 +617,12 @@ const Json = struct {
     ) std.Io.Writer.Error!void {
         const FieldNames = decl.union_field_names_T.?;
         const Tag = @FieldType(FieldNames, "tag");
-        const tag_fields = @typeInfo(Tag).@"enum".fields;
+        const tag_fields = @typeInfo(Tag).@"enum".field_names;
 
         inline for (tag_fields, 0..) |field, i| {
-            const name = comptime FieldNames.cFieldRename(@field(Tag, field.name)) orelse continue;
+            const name = comptime FieldNames.cFieldRename(@field(Tag, field)) orelse continue;
             if (comptime mappedUnionFieldIsDuplicate(decl, i, name)) continue;
-            try writeField(decl, name, @FieldType(decl.T, field.name), 0, jws);
+            try writeField(decl, name, @FieldType(decl.T, field), 0, jws);
         }
 
         if (@hasField(decl.T, "_padding"))
@@ -606,13 +636,13 @@ const Json = struct {
     ) bool {
         const FieldNames = decl.union_field_names_T.?;
         const Tag = @FieldType(FieldNames, "tag");
-        const tag_fields = @typeInfo(Tag).@"enum".fields;
-        const T = @FieldType(decl.T, tag_fields[index].name);
+        const tag_fields = @typeInfo(Tag).@"enum".field_names;
+        const T = @FieldType(decl.T, tag_fields[index]);
 
         inline for (tag_fields[0..index]) |previous| {
-            const previous_name = FieldNames.cFieldRename(@field(Tag, previous.name)) orelse continue;
+            const previous_name = FieldNames.cFieldRename(@field(Tag, previous)) orelse continue;
             if (std.mem.eql(u8, previous_name, name)) {
-                if (@FieldType(decl.T, previous.name) != T)
+                if (@FieldType(decl.T, previous) != T)
                     @compileError("tagged union metadata maps different field types to " ++ name);
                 return true;
             }
@@ -682,7 +712,7 @@ const Json = struct {
         try jws.objectField("elem");
         try jws.write(publicTypeName(info.child));
         try jws.objectField("const");
-        try jws.write(info.is_const);
+        try jws.write(info.attrs.@"const");
         if (nullable) {
             try jws.objectField("nullable");
             try jws.write(true);
@@ -706,7 +736,7 @@ const Json = struct {
         try jws.objectField("elem");
         try jws.write(elem);
         try jws.objectField("const");
-        try jws.write(info.is_const);
+        try jws.write(info.attrs.@"const");
         if (nullable) {
             try jws.objectField("nullable");
             try jws.write(true);
@@ -718,6 +748,7 @@ const Json = struct {
             if (std.mem.eql(u8, owner, "GhosttyPoint")) return "GhosttyPointValue";
             if (std.mem.eql(u8, owner, "GhosttySgrAttribute")) return "GhosttySgrAttributeValue";
             if (std.mem.eql(u8, owner, "GhosttyStyleColor")) return "GhosttyStyleColorValue";
+            if (std.mem.eql(u8, owner, "GhosttyTerminalResizeWindow")) return "GhosttyTerminalResizeWindowValue";
             if (std.mem.eql(u8, owner, "GhosttyTerminalScrollViewport")) return "GhosttyTerminalScrollViewportValue";
             if (std.mem.eql(u8, owner, "GhosttyTerminalUnknownSequence")) return "GhosttyTerminalUnknownSequenceValue";
         }
@@ -741,9 +772,9 @@ const Json = struct {
         const Tag = @FieldType(decl.T, tagged.tag_field);
         try jws.objectField("arms");
         try jws.beginObject();
-        inline for (@typeInfo(Tag).@"enum".fields) |field| {
-            try writeEnumObjectField(publicTypeName(Tag), field.name, jws);
-            if (comptime taggedArm(decl, field.name)) |arm| try jws.write(arm) else try jws.write(null);
+        inline for (@typeInfo(Tag).@"enum".field_names) |field| {
+            try writeEnumObjectField(publicTypeName(Tag), field, jws);
+            if (comptime taggedArm(decl, field)) |arm| try jws.write(arm) else try jws.write(null);
         }
         try jws.endObject();
     }
@@ -783,7 +814,7 @@ const Json = struct {
         };
     }
 
-    fn intName(comptime signedness: std.builtin.Signedness, comptime bits: u16) []const u8 {
+    fn intName(comptime signedness: std.lang.Signedness, comptime bits: u16) []const u8 {
         return switch (signedness) {
             .signed => switch (bits) {
                 8 => "i8",
@@ -882,7 +913,7 @@ test "manifest describes enums, arrays, and tagged unions" {
 
     const data = manifest_types.get("GhosttyRenderStateData").?.object;
     try std.testing.expectEqualStrings("enum", data.get("kind").?.string);
-    try std.testing.expectEqual(@as(i64, @intFromEnum(render.Data.dirty)), data.get("values").?.object.get("DIRTY").?.integer);
+    try std.testing.expectEqual(@as(i64, @backingInt(render.Data.dirty)), data.get("values").?.object.get("DIRTY").?.integer);
 
     const colors = manifest_types.get("GhosttyRenderStateColors").?.object;
     const palette = colors.get("fields").?.object.get("palette").?.object;
@@ -898,6 +929,39 @@ test "manifest describes enums, arrays, and tagged unions" {
     try std.testing.expect(value.get("arms").?.object.get("NONE").? == .null);
 }
 
+test "manifest describes render state overscan types" {
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    const manifest_types = parsed.value.object.get("types").?.object;
+
+    const overscan = manifest_types.get("GhosttyRenderStateOverscan").?.object;
+    try std.testing.expectEqual(@as(i64, 4), overscan.get("size").?.integer);
+    const overscan_fields = overscan.get("fields").?.object;
+    try std.testing.expectEqual(@as(i64, 0), overscan_fields.get("above").?.object.get("offset").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), overscan_fields.get("below").?.object.get("offset").?.integer);
+
+    const row_id = manifest_types.get("GhosttyRenderStateRowId").?.object;
+    try std.testing.expectEqual(@as(i64, 16), row_id.get("size").?.integer);
+    const bits = row_id.get("fields").?.object.get("bits").?.object;
+    try std.testing.expectEqual(@as(i64, 0), bits.get("offset").?.integer);
+    try std.testing.expectEqualStrings("array", bits.get("type").?.string);
+    try std.testing.expectEqual(@as(i64, 2), bits.get("count").?.integer);
+
+    const data_values = manifest_types.get("GhosttyRenderStateData").?.object
+        .get("values").?.object;
+    try std.testing.expectEqual(@as(i64, 20), data_values.get("OVERSCAN").?.integer);
+    try std.testing.expectEqual(@as(i64, 21), data_values.get("OVERSCAN_REQUEST").?.integer);
+
+    const row_data_values = manifest_types.get("GhosttyRenderStateRowData").?.object
+        .get("values").?.object;
+    try std.testing.expectEqual(@as(i64, 6), row_data_values.get("VIEWPORT_Y").?.integer);
+    try std.testing.expectEqual(@as(i64, 7), row_data_values.get("ID").?.integer);
+
+    const option_values = manifest_types.get("GhosttyRenderStateOption").?.object
+        .get("values").?.object;
+    try std.testing.expectEqual(@as(i64, 1), option_values.get("OVERSCAN").?.integer);
+}
+
 test "manifest describes the complete packed cell layout" {
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
     defer parsed.deinit();
@@ -909,21 +973,21 @@ test "manifest describes the complete packed cell layout" {
     try std.testing.expectEqualStrings("u64", descriptor.get("underlying").?.string);
 
     const bits = descriptor.get("bits").?.object;
-    inline for (@typeInfo(page.Cell.CLayout.Zig).@"struct".fields) |field| {
-        const field_tag = @field(page.Cell.CLayout.Field, field.name);
+    inline for (@typeInfo(page.Cell.CLayout.Zig).@"struct".field_names) |field| {
+        const field_tag = @field(page.Cell.CLayout.Field, field);
         const name = comptime page.Cell.CLayout.fieldName(field_tag);
         if (name) |public_name| {
             const bit = bits.get(public_name).?.object;
             try std.testing.expectEqual(
-                @as(i64, @intCast(@bitOffsetOf(page.Cell.CLayout.Zig, field.name))),
+                @as(i64, @intCast(@bitOffsetOf(page.Cell.CLayout.Zig, field))),
                 bit.get("lsb").?.integer,
             );
             try std.testing.expectEqual(
-                @as(i64, @intCast(@bitSizeOf(field.type))),
+                @as(i64, @intCast(@bitSizeOf(@FieldType(page.Cell.CLayout.Zig, field)))),
                 bit.get("width").?.integer,
             );
         } else {
-            try std.testing.expect(!bits.contains(field.name));
+            try std.testing.expect(!bits.contains(field));
         }
     }
 
@@ -948,8 +1012,8 @@ test "manifest describes the complete packed cell layout" {
 
     const rgb = arms.get("BG_COLOR_RGB").?.object;
     const Rgb = @FieldType(Content, "color_rgb");
-    inline for (@typeInfo(Rgb).@"struct".fields) |field|
-        try expectPackedArmField(rgb, field.name, Rgb, field.name, "u8");
+    inline for (@typeInfo(Rgb).@"struct".field_names) |field|
+        try expectPackedArmField(rgb, field, Rgb, field, "u8");
 }
 
 test "manifest packed cell layouts decode real values" {
@@ -1001,15 +1065,32 @@ test "manifest uses public enum names" {
     const terminal_values = manifest_types.get("GhosttyTerminalOption").?.object.get("values").?.object;
     try std.testing.expectEqual(@as(i64, 6), terminal_values.get("SIZE").?.integer);
     try std.testing.expect(!terminal_values.contains("SIZE_CB"));
+    try std.testing.expectEqual(@as(i64, 42), terminal_values.get("SEMANTIC_PROMPT").?.integer);
+    try std.testing.expectEqual(@as(i64, 43), terminal_values.get("RESET").?.integer);
+
+    const semantic_prompt_values = manifest_types.get("GhosttySemanticPromptKind").?.object.get("values").?.object;
+    try std.testing.expectEqual(@as(i64, 0), semantic_prompt_values.get("INVALID").?.integer);
+    try std.testing.expectEqual(@as(i64, 4), semantic_prompt_values.get("COMMAND_END").?.integer);
+
+    const prompt_kind_values = manifest_types.get("GhosttySemanticPromptPromptKind").?.object.get("values").?.object;
+    try std.testing.expectEqual(@as(i64, 3), prompt_kind_values.get("SECONDARY").?.integer);
 
     const osc_values = manifest_types.get("GhosttyOscCommandType").?.object.get("values").?.object;
     try std.testing.expectEqual(@as(i64, 22), osc_values.get("KITTY_TEXT_SIZING").?.integer);
     try std.testing.expectEqual(@as(i64, 23), osc_values.get("KITTY_CLIPBOARD_PROTOCOL").?.integer);
     try std.testing.expectEqual(@as(i64, 24), osc_values.get("KITTY_DND_PROTOCOL").?.integer);
-    try std.testing.expectEqual(@as(i64, 25), osc_values.get("CONTEXT_SIGNAL").?.integer);
+    try std.testing.expectEqual(@as(i64, 25), osc_values.get("HIERARCHICAL_CONTEXT").?.integer);
     try std.testing.expectEqual(@as(i64, 26), osc_values.get("KITTY_DESKTOP_NOTIFICATION").?.integer);
     try std.testing.expect(osc_values.contains("TYPE_MAX_VALUE"));
     try std.testing.expect(!osc_values.contains("MAX_VALUE"));
+
+    const mouse_shape_values = manifest_types.get("GhosttyMouseShape").?.object.get("values").?.object;
+    try std.testing.expectEqual(@as(i64, 8), mouse_shape_values.get("TEXT").?.integer);
+    try std.testing.expectEqual(@as(i64, 33), mouse_shape_values.get("ZOOM_OUT").?.integer);
+    try std.testing.expect(mouse_shape_values.contains("MAX_VALUE"));
+
+    const terminal_data_values = manifest_types.get("GhosttyTerminalData").?.object.get("values").?.object;
+    try std.testing.expectEqual(@as(i64, 41), terminal_data_values.get("MOUSE_SHAPE").?.integer);
 
     const key_values = manifest_types.get("GhosttyKey").?.object.get("values").?.object;
     try std.testing.expect(key_values.contains("A"));

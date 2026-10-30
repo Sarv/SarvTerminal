@@ -37,12 +37,12 @@ const FileType = @import("../file_type.zig").FileType;
 /// renderer/DisplayLink.zig for why the raw CoreVideo API must never be driven
 /// from a render thread, and why there is one link per screen rather than one
 /// per surface.
-const DisplayLinkImpl = switch (builtin.os.tag) {
+const DisplayLinkImpl = switch (builtin.target.os.tag) {
     .macos => @import("DisplayLink.zig"),
     else => void,
 };
 
-const DisplayLink = switch (builtin.os.tag) {
+const DisplayLink = switch (builtin.target.os.tag) {
     .macos => *DisplayLinkImpl,
     else => void,
 };
@@ -84,11 +84,21 @@ const log = std.log.scoped(.generic_renderer);
 ///
 /// [ Texture ] - An abstraction over a GPU texture.
 ///
+/// [ ExportedFrame ] - A finished frame ready to be consumed by the apprt
+///                     in case that the frame needs to be composited with
+///                     UI elements by the graphical toolkit manually.
+///
 pub fn Renderer(comptime GraphicsAPI: type) type {
     return struct {
         const Self = @This();
 
         pub const API = GraphicsAPI;
+
+        pub const ExportedFrame = if (@hasDecl(GraphicsAPI, "ExportedFrame")) GraphicsAPI.ExportedFrame else void;
+
+        /// Whether +Y is down in the coordinate space of exported
+        /// frames. Apprts use this to orient frames when presenting.
+        pub const custom_shader_y_is_down = GraphicsAPI.custom_shader_y_is_down;
 
         const Target = GraphicsAPI.Target;
         const Buffer = GraphicsAPI.Buffer;
@@ -111,6 +121,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// The mailbox for communicating with the window.
         surface_mailbox: apprt.surface.Mailbox,
+
+        /// The latest exported frame ready to be consumed by an apprt
+        /// who needs to manually composite the frame with UI elements.
+        /// Previously exported frames are released when a new frame is
+        /// exported and pushed onto the queue.
+        ///
+        /// Unused if the renderer does not need to export frames to
+        /// present its rendered frame.
+        latest_frame: LatestFrame = .{},
 
         /// Current font metrics defining our grid.
         grid_metrics: font.Metrics,
@@ -223,8 +242,21 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// Health of the most recently completed frame.
         health: std.atomic.Value(Health) = .{ .raw = .healthy },
 
-        /// Our swap chain (multiple buffering)
-        swap_chain: SwapChain,
+        /// Health of how well the apprt can present our frames.
+        ///
+        /// This is separate from `health` because a renderer
+        /// can produce healthy frames that the apprt can't present.
+        presentation_health: std.atomic.Value(Health) = .{ .raw = .healthy },
+
+        /// True when we have a graphics context that can create GPU
+        /// resources. Creating any GPU resource while this is false is invalid.
+        display_realized: bool = true,
+
+        /// Our swap chain (multiple buffering). Null when it has
+        /// been released, either because the surface is hidden
+        /// (`releaseGpuResources`) or because the display is
+        /// unrealized. Rebuilt on the next `drawFrame`.
+        swap_chain: ?SwapChain,
 
         /// This value is used to force-update swap chain targets in the
         /// event of a config change that requires it (such as blending mode).
@@ -287,14 +319,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             /// frame state struct so we can start working on a new frame.
             frame_sema: std.Io.Semaphore = .{ .permits = buf_count },
 
-            /// Set to true when deinited, if you try to deinit a defunct
-            /// swap chain it will just be ignored, to prevent double-free.
-            ///
-            /// This is required because of `displayUnrealized`, since it
-            /// `deinits` the swapchain, which leads to a double-free if
-            /// the renderer is deinited after that.
-            defunct: bool = false,
-
             pub fn init(api: GraphicsAPI, custom_shaders: bool) !SwapChain {
                 var result: SwapChain = .{ .frames = undefined };
 
@@ -307,9 +331,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             pub fn deinit(self: *SwapChain) void {
-                if (self.defunct) return;
-                self.defunct = true;
-
                 // Wait for all of our inflight draws to complete
                 // so that we can cleanly deinit our GPU state.
                 for (0..buf_count) |_| self.frame_sema.waitUncancelable(
@@ -321,11 +342,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             /// Get the next frame state to draw to. This will wait on the
             /// semaphore to ensure that the frame is available. This must
             /// always be paired with a call to releaseFrame.
-            pub fn nextFrame(self: *SwapChain) error{Defunct}!*FrameState {
-                if (self.defunct) return error.Defunct;
-
+            pub fn nextFrame(self: *SwapChain) *FrameState {
                 self.frame_sema.waitUncancelable(global.io());
-                errdefer self.frame_sema.post();
                 self.frame_index = (self.frame_index + 1) % buf_count;
                 return &self.frames[self.frame_index];
             }
@@ -694,19 +712,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         pub fn init(alloc: Allocator, options: renderer.Options) !Self {
             // Initialize our graphics API wrapper, this will prepare the
-            // surface provided by the apprt and set up any API-specific
-            // GPU resources.
-            var api = try GraphicsAPI.init(alloc, options);
+            // surface provided by the apprt and set up any API- and surface-
+            // specific GPU resources.
+            var api = try GraphicsAPI.init(
+                alloc,
+                options.device,
+                options,
+            );
             errdefer api.deinit();
 
             const has_custom_shaders = options.config.custom_shaders.value.items.len > 0;
-
-            // Prepare our swap chain
-            var swap_chain = try SwapChain.init(
-                api,
-                has_custom_shaders,
-            );
-            errdefer swap_chain.deinit();
 
             // Create the font shaper.
             var font_shaper = try font.Shaper.init(alloc, .{
@@ -806,15 +821,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .font_shaper = font_shaper,
                 .font_shaper_cache = font.ShaperCache.init(),
 
-                // Shaders (initialized below)
-                .shaders = undefined,
-
                 // Graphics API stuff
                 .api = api,
-                .swap_chain = swap_chain,
+                .swap_chain = null,
+                .has_custom_shaders = has_custom_shaders,
+                .reinitialize_shaders = true,
+                // Shaders are initialized lazily on the render thread.
+                .shaders = .uninit,
             };
-
-            try result.initShaders();
 
             // Ensure our undefined values above are correctly initialized.
             result.updateFontGridUniforms();
@@ -826,12 +840,22 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            // This only deinitializes and frees CPU-side state
+            // and does not free GPU resources like the swap chain and
+            // shaders. Those are freed with `releaseGpuResources`.
+
             if (self.overlay) |*overlay| overlay.deinit(self.alloc);
             self.terminal_state.deinit(self.alloc);
             if (self.search_selected_match) |*m| m.arena.deinit();
             if (self.search_matches) |*m| m.arena.deinit();
-            self.swap_chain.deinit();
 
+            self.latest_frame.deinit(global.io());
+
+            // Stop and release the display link. Surfaces are destroyed
+            // on the main thread, where `close` stops the link before
+            // returning. After this the display link callback is never
+            // invoked again, so `renderer.Thread` can free the `draw_now`
+            // handle the callback points at.
             if (DisplayLink != void) {
                 if (self.display_link) |display_link| display_link.deinit();
             }
@@ -842,20 +866,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.font_shaper_cache.deinit(self.alloc);
 
             self.config.deinit();
-
-            self.images.deinit(self.alloc);
-
-            if (self.bg_image) |img| img.deinit(self.alloc);
-
-            self.deinitShaders();
-
             self.api.deinit();
 
             self.* = undefined;
-        }
-
-        fn deinitShaders(self: *Self) void {
-            self.shaders.deinit(self.alloc);
         }
 
         fn initShaders(self: *Self) !void {
@@ -885,33 +898,42 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.has_custom_shaders = has_custom_shaders;
         }
 
-        /// This is called early right after surface creation.
-        pub fn surfaceInit(surface: *apprt.Surface) !void {
-            // If our API has to do things here, let it.
-            if (@hasDecl(GraphicsAPI, "surfaceInit")) {
-                try GraphicsAPI.surfaceInit(surface);
-            }
-        }
-
-        /// This is called just prior to spinning up the renderer thread for
-        /// final main thread setup requirements.
-        pub fn finalizeSurfaceInit(self: *Self, surface: *apprt.Surface) !void {
-            // If our API has to do things to finalize surface init, let it.
-            if (@hasDecl(GraphicsAPI, "finalizeSurfaceInit")) {
-                try self.api.finalizeSurfaceInit(surface);
-            }
-        }
-
         /// Callback called by renderer.Thread when it begins.
-        pub fn threadEnter(self: *const Self, surface: *apprt.Surface) !void {
+        pub fn threadEnter(self: *Self, surface: *apprt.Surface) !void {
             // If our API has to do things on thread enter, let it.
             if (@hasDecl(GraphicsAPI, "threadEnter")) {
                 try self.api.threadEnter(surface);
             }
         }
 
-        /// Callback called by renderer.Thread when it exits.
-        pub fn threadExit(self: *const Self) void {
+        /// Callback called by renderer.Thread when it exits. Called on the
+        /// render thread. Releases all GPU resources before the API tears down
+        /// its context, since after this the GL context will be gone.
+        pub fn threadExit(self: *Self) void {
+            {
+                self.draw_mutex.lockUncancelable(global.io());
+                defer self.draw_mutex.unlock(global.io());
+
+                // Release swap chain and shaders. Shaders are only freed
+                // while unrealized and not every apprt unrealizes before
+                // destroying a surface (macOS never does), so mark it
+                // unrealized. This also stops any later draw.
+                self.display_realized = false;
+                self.releaseGpuResources();
+
+                // We don't release images in `releaseGpuResources`
+                // since it can be called whenever the terminal is
+                // occluded or unrealized, and we don't want to
+                // reupload images every time that happens.
+                self.images.deinit(self.alloc);
+                self.images = .empty;
+
+                if (self.bg_image) |img| {
+                    img.deinit(self.alloc);
+                    self.bg_image = null;
+                }
+            }
+
             // If our API has to do things on thread exit, let it.
             if (@hasDecl(GraphicsAPI, "threadExit")) {
                 self.api.threadExit();
@@ -949,54 +971,101 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         /// This is called by the GTK apprt after the surface is
-        /// reinitialized due to any of the events mentioned in
-        /// the doc comment for `displayUnrealized`.
+        /// reinitialized (e.g. after the widget is re-realized following
+        /// a display change or reparenting).
         pub fn displayRealized(self: *Self) !void {
             // If our API has to do things on realize, let it.
             if (@hasDecl(GraphicsAPI, "displayRealized")) {
                 self.api.displayRealized();
             }
 
-            // Lock the draw mutex so that we can
-            // safely reinitialize our GPU resources.
+            // Lock the draw mutex so that we can safely update state.
             self.draw_mutex.lockUncancelable(global.io());
             defer self.draw_mutex.unlock(global.io());
 
-            // We assume that the swap chain was deinited in
-            // `displayUnrealized`, in which case it should be
-            // marked defunct. If not, we have a problem.
-            assert(self.swap_chain.defunct);
-
-            // We reinitialize our shaders and our swap chain.
-            try self.initShaders();
-            self.swap_chain = try SwapChain.init(
-                self.api,
-                self.has_custom_shaders,
-            );
-            self.reinitialize_shaders = false;
+            // Mark the display as realized. The render thread will lazily
+            // rebuild the swap chain and shaders on the next `drawFrame`,
+            // which is the right place for GL resource creation (it
+            // guarantees a current context on the render thread).
+            self.display_realized = true;
+            self.reinitialize_shaders = true;
             self.target_config_modified = 1;
         }
 
-        /// This is called by the GTK apprt when the surface is being destroyed.
-        /// This can happen because the surface is being closed but also when
-        /// moving the window between displays or splitting.
+        /// This is called when the surface is being unrealized.
+        /// This can happen because the surface is being closed but
+        /// also when moving the window between displays or splitting.
+        ///
+        /// This runs on the main thread and only updates CPU-side state
+        /// here; resource cleanup happens on the render thread via
+        /// `releaseGpuResources`.
         pub fn displayUnrealized(self: *Self) void {
-            // If our API has to do things on unrealize, let it.
-            if (@hasDecl(GraphicsAPI, "displayUnrealized")) {
-                self.api.displayUnrealized();
-            }
-
-            // Lock the draw mutex so that we can
-            // safely deinitialize our GPU resources.
+            // Lock the draw mutex so that we can safely update state.
             self.draw_mutex.lockUncancelable(global.io());
             defer self.draw_mutex.unlock(global.io());
 
-            // We deinit our swap chain and shaders.
-            //
-            // This will mark them as defunct so that they
-            // can't be double-freed or used in draw calls.
-            self.swap_chain.deinit();
-            self.shaders.deinit(self.alloc);
+            // Clearing `display_realized` ensures drawFrame doesn't attempt
+            // to rebuild the swap chain or make any graphics API calls.
+            // The actual GPU resource release is done by the render thread.
+            self.display_realized = false;
+        }
+
+        /// A thread-safe, single-slot "latest wins" queue. The render thread
+        /// calls `push` with the latest frame; the apprt calls `take` in its
+        /// snapshot handler to grab the most recent frame. Old frames are
+        /// dropped and released. For a terminal this is correct — we never
+        /// want to queue up frames behind a slow compositor.
+        const LatestFrame = struct {
+            const Self = @This();
+            mutex: std.Io.Mutex = .init,
+            latest: ?ExportedFrame = null,
+
+            pub fn push(self: *LatestFrame, io: std.Io, value: ExportedFrame) void {
+                if (comptime ExportedFrame == void) return;
+
+                self.mutex.lockUncancelable(io);
+                defer self.mutex.unlock(io);
+                if (self.latest) |*old| old.deinit();
+                self.latest = value;
+            }
+
+            pub fn take(self: *LatestFrame, io: std.Io) ?ExportedFrame {
+                if (comptime ExportedFrame == void) return null;
+
+                self.mutex.lockUncancelable(io);
+                defer self.mutex.unlock(io);
+                const result = self.latest orelse return null;
+                self.latest = null;
+                return result;
+            }
+
+            pub fn deinit(self: *LatestFrame, io: std.Io) void {
+                if (comptime ExportedFrame == void) return;
+
+                self.mutex.lockUncancelable(io);
+                defer self.mutex.unlock(io);
+                if (self.latest) |*v| v.deinit();
+                self.latest = null;
+            }
+        };
+
+        /// Push the latest completed frame, replacing if one previously
+        /// existed. Called on the render thread.
+        ///
+        /// Has no effect for renderers that do not export frames
+        /// (i.e. `ExportedFrame == void`).
+        pub fn pushFrame(self: *Self, frame: ExportedFrame) void {
+            return self.latest_frame.push(global.io(), frame);
+        }
+
+        /// Take the latest completed frame for the apprt to composite.
+        /// Returns null if no frame is available. The caller takes
+        /// ownership of the returned frame. Called on the main thread.
+        ///
+        /// Has no effect for renderers that do not export frames
+        /// (i.e. `ExportedFrame == void`).
+        pub fn takeFrame(self: *Self) ?ExportedFrame {
+            return self.latest_frame.take(global.io());
         }
 
         /// Mark the full screen as dirty so that we redraw everything.
@@ -1004,7 +1073,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.terminal_state.dirty = .full;
         }
 
-        /// Called when we get an updated display ID for our display link.
+        /// Called when the window moves to a different display, with
+        /// the CGDirectDisplayID of the new one. The display link is
+        /// bound to that display so that it follows its refresh rate.
+        ///
+        /// Must be called on the render thread.
         pub fn setMacOSDisplayID(
             self: *Self,
             id: u32,
@@ -1134,16 +1207,73 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.syncDisplayLink(null, null);
         }
 
+        /// Called when the apprt reports a change in how well
+        /// frames can be presented.
+        pub fn setPresentationHealth(self: *Self, health: Health) void {
+            self.presentation_health.store(health, .seq_cst);
+        }
+
+        /// Returns how well frames can be presented.
+        pub fn presentationHealth(self: *Self) Health {
+            return self.presentation_health.load(.seq_cst);
+        }
+
         /// Callback when the window is visible or occluded.
         ///
         /// Must be called on the render thread.
         pub fn setVisible(self: *Self, visible: bool) void {
             self.visible = visible;
             self.syncDisplayLink(null, null);
+
+            // When we're hidden, release our GPU resources.
+            if (!visible) {
+                self.draw_mutex.lockUncancelable(global.io());
+                defer self.draw_mutex.unlock(global.io());
+                self.releaseGpuResources();
+            }
         }
 
-        /// Create or update the display link and match it to the current
-        /// surface state.
+        /// Release the GPU resources we hold while the surface is not
+        /// visible. Today this is the swap chain (render targets, font
+        /// atlas texture copies, cell buffers, custom shader textures),
+        /// which makes up nearly all of a surface's GPU memory usage.
+        /// The swap chain is rebuilt on the next `drawFrame`.
+        ///
+        /// Note that images are NOT released here since we don't want
+        /// to reupload images every time the terminal is brought back
+        /// from being occluded or unrealized.
+        ///
+        /// Caller must lock the draw mutex before calling this function.
+        /// Resources that are already released are skipped.
+        pub fn releaseGpuResources(self: *Self) void {
+            if (self.swap_chain) |*sc| {
+                // Waits for any in-flight frames to complete, then
+                // frees all GPU resources.
+                sc.deinit();
+                self.swap_chain = null;
+            }
+
+            // Release the shaders as well if we're unrealized.
+            if (!self.display_realized) {
+                self.shaders.deinit(self.alloc);
+            }
+        }
+
+        /// Create the display link if needed, then ask it to match the
+        /// current surface state: bound to `display_id` if one is given,
+        /// and running only while the surface is visible and has
+        /// something to draw (rebuilt cells or a running animation).
+        ///
+        /// `draw_now` is required the first time this is called, since
+        /// creating the link needs the handle its callback will notify.
+        /// Later calls can pass null.
+        ///
+        /// Must be called on the render thread. This never blocks. The
+        /// display link applies the requested state on the main thread
+        /// shortly after, because starting and stopping a CVDisplayLink
+        /// anywhere else can deadlock against CoreVideo's own display
+        /// reconfiguration handling. See `renderer/DisplayLink.zig`
+        /// for the full explanation.
         fn syncDisplayLink(
             self: *Self,
             display_id: ?u32,
@@ -1190,11 +1320,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Update all our textures so that they sync on the next frame.
             // We can modify this without a lock because the GPU does not
-            // touch this data.
-            for (&self.swap_chain.frames) |*frame| {
+            // touch this data. A released swap chain is rebuilt with
+            // fresh frames that sync all textures on first use.
+            if (self.swap_chain) |*sc| for (&sc.frames) |*frame| {
                 frame.grayscale_modified = 0;
                 frame.color_modified = 0;
-            }
+            };
 
             // Get our metrics from the grid. This doesn't require a lock because
             // the metrics are never recalculated.
@@ -1470,7 +1601,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 if (self.search_selected_match) |m| {
                     self.terminal_state.updateHighlightsFlattened(
                         self.alloc,
-                        @intFromEnum(HighlightTag.search_match_selected),
+                        @backingInt(HighlightTag.search_match_selected),
                         &.{m.match},
                     ) catch |err| {
                         // Not a critical error, we just won't show highlights.
@@ -1481,7 +1612,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 if (self.search_matches) |m| {
                     self.terminal_state.updateHighlightsFlattened(
                         self.alloc,
-                        @intFromEnum(HighlightTag.search_match),
+                        @backingInt(HighlightTag.search_match),
                         m.matches,
                     ) catch |err| {
                         // Not a critical error, we just won't show highlights.
@@ -1548,7 +1679,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // If we're on macOS and have glass styles, we remove
                 // the background opacity because the glass effect handles
                 // it.
-                if (comptime builtin.os.tag == .macos) switch (self.config.background_blur) {
+                if (comptime builtin.target.os.tag == .macos) switch (self.config.background_blur) {
                     .@"macos-glass-regular",
                     .@"macos-glass-clear",
                     => self.uniforms.bg_color[3] = 0,
@@ -1569,6 +1700,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // Update custom shader uniforms that depend on terminal state.
                 self.updateCustomShaderUniformsFromState();
             }
+
+            // Start the display link now that the rebuilt frame is ready.
+            self.syncDisplayLink(null, null);
         }
 
         /// Draw the frame to the screen.
@@ -1579,11 +1713,30 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self: *Self,
             sync: bool,
         ) !void {
-            // We hold a the draw mutex to prevent changes to any
-            // data we access while we're in the middle of drawing.
-            self.draw_mutex.lockUncancelable(global.io());
-            defer self.draw_mutex.unlock(global.io());
+            // Everything that touches draw state happens under the draw
+            // mutex. The display link is synced after the mutex is
+            // released. It doesn't need the lock, and this keeps the
+            // critical section to just drawing.
+            const sync_display_link = locked: {
+                self.draw_mutex.lockUncancelable(global.io());
+                defer self.draw_mutex.unlock(global.io());
+                break :locked try self.drawFrameLocked(sync);
+            };
 
+            if (sync_display_link) self.syncDisplayLink(null, null);
+        }
+
+        /// The body of `drawFrame`. Must be called with `draw_mutex` held.
+        ///
+        /// Returns true if the display link should be resynced once the
+        /// draw mutex is released. This is only ever true on the no-redraw
+        /// path, which a sync draw never takes. Sync draws come from the
+        /// main thread, so this keeps `syncDisplayLink` on the render
+        /// thread as its contract requires.
+        fn drawFrameLocked(
+            self: *Self,
+            sync: bool,
+        ) !bool {
             // After the graphics API is complete (so we defer) we want to
             // update our scrollbar state.
             defer if (self.scrollbar_dirty) {
@@ -1604,7 +1757,26 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // If either of our surface dimensions is zero
             // then drawing is absurd, so we just return.
-            if (surface_size.width == 0 or surface_size.height == 0) return;
+            if (surface_size.width == 0 or surface_size.height == 0) return false;
+
+            // If we have no graphics context we can't draw. This is
+            // only the case while unrealized (GTK) or after the render
+            // thread exits; displayRealized rebuilds the swap chain.
+            if (!self.display_realized) return false;
+
+            // Get our swap chain, rebuilding it if it was released
+            // while we were hidden. Rebuilding is deferred to draw
+            // time because resource creation must happen somewhere
+            // our graphics API allows it (OpenGL requires a current
+            // context, which drawFrame guarantees).
+            const swap_chain: *SwapChain, const swap_chain_rebuilt: bool =
+                if (self.swap_chain) |*sc| .{ sc, false } else rebuild: {
+                    self.swap_chain = try SwapChain.init(
+                        self.api,
+                        self.has_custom_shaders,
+                    );
+                    break :rebuild .{ &self.swap_chain.?, true };
+                };
 
             const size_changed =
                 self.size.screen.width != surface_size.width or
@@ -1617,23 +1789,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // every draw must actually render.
             const needs_redraw =
                 size_changed or
+                swap_chain_rebuilt or
                 self.cells_rebuilt or
                 self.animationWake() != null or
                 sync;
 
             if (!needs_redraw) {
-                // We still need to present the last target again, because the
-                // apprt may be swapping buffers and display an outdated frame
-                // if we don't draw something new.
-                try self.api.presentLastTarget();
-                return;
+                // Ask our caller to resync the display link once the draw
+                // mutex is released, because we can probably pause the
+                // display link at this point.
+                return true;
             }
             self.cells_rebuilt = false;
 
             // Wait for a frame to be available.
-            const frame = try self.swap_chain.nextFrame();
-            errdefer self.swap_chain.releaseFrame();
-            // log.debug("drawing frame index={}", .{self.swap_chain.frame_index});
+            const frame = swap_chain.nextFrame();
+            errdefer swap_chain.releaseFrame();
+            // log.debug("drawing frame index={}", .{swap_chain.frame_index});
 
             // If we need to reinitialize our shaders, do so.
             if (self.reinitialize_shaders) {
@@ -1750,6 +1922,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 //       would require us to do color space conversion on the
                 //       CPU-side. In the future when we have utilities for
                 //       that we should remove this step and use clear_color.
+
                 if (self.bg_image) |img| switch (img) {
                     .ready => |texture| pass.step(.{
                         .pipeline = self.shaders.pipelines.bg_image,
@@ -1859,6 +2032,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     });
                 }
             }
+
+            return false;
         }
 
         // Callback from the graphics API when a frame is completed.
@@ -1878,8 +2053,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }, .{ .forever = {} });
             }
 
-            // Always release our semaphore
-            self.swap_chain.releaseFrame();
+            // Always release our semaphore. The swap chain is
+            // guaranteed to exist here: it is only torn down after
+            // waiting for all in-flight frames to complete, and this
+            // callback is what signals that completion.
+            self.swap_chain.?.releaseFrame();
         }
 
         /// Call this any time the background image path changes.
@@ -2069,11 +2247,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.draw_mutex.lockUncancelable(global.io());
             defer self.draw_mutex.unlock(global.io());
 
-            // We only actually need the padding from this,
-            // everything else is derived elsewhere.
-            self.size.padding = size.padding;
-
+            self.size = size;
             self.updateScreenSizeUniforms();
+
+            // Some graphics APIs need to manually update their viewport,
+            // like OpenGL. Do so here.
+            if (@hasDecl(GraphicsAPI, "setViewport")) {
+                self.api.setViewport(self.size.screen.width, self.size.screen.height);
+            }
 
             log.debug("screen size size={}", .{size});
         }
@@ -2098,12 +2279,12 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             ).add(self.size.padding);
 
             // Setup our uniforms
-            self.uniforms.projection_matrix = math.ortho2d(
+            self.uniforms.projection_matrix = @bitCast(math.ortho2d(
                 -1 * @as(f32, @floatFromInt(self.size.padding.left)),
                 @floatFromInt(terminal_size.width + self.size.padding.right),
                 @floatFromInt(terminal_size.height + self.size.padding.bottom),
                 -1 * @as(f32, @floatFromInt(self.size.padding.top)),
-            );
+            ));
             self.uniforms.grid_padding = .{
                 @floatFromInt(blank.top),
                 @floatFromInt(blank.right),
@@ -2239,7 +2420,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // Cursor style
             const cursor_style: renderer.CursorStyle = .fromTerminal(self.terminal_state.cursor.visual_style);
             uniforms.previous_cursor_style = uniforms.current_cursor_style;
-            uniforms.current_cursor_style = @as(i32, @intFromEnum(cursor_style));
+            uniforms.current_cursor_style = @as(i32, @backingInt(cursor_style));
         }
 
         /// Update per-frame custom shader uniforms.
@@ -2902,7 +3083,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         if (x_compare >= hl.range[0] and
                             x_compare <= hl.range[1])
                         {
-                            const tag: HighlightTag = @enumFromInt(hl.tag);
+                            const tag: HighlightTag = @fromBackingInt(hl.tag);
                             break :selected switch (tag) {
                                 .search_match => .search,
                                 .search_match_selected => .search_selected,
@@ -3204,7 +3385,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const render = try self.font_grid.renderGlyph(
                 self.alloc,
                 font.sprite_index,
-                @intFromEnum(sprite),
+                @backingInt(sprite),
                 .{
                     .cell_width = 1,
                     .grid_metrics = self.grid_metrics,
@@ -3235,7 +3416,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const render = try self.font_grid.renderGlyph(
                 self.alloc,
                 font.sprite_index,
-                @intFromEnum(font.Sprite.overline),
+                @backingInt(font.Sprite.overline),
                 .{
                     .cell_width = 1,
                     .grid_metrics = self.grid_metrics,
@@ -3266,7 +3447,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const render = try self.font_grid.renderGlyph(
                 self.alloc,
                 font.sprite_index,
-                @intFromEnum(font.Sprite.strikethrough),
+                @backingInt(font.Sprite.strikethrough),
                 .{
                     .cell_width = 1,
                     .grid_metrics = self.grid_metrics,
@@ -3393,7 +3574,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     break :render self.font_grid.renderGlyph(
                         self.alloc,
                         font.sprite_index,
-                        @intFromEnum(sprite),
+                        @backingInt(sprite),
                         .{
                             .cell_width = if (wide) 2 else 1,
                             .grid_metrics = self.grid_metrics,
@@ -3450,7 +3631,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 @intCast(cp.codepoint),
                 .regular,
                 .text,
-                .{ .grid_metrics = self.grid_metrics },
+                .{
+                    .grid_metrics = self.grid_metrics,
+                    .thicken = self.config.font_thicken,
+                    .thicken_strength = self.config.font_thicken_strength,
+                },
             ) catch |err| {
                 log.warn("error rendering preedit glyph err={}", .{err});
                 return;

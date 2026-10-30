@@ -15,7 +15,7 @@ imported as one squashed commit; we do **not** carry upstream's commit history.
 |---|---|
 | Local baseline snapshot commit | `18b6f57` ("Initial commit") — pristine ghostty |
 | Ghostty version at baseline | **1.3.2-dev** (min zig 0.15.2) |
-| **Current min zig** | **0.16.0** (since upstream `e8525c0fd`) |
+| **Current min zig** | **0.17.0** (since upstream `3d07ef9e2`) |
 | **Corresponding upstream commit** | **`b831ef6b`** (`ghostty-org/ghostty`) |
 | Upstream remote | `https://github.com/ghostty-org/ghostty.git` |
 
@@ -224,9 +224,9 @@ Update this section every time you reconcile.
 | | |
 |---|---|
 | Upstream base (fork point) | `b831ef6b` (ghostty 1.3.2-dev) |
-| **Reconciled up to** | `6a508fd5e` (2026-08-24 on branch `chore/upstream-sync-1.4.x`) |
-| Upstream tip at last check | `6a508fd5e` (**fully reconciled**) |
-| Last checked | 2026-08-24 |
+| **Reconciled up to** | `3d07ef9e2` (2026-10-30 on branch `chore/zig-0.17`) |
+| Upstream tip at last check | `cf0ab14ae` (167 commits ahead, not yet reconciled) |
+| Last checked | 2026-10-30 |
 
 Sync of 2026-07-13: 114 untouched files fast-forwarded to `55a3e33a`; 6 owned files
 3-way merged cleanly (see §6); 8 files we'd deleted left deleted; one build fix in
@@ -530,6 +530,47 @@ So the *core* hand-merge burden is small — concentrated in `Config.zig` and
 replace) or a file upstream hasn't changed. The larger review surface is our
 **modified macOS Swift files** (see the M list in §2), which upstream also
 evolves.
+
+---
+
+Sync of 2026-10-30 (`6a508fd5e` → `3d07ef9e2`, 590 non-merge commits): **the Zig 0.17
+migration** (upstream #14519, `3d07ef9e2`) plus everything upstream landed before it.
+Stopping at the migration commit, not at the tip, keeps this sync to one toolchain jump.
+729 files changed upstream (65 A / 634 M / 13 D / 17 R). With the §7 method note test,
+only **60 were owned**: 656 fast-forwarded verbatim, 13 deleted, 16 `.github` files and
+`macos/Sources/Features/About/CyclingIconView.swift` left deleted, and the rest 3-way
+merged. Of those, 35 merged clean and 8 conflicted:
+
+- `AppDelegate.swift`: kept our SarvAlert quit-confirmation over upstream's
+  `NSAlert.reviewWindowsAlert`.
+- `Ghostty.App.swift`: both sides. Our markdown `openURL` routing runs first, then
+  upstream's untrusted-URL check for `.unknown` kinds.
+- `renderer/message.zig`: both sides (`macos_vsync_external` + `presentation_health`).
+- `GhosttyXcodebuild.zig`, `config/Config.zig`, `crash/sentry.zig`: ours, with the 0.17
+  spellings (`.debug`, `alloc.print`) and upstream's "or carriage returns" doc wording.
+- `renderer/DisplayLink.zig` + `renderer/generic.zig`: **ours, whole**. Upstream added its
+  own main-thread-only CVDisplayLink wrapper in this range, one link per surface. Ours is a
+  superset: one shared link per display, state re-asserted after a display
+  reconfiguration, and an atomic `isRunning`. Upstream's activity-gated `should_run`
+  (`cells_rebuilt or animationWake()`) was not adopted; we still gate on visible + focused.
+
+**Gotcha:** quote paths. The owned test fed `$(cat paths.txt)` to `git diff`, which split
+`Surface View/…` and `Window Styles/…` at the space. `SurfaceView_AppKit.swift` and
+`TerminalWindow.swift` silently fell out of the owned set and were fast-forwarded over our
+changes. Only the Swift build caught it (`windowVsync` missing). Use
+`tr '\n' '\0' < paths.txt | xargs -0 git diff --name-only <FROM> HEAD --`.
+
+Hand fixes on top of the merge: the mechanical 0.17 renames in owned and ours-only Zig
+files; `pkg/md4c` ported off the removed `@cImport` to a build-registered `md4c_c` module
+via `pkg/translate-c`, which replaces the external `translate_c` dependency, as upstream
+did; and the new `.kitty_read`/`.kitty_write` clipboard kinds added to the Vaults
+clipboard-confirmation switch (`VaultsTabsModel.swift`). Generated nix/flatpak files,
+`flake.*` and the themes pin are upstream verbatim.
+
+Verification: `zig build -Demit-macos-app=false` passes on zig 0.17.0; the full macOS app
+builds and launches (`scripts/dev.sh --fast`); `zig build test` (Zig + `xcodebuild test`) **exits 0, all green**. Zig 0.17 echoes a "failed command:" line for any step that wrote to stderr, so xcodebuild's "multiple matching destinations" warning prints one even on success: trust the exit code. All §8 anchors verified intact.
+The §9 audit residue is only the guarded `macos/Sources/App/` files (`AppDelegate.swift`,
+`AppDelegate+Ghostty.swift`, `main.swift`, `MainMenu.xib`).
 
 ---
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const wuffs = @import("wuffs");
 const assert = @import("../../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -8,6 +9,7 @@ const posix = std.posix;
 const fastmem = @import("../../fastmem.zig");
 const animation = @import("graphics_animation.zig");
 const command = @import("graphics_command.zig");
+const kitty_windows = @import("windows.zig");
 const PageList = @import("../PageList.zig");
 const sys = @import("../sys.zig");
 const LimitedAllocator = @import("../../datastruct/main.zig").LimitedAllocator;
@@ -172,7 +174,7 @@ pub const LoadingImage = struct {
 
         // Otherwise, the payload data is guaranteed to be a path.
 
-        if (comptime builtin.os.tag != .windows) {
+        if (comptime builtin.target.os.tag != .windows) {
             if (std.mem.indexOfScalar(u8, cmd.data, 0) != null) {
                 // POSIX paths cannot contain internal nulls.
                 log.warn("invalid image path: BadPathName", .{});
@@ -201,7 +203,7 @@ pub const LoadingImage = struct {
     ) !void {
         // android does not support POSIX shared memory.
         // windows is currently unsupported, does it support shm?
-        if (comptime builtin.abi.isAndroid() or builtin.target.os.tag == .windows) {
+        if (comptime builtin.target.abi.isAndroid() or builtin.target.os.tag == .windows) {
             return error.UnsupportedMedium;
         }
 
@@ -210,10 +212,19 @@ pub const LoadingImage = struct {
             return error.UnsupportedMedium;
         }
 
+        // The Kitty protocol requires terminals to pass shared memory names
+        // unmodified to shm_open, including names without a leading slash:
+        // sandboxed macOS apps can only use names of the form
+        // `<app group id>/<name>`. We only reject clearly malformed names.
+        if (!validSharedMemoryName(path, posix.NAME_MAX)) {
+            log.warn("invalid shared memory name", .{});
+            return error.InvalidData;
+        }
+
         // Since we're only supporting posix then max_path_bytes should
         // be enough to stack allocate the path.
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const pathz = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return error.InvalidData;
+        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const pathz = std.mem.printSentinel(&buf, "{s}", .{path}, 0) catch return error.InvalidData;
 
         const fd = std.c.shm_open(pathz, @as(c_int, @bitCast(std.c.O{ .ACCMODE = .RDONLY })), @as(u16, 0));
         switch (std.posix.errno(fd)) {
@@ -228,6 +239,11 @@ pub const LoadingImage = struct {
             .flags = .{ .nonblocking = false },
         };
 
+        // We unlink whatever name the client sent, as the Kitty protocol
+        // requires. So a client can remove any shared memory object that
+        // Ghostty can open, including another app group's on macOS if it
+        // can guess the name. This applies to any name, not just ones
+        // without a leading slash.
         defer file.close(io);
         defer _ = std.c.shm_unlink(pathz);
 
@@ -336,6 +352,25 @@ pub const LoadingImage = struct {
             else => @compileError("readFile only supports file and temporary_file"),
         }
 
+        // Some Windows paths are dangerous to even open, so the raw path
+        // is checked before the open. The canonical path of the opened
+        // file is checked again in validatedFilePath. See kitty_windows
+        // for what is refused and why.
+        if (comptime builtin.target.os.tag == .windows) {
+            kitty_windows.checkPath(path) catch |err| {
+                log.warn("invalid image path: {}", .{err});
+                return error.InvalidData;
+            };
+        }
+
+        // The canonical path buffer is sized for the longest path the
+        // platform allows, which is about 96 KiB on Windows, so it is
+        // heap allocated rather than placed on the stack of whichever
+        // host thread feeds the stream. It is allocated before the open
+        // so the deferred temporary file deletion below can still use it.
+        const abs_buf = try alloc.alloc(u8, std.Io.Dir.max_path_bytes);
+        defer alloc.free(abs_buf);
+
         // Open our file right away before we do validation. This avoids
         // TOCTOU issues.
         var file = std.Io.Dir.cwd().openFile(
@@ -361,11 +396,10 @@ pub const LoadingImage = struct {
         // Derive the path from the open handle so the file we validate is the
         // exact file we read. Resolving a path before opening it would allow a
         // cooperating process to swap a symlink or directory entry in between.
-        var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
         const abs_path = validatedFilePath(
             io,
             file,
-            &abs_buf,
+            abs_buf,
         ) catch |err| {
             log.warn("failed to validate image file path: {}", .{err});
             return error.InvalidData;
@@ -374,8 +408,9 @@ pub const LoadingImage = struct {
         // Temporary file logic
         if (medium == .temporary_file) {
             assert(self.temporary_directory != null);
-            if (!isPathInTempDir(
+            if (!try isPathInTempDir(
                 io,
+                alloc,
                 self.temporary_directory.?,
                 abs_path,
             )) return error.TemporaryFileNotInTempDir;
@@ -426,7 +461,7 @@ pub const LoadingImage = struct {
                     else => error.InvalidData,
                 };
             };
-            managed = .{ .items = data, .capacity = data.len };
+            managed = .fromOwnedSlice(data);
         } else {
             reader.appendRemaining(alloc, &managed, .limited(max_size)) catch {
                 log.warn("failed to read image file: {?}", .{buf_reader.err});
@@ -436,13 +471,18 @@ pub const LoadingImage = struct {
 
         // Set our data
         assert(self.data.items.len == 0);
-        self.data = .{ .items = managed.items, .capacity = managed.capacity };
+        self.data = managed;
     }
 
     /// Returns the canonical path of an open file after applying the file
     /// transmission blocklist.
     fn validatedFilePath(io: std.Io, file: std.Io.File, buf: []u8) ![]const u8 {
         const path = buf[0..try file.realPath(io, buf)];
+
+        if (comptime builtin.target.os.tag == .windows) {
+            try kitty_windows.checkCanonicalPath(path);
+            return path;
+        }
 
         // This is logic copied directly from Kitty, mostly. This is really
         // rough but it will catch obvious bad actors.
@@ -459,18 +499,35 @@ pub const LoadingImage = struct {
 
     /// Returns true if path appears to be in a temporary directory.
     /// Copies logic from Kitty.
-    fn isPathInTempDir(io: std.Io, dir: []const u8, path: []const u8) bool {
+    fn isPathInTempDir(
+        io: std.Io,
+        alloc: Allocator,
+        dir: []const u8,
+        path: []const u8,
+    ) Allocator.Error!bool {
         if (isPathInDir("/tmp", path)) return true;
         if (isPathInDir("/dev/shm", path)) return true;
         if (isPathInDir(dir, path)) return true;
 
+        // On macOS /tmp is a symlink to /private/tmp, and the path is
+        // canonical (see validatedFilePath), so files in /tmp only
+        // match the canonical directory.
+        if (comptime builtin.target.os.tag.isDarwin()) {
+            if (isPathInDir("/private/tmp", path)) return true;
+        }
+
         // The temporary dir is sometimes a symlink. On macOS for
-        // example /tmp is /private/var/...
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        // example /tmp is /private/var/... On Windows the directory a
+        // host passes (typically GetTempPath output) regularly differs
+        // from the canonical path in case or uses 8.3 short names, and
+        // resolving it covers both. The buffer is heap allocated for
+        // the reason given in readFile.
+        const buf = try alloc.alloc(u8, std.Io.Dir.max_path_bytes);
+        defer alloc.free(buf);
         const real_dir = buf[0 .. std.Io.Dir.cwd().realPathFile(
             io,
             dir,
-            &buf,
+            buf,
         ) catch return false];
         if (isPathInDir(real_dir, path)) return true;
 
@@ -557,10 +614,10 @@ pub const LoadingImage = struct {
     /// Debug function to write the data to a file. This is useful for
     /// capturing some test data for unit tests.
     pub fn debugDump(io: std.Io, self: LoadingImage) !void {
-        if (comptime builtin.mode != .Debug) @compileError("debugDump in non-debug");
+        if (comptime builtin.mode != .debug) @compileError("debugDump in non-debug");
 
         var buf: [1024]u8 = undefined;
-        const filename = try std.fmt.bufPrint(
+        const filename = try std.mem.print(
             &buf,
             "image-{s}-{s}-{d}x{d}-{}.data",
             .{
@@ -588,22 +645,36 @@ pub const LoadingImage = struct {
     }
 
     fn decompressZlib(self: *LoadingImage, alloc: Allocator) !void {
-        // Open our zlib stream
-        var buf: [std.compress.flate.max_window_len]u8 = undefined;
-        var reader: std.Io.Reader = .fixed(self.data.items);
-        var stream: std.compress.flate.Decompress = .init(&reader, .zlib, &buf);
-
-        // Write it to an array list
-        var list: std.ArrayList(u8) = .empty;
-        errdefer list.deinit(alloc);
-        stream.reader.appendRemaining(alloc, &list, .limited(max_size)) catch {
-            log.warn("failed to read decompressed data: {?}", .{stream.err});
-            return error.DecompressionFailed;
+        // Provide a bounded size hint based on image metadata for the initial allocation
+        const size_hint: ?usize = hint: {
+            if (self.image.format == .png or
+                self.image.width == 0 or self.image.height == 0 or
+                self.image.width > max_dimension or self.image.height > max_dimension)
+                break :hint null;
+            const pixels = std.math.mul(
+                usize,
+                self.image.width,
+                self.image.height,
+            ) catch break :hint null;
+            const bytes = std.math.mul(
+                usize,
+                pixels,
+                command.Transmission.formatBpp(self.image.format),
+            ) catch break :hint null;
+            break :hint if (bytes <= max_size) bytes else null;
+        };
+        const decompressed = wuffs.zlib.decode(
+            alloc,
+            self.data.items,
+            max_size,
+            size_hint,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.WuffsError, error.Overflow => return error.DecompressionFailed,
         };
 
-        // Empty our current data list, take ownership over managed array list
         self.data.deinit(alloc);
-        self.data = .{ .items = list.items, .capacity = list.capacity };
+        self.data = .fromOwnedSlice(decompressed);
 
         // Make sure we note that our image is no longer compressed
         self.image.compression = .none;
@@ -831,12 +902,24 @@ pub const Rect = struct {
     }
 };
 
+/// Returns whether a name can be passed to shm_open. Slashes are left
+/// for shm_open to judge since the valid forms are platform specific.
+fn validSharedMemoryName(name: []const u8, name_max: usize) bool {
+    if (name.len == 0 or name.len > name_max) return false;
+    if (std.mem.eql(u8, name, "/")) return false;
+    return std.mem.indexOfScalar(u8, name, 0) == null;
+}
+
 /// Returns true if `path` is `dir` or is contained within it, requiring a
 /// path-separator boundary so similarly prefixed directories do not match.
 fn isPathInDir(dir: []const u8, path: []const u8) bool {
     if (dir.len == 0 or !std.mem.startsWith(u8, path, dir)) return false;
     if (path.len == dir.len or std.fs.path.isSep(dir[dir.len - 1])) return true;
     return std.fs.path.isSep(path[dir.len]);
+}
+
+test {
+    _ = kitty_windows;
 }
 
 test "temporary file path must be inside directory" {
@@ -850,6 +933,139 @@ test "temporary file path must be inside directory" {
     try testing.expect(!isPathInDir("/tmp", "/tmpX/tty-graphics-protocol-image.data"));
     try testing.expect(!isPathInDir("/dev/shm", "/dev/shm-evil/tty-graphics-protocol-image.data"));
     try testing.expect(!isPathInDir("/custom/tmp", "/custom/tmp-suffix/tty-graphics-protocol-image.data"));
+}
+
+test "shared memory names" {
+    const testing = std.testing;
+
+    try testing.expect(validSharedMemoryName("/kitty", 8));
+    try testing.expect(validSharedMemoryName("/1234567", 8));
+    try testing.expect(validSharedMemoryName("kitty", 8));
+    try testing.expect(validSharedMemoryName("TEAMID.group/kitty", 31));
+    try testing.expect(validSharedMemoryName("/kitty/image", 16));
+
+    try testing.expect(!validSharedMemoryName("", 8));
+    try testing.expect(!validSharedMemoryName("/", 8));
+    try testing.expect(!validSharedMemoryName("/kitty\x00image", 16));
+    try testing.expect(!validSharedMemoryName("kitty\x00image", 16));
+    try testing.expect(!validSharedMemoryName("/12345678", 8));
+}
+
+test "image load rejects shared memory names containing NUL" {
+    if (comptime builtin.target.abi.isAndroid() or
+        builtin.target.os.tag == .windows or
+        !builtin.link_libc)
+    {
+        return error.SkipZigTest;
+    }
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var cmd: command.Command = .{
+        .control = .{ .transmit = .{
+            .format = .rgb,
+            .medium = .shared_memory,
+            .width = 1,
+            .height = 1,
+            .image_id = 31,
+        } },
+        .data = try alloc.dupe(u8, "/kitty\x00image"),
+    };
+    defer cmd.deinit(alloc);
+
+    try testing.expectError(
+        error.InvalidData,
+        LoadingImage.init(testing.io, alloc, &cmd, .{
+            .file = false,
+            .temporary_file = .disabled,
+            .shared_memory = true,
+        }),
+    );
+}
+
+test "image load accepts shared memory names without a leading slash" {
+    if (comptime builtin.target.abi.isAndroid() or
+        builtin.target.os.tag == .windows or
+        !builtin.link_libc)
+    {
+        return error.SkipZigTest;
+    }
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // Sandboxed macOS apps can only create names of this form. The pid
+    // keeps concurrent test runs apart; Darwin limits names to 31 bytes.
+    var buf: [32]u8 = undefined;
+    const name = try std.fmt.bufPrintSentinel(&buf, "{s}{d}", .{
+        if (comptime builtin.target.os.tag.isDarwin())
+            "ghostty.test/shm-"
+        else
+            "ghostty-test-shm-",
+        std.c.getpid(),
+    }, 0);
+    const data = "\x01\x02\x03";
+
+    const fd = std.c.shm_open(
+        name,
+        @as(c_int, @bitCast(std.c.O{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true })),
+        @as(std.c.mode_t, 0o600),
+    );
+    switch (std.posix.errno(fd)) {
+        .SUCCESS => {},
+        .ACCES, .PERM, .NOSYS => return error.SkipZigTest,
+        else => |err| {
+            log.warn("unable to create shared memory {s}: {}", .{ name, err });
+            return error.TestUnexpectedResult;
+        },
+    }
+    defer _ = std.c.close(fd);
+    defer _ = std.c.shm_unlink(name);
+    try testing.expectEqual(0, std.c.ftruncate(fd, data.len));
+    {
+        // macOS does not support write(2) on shared memory, so map it.
+        const map = try std.posix.mmap(
+            null,
+            data.len,
+            .{ .READ = true, .WRITE = true },
+            std.c.MAP{ .TYPE = .SHARED },
+            fd,
+            0,
+        );
+        defer std.posix.munmap(map);
+        @memcpy(map[0..data.len], data);
+    }
+
+    var cmd: command.Command = .{
+        .control = .{ .transmit = .{
+            .format = .rgb,
+            .medium = .shared_memory,
+            .width = 1,
+            .height = 1,
+            .image_id = 31,
+        } },
+        .data = try alloc.dupe(u8, name),
+    };
+    defer cmd.deinit(alloc);
+
+    var loading = try LoadingImage.init(testing.io, alloc, &cmd, .{
+        .file = false,
+        .temporary_file = .disabled,
+        .shared_memory = true,
+    });
+    defer loading.deinit(alloc);
+    try testing.expectEqualSlices(u8, data, loading.data.items);
+
+    // The terminal must unlink the object after reading it. fstat can't
+    // tell us this since macOS always reports st_nlink 0 for shared memory.
+    const reopened = std.c.shm_open(
+        name,
+        @as(c_int, @bitCast(std.c.O{ .ACCMODE = .RDONLY })),
+        @as(std.c.mode_t, 0),
+    );
+    if (reopened >= 0) _ = std.c.close(reopened);
+    try testing.expectEqual(std.posix.E.NOENT, std.posix.errno(reopened));
 }
 
 test "shared memory range with offset and size" {
@@ -1121,7 +1337,7 @@ test "image load: temporary file without correct path" {
         .data = data,
     });
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = buf[0..try tmp_dir.dir.realPathFile(testing.io, "image.data", &buf)];
 
     var cmd: command.Command = .{
@@ -1136,7 +1352,7 @@ test "image load: temporary file without correct path" {
         .data = try alloc.dupe(u8, path),
     };
     defer cmd.deinit(alloc);
-    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var dir_path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     try testing.expectError(error.TemporaryFileNotNamedCorrectly, LoadingImage.init(
         io,
         alloc,
@@ -1170,9 +1386,9 @@ test "image load: temporary file outside directory prefix is rejected" {
         .data = data,
     });
 
-    var trusted_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var trusted_path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const trusted_path = trusted_path_buf[0..try trusted_dir.realPath(io, &trusted_path_buf)];
-    var outside_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var outside_path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const outside_path = outside_path_buf[0..try outside_dir.realPathFile(io, filename, &outside_path_buf)];
 
     var cmd: command.Command = .{
@@ -1196,6 +1412,57 @@ test "image load: temporary file outside directory prefix is rejected" {
     try outside_dir.access(io, filename, .{});
 }
 
+test "image load: temporary file in /tmp on macOS" {
+    // /tmp is a symlink to /private/tmp on macOS, so the canonical path
+    // of a file in it does not start with /tmp.
+    if (builtin.target.os.tag != .macos) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    // The configured temporary directory does not contain /tmp, so the
+    // file can only be accepted through the /tmp root.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var dir_path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = dir_path_buf[0..try tmp_dir.dir.realPath(io, &dir_path_buf)];
+
+    const path = try std.fmt.allocPrint(
+        alloc,
+        "/tmp/ghostty-test-{s}-tty-graphics-protocol-image.data",
+        .{tmp_dir.sub_path},
+    );
+    defer alloc.free(path);
+    const data = @embedFile("testdata/image-rgb-none-20x15-2147483647-raw.data");
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    var cmd: command.Command = .{
+        .control = .{ .transmit = .{
+            .format = .rgb,
+            .medium = .temporary_file,
+            .compression = .none,
+            .width = 20,
+            .height = 15,
+            .image_id = 31,
+        } },
+        .data = try alloc.dupe(u8, path),
+    };
+    defer cmd.deinit(alloc);
+    var loading = try LoadingImage.init(io, alloc, &cmd, .allWithTempDir(dir_path));
+    defer loading.deinit(alloc);
+    var img = try loading.complete(alloc);
+    defer img.deinit(alloc);
+    try testing.expect(img.compression == .none);
+
+    // Temporary file should be gone
+    try testing.expectError(
+        error.FileNotFound,
+        std.Io.Dir.cwd().access(io, path, .{}),
+    );
+}
+
 test "image load: rgb, not compressed, temporary file" {
     const testing = std.testing;
     const alloc = testing.allocator;
@@ -1209,7 +1476,7 @@ test "image load: rgb, not compressed, temporary file" {
         .data = data,
     });
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = buf[0..try tmp_dir.dir.realPathFile(testing.io, "tty-graphics-protocol-image.data", &buf)];
 
     var cmd: command.Command = .{
@@ -1224,7 +1491,7 @@ test "image load: rgb, not compressed, temporary file" {
         .data = try alloc.dupe(u8, path),
     };
     defer cmd.deinit(alloc);
-    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var dir_path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var loading = try LoadingImage.init(
         io,
         alloc,
@@ -1253,7 +1520,7 @@ test "image load: rgb, not compressed, regular file" {
         .data = data,
     });
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = buf[0..try tmp_dir.dir.realPathFile(testing.io, "image.data", &buf)];
 
     var cmd: command.Command = .{
@@ -1268,7 +1535,7 @@ test "image load: rgb, not compressed, regular file" {
         .data = try alloc.dupe(u8, path),
     };
     defer cmd.deinit(alloc);
-    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var dir_path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var loading = try LoadingImage.init(
         io,
         alloc,
@@ -1294,7 +1561,7 @@ test "image load: regular file size reads exactly requested bytes" {
         .data = &.{ 1, 2, 3, 4, 5, 6 },
     });
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = path_buf[0..try tmp_dir.dir.realPathFile(
         io,
         "image.data",
@@ -1348,7 +1615,7 @@ test "image load: regular file size rejects short data" {
         .data = &.{ 1, 2 },
     });
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = path_buf[0..try tmp_dir.dir.realPathFile(
         io,
         "image.data",
@@ -1399,8 +1666,7 @@ test "image load: rgb, not compressed, relative regular file" {
             .height = 15,
             .image_id = 31,
         } },
-        .data = try std.fmt.allocPrint(
-            alloc,
+        .data = try alloc.print(
             ".zig-cache/tmp/{s}/image.data",
             .{tmp_dir.sub_path},
         ),
@@ -1418,7 +1684,7 @@ test "image load: rgb, not compressed, relative regular file" {
 }
 
 test "image load: blocklist applies to opened file after symlink swap" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
 
     const testing = std.testing;
     const io = testing.io;
@@ -1437,7 +1703,7 @@ test "image load: blocklist applies to opened file after symlink swap" {
     defer blocked_file.close(io);
     try tmp_dir.dir.symLinkAtomic(io, "safe.data", "image.data", .{});
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     try testing.expectError(
         error.InvalidData,
         LoadingImage.validatedFilePath(io, blocked_file, &path_buf),
@@ -1448,6 +1714,327 @@ test "image load: blocklist applies to opened file after symlink swap" {
     const safe_file = try tmp_dir.dir.openFile(io, "image.data", .{});
     defer safe_file.close(io);
     _ = try LoadingImage.validatedFilePath(io, safe_file, &path_buf);
+}
+
+test "image load: windows UNC path is rejected before open" {
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    // Opening a UNC path would resolve the host name and authenticate to
+    // it over SMB, so the rejection has to happen on the raw path. The
+    // host name is in the reserved .invalid TLD so it can never resolve.
+    const paths = [_][]const u8{
+        "\\\\nonexistent-host.invalid\\share\\tty-graphics-protocol-image.data",
+        "//nonexistent-host.invalid/share/tty-graphics-protocol-image.data",
+        "\\\\?\\UNC\\nonexistent-host.invalid\\share\\image.data",
+    };
+    for (paths) |path| {
+        var cmd: command.Command = .{
+            .control = .{ .transmit = .{
+                .format = .rgb,
+                .medium = .file,
+                .compression = .none,
+                .width = 20,
+                .height = 15,
+                .image_id = 31,
+            } },
+            .data = try alloc.dupe(u8, path),
+        };
+        defer cmd.deinit(alloc);
+        try testing.expectError(
+            error.InvalidData,
+            LoadingImage.init(io, alloc, &cmd, .{
+                .file = true,
+                .temporary_file = .disabled,
+                .shared_memory = false,
+            }),
+        );
+    }
+}
+
+test "image load: windows device namespace paths are rejected before open" {
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const filename = "tty-graphics-protocol-image.data";
+    const data = @embedFile("testdata/image-rgb-none-20x15-2147483647-raw.data");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = filename, .data = data });
+
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = dir_buf[0..try tmp_dir.dir.realPath(io, &dir_buf)];
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const real_path = path_buf[0..try tmp_dir.dir.realPathFile(io, filename, &path_buf)];
+
+    // The verbatim, local device and NT namespace spellings all resolve
+    // to the same real file, so rejecting them proves the check runs on
+    // the raw path rather than on the canonical one.
+    const prefixes = [_][]const u8{ "\\\\?\\", "\\\\.\\", "\\??\\" };
+    for (prefixes) |prefix| {
+        const path = try std.mem.concat(alloc, u8, &.{ prefix, real_path });
+        defer alloc.free(path);
+
+        const mediums = [_]command.Transmission.Medium{ .file, .temporary_file };
+        for (mediums) |medium| {
+            var cmd: command.Command = .{
+                .control = .{ .transmit = .{
+                    .format = .rgb,
+                    .medium = medium,
+                    .compression = .none,
+                    .width = 20,
+                    .height = 15,
+                    .image_id = 31,
+                } },
+                .data = try alloc.dupe(u8, path),
+            };
+            defer cmd.deinit(alloc);
+            try testing.expectError(
+                error.InvalidData,
+                LoadingImage.init(io, alloc, &cmd, .allWithTempDir(dir_path)),
+            );
+        }
+    }
+
+    // A named pipe reached through the local device namespace.
+    {
+        var cmd: command.Command = .{
+            .control = .{ .transmit = .{
+                .format = .rgb,
+                .medium = .file,
+                .compression = .none,
+                .width = 20,
+                .height = 15,
+                .image_id = 31,
+            } },
+            .data = try alloc.dupe(u8, "\\\\.\\pipe\\ghostty-kitty-graphics-test"),
+        };
+        defer cmd.deinit(alloc);
+        try testing.expectError(
+            error.InvalidData,
+            LoadingImage.init(io, alloc, &cmd, .allWithTempDir(dir_path)),
+        );
+    }
+
+    // Nothing above reached the temporary file deletion.
+    try tmp_dir.dir.access(io, filename, .{});
+}
+
+test "image load: windows reserved device names are rejected before open" {
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = dir_buf[0..try tmp_dir.dir.realPath(io, &dir_buf)];
+
+    const names = [_][]const u8{ "CON", "NUL.data", "com1", "LPT9.png", "AUX", "PRN." };
+    for (names) |name| {
+        const path = try std.fs.path.join(alloc, &.{ dir_path, name });
+        defer alloc.free(path);
+
+        var cmd: command.Command = .{
+            .control = .{ .transmit = .{
+                .format = .rgb,
+                .medium = .file,
+                .compression = .none,
+                .width = 20,
+                .height = 15,
+                .image_id = 31,
+            } },
+            .data = try alloc.dupe(u8, path),
+        };
+        defer cmd.deinit(alloc);
+        try testing.expectError(
+            error.InvalidData,
+            LoadingImage.init(io, alloc, &cmd, .{
+                .file = true,
+                .temporary_file = .disabled,
+                .shared_memory = false,
+            }),
+        );
+    }
+}
+
+test "image load: windows local file accepted in forward slash and upper case spellings" {
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const filename = "image.data";
+    const data = @embedFile("testdata/image-rgb-none-20x15-2147483647-raw.data");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = filename, .data = data });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const real_path = path_buf[0..try tmp_dir.dir.realPathFile(io, filename, &path_buf)];
+
+    // Both spellings open the same file; the canonical path the checks
+    // see is the backslash, on-disk case form either way.
+    const forward = try alloc.dupe(u8, real_path);
+    defer alloc.free(forward);
+    std.mem.replaceScalar(u8, forward, '\\', '/');
+    const upper = try alloc.dupe(u8, real_path);
+    defer alloc.free(upper);
+    _ = std.ascii.upperString(upper, real_path);
+
+    const spellings = [_][]const u8{ forward, upper };
+    for (spellings) |path| {
+        var cmd: command.Command = .{
+            .control = .{ .transmit = .{
+                .format = .rgb,
+                .medium = .file,
+                .compression = .none,
+                .width = 20,
+                .height = 15,
+                .image_id = 31,
+            } },
+            .data = try alloc.dupe(u8, path),
+        };
+        defer cmd.deinit(alloc);
+        var loading = try LoadingImage.init(io, alloc, &cmd, .{
+            .file = true,
+            .temporary_file = .disabled,
+            .shared_memory = false,
+        });
+        defer loading.deinit(alloc);
+        var img = try loading.complete(alloc);
+        defer img.deinit(alloc);
+        try testing.expect(img.compression == .none);
+    }
+
+    try tmp_dir.dir.access(io, filename, .{});
+}
+
+test "image load: windows temporary file with differently spelled directory" {
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const filename = "tty-graphics-protocol-image.data";
+    const data = @embedFile("testdata/image-rgb-none-20x15-2147483647-raw.data");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = filename, .data = data });
+
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = dir_buf[0..try tmp_dir.dir.realPath(io, &dir_buf)];
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const real_path = path_buf[0..try tmp_dir.dir.realPathFile(io, filename, &path_buf)];
+
+    // Hosts hand over GetTempPath output, which regularly differs from
+    // the canonical path in case (`C:\WINDOWS\TEMP\`), so the directory
+    // prefix check only passes through the real-path fallback.
+    const dir_upper = try alloc.dupe(u8, dir_path);
+    defer alloc.free(dir_upper);
+    _ = std.ascii.upperString(dir_upper, dir_path);
+    const path_upper = try alloc.dupe(u8, real_path);
+    defer alloc.free(path_upper);
+    _ = std.ascii.upperString(path_upper, real_path);
+    try testing.expect(!isPathInDir(dir_upper, real_path) or
+        std.mem.eql(u8, dir_upper, dir_path));
+
+    var cmd: command.Command = .{
+        .control = .{ .transmit = .{
+            .format = .rgb,
+            .medium = .temporary_file,
+            .compression = .none,
+            .width = 20,
+            .height = 15,
+            .image_id = 31,
+        } },
+        .data = try alloc.dupe(u8, path_upper),
+    };
+    defer cmd.deinit(alloc);
+    var loading = try LoadingImage.init(io, alloc, &cmd, .allWithTempDir(dir_upper));
+    defer loading.deinit(alloc);
+    var img = try loading.complete(alloc);
+    defer img.deinit(alloc);
+    try testing.expect(img.compression == .none);
+
+    // Temporary file should be gone
+    try testing.expectError(error.FileNotFound, tmp_dir.dir.access(io, filename, .{}));
+}
+
+test "image load: windows canonical path check accepts a local file opened through a device spelling" {
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const filename = "image.data";
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = filename, .data = "safe" });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const real_path = path_buf[0..try tmp_dir.dir.realPathFile(io, filename, &path_buf)];
+
+    // readFile refuses this spelling before the open, but the post-open
+    // check works from the canonical path and so does not care how the
+    // file was reached: `\\.\C:\...` canonicalizes back to `C:\...`.
+    const device_path = try std.mem.concat(alloc, u8, &.{ "\\\\.\\", real_path });
+    defer alloc.free(device_path);
+    const file = try std.Io.Dir.cwd().openFile(io, device_path, .{});
+    defer file.close(io);
+
+    const canon_buf = try alloc.alloc(u8, std.Io.Dir.max_path_bytes);
+    defer alloc.free(canon_buf);
+    const canon = try LoadingImage.validatedFilePath(io, file, canon_buf);
+    try testing.expectEqualStrings(real_path, canon);
+}
+
+test "image load: windows canonical path check rejects a file reached through a UNC share" {
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const filename = "image.data";
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = filename, .data = "safe" });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const real_path = path_buf[0..try tmp_dir.dir.realPathFile(io, filename, &path_buf)];
+    try testing.expect(kitty_windows.isDriveAbsolute(real_path));
+
+    // Reach the same local file through the loopback administrative
+    // share, which is how a junction or symlink into a share would look
+    // to the post-open check. The share needs the server service and an
+    // administrative token, so the test is skipped when the open fails.
+    const unc_path = try alloc.print(
+        "\\\\localhost\\{c}$\\{s}",
+        .{ real_path[0], real_path[3..] },
+    );
+    defer alloc.free(unc_path);
+    const file = std.Io.Dir.cwd().openFile(io, unc_path, .{}) catch
+        return error.SkipZigTest;
+    defer file.close(io);
+
+    const canon_buf = try alloc.alloc(u8, std.Io.Dir.max_path_bytes);
+    defer alloc.free(canon_buf);
+    try testing.expectError(
+        error.NotDriveAbsolute,
+        LoadingImage.validatedFilePath(io, file, canon_buf),
+    );
 }
 
 test "image load: png, not compressed, regular file" {
@@ -1465,7 +2052,7 @@ test "image load: png, not compressed, regular file" {
         .data = data,
     });
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = buf[0..try tmp_dir.dir.realPathFile(testing.io, "tty-graphics-protocol-image.data", &buf)];
 
     var cmd: command.Command = .{
@@ -1480,7 +2067,7 @@ test "image load: png, not compressed, regular file" {
         .data = try alloc.dupe(u8, path),
     };
     defer cmd.deinit(alloc);
-    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var dir_path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var loading = try LoadingImage.init(
         io,
         alloc,
@@ -1493,6 +2080,35 @@ test "image load: png, not compressed, regular file" {
     try testing.expect(img.compression == .none);
     try testing.expect(img.format == .rgba);
     try tmp_dir.dir.access(testing.io, path, .{});
+}
+
+test "image load: png, zlib compressed, direct" {
+    if (sys.decode_png == null) return error.SkipZigTest;
+
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+    const data = @embedFile("testdata/image-png-zlib_deflate-50x76-2147483647-raw.data");
+
+    var cmd: command.Command = .{
+        .control = .{ .transmit = .{
+            .format = .png,
+            .medium = .direct,
+            .compression = .zlib_deflate,
+            .image_id = 31,
+        } },
+        .data = try alloc.dupe(u8, data),
+    };
+    defer cmd.deinit(alloc);
+    var loading = try LoadingImage.init(io, alloc, &cmd, .direct);
+    defer loading.deinit(alloc);
+    var img = try loading.complete(alloc);
+    defer img.deinit(alloc);
+
+    try testing.expectEqual(command.Transmission.Compression.none, img.compression);
+    try testing.expectEqual(command.Transmission.Format.rgba, img.format);
+    try testing.expectEqual(@as(u32, 50), img.width);
+    try testing.expectEqual(@as(u32, 76), img.height);
 }
 
 test "image load: png rejects oversized decoder allocation" {
@@ -1596,7 +2212,7 @@ test "limits: file medium blocked by limits" {
         .data = data,
     });
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = buf[0..try tmp_dir.dir.realPathFile(testing.io, "image.data", &buf)];
 
     var cmd: command.Command = .{
@@ -1627,7 +2243,7 @@ test "limits: file medium allowed by limits" {
         .data = data,
     });
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = buf[0..try tmp_dir.dir.realPathFile(testing.io, "image.data", &buf)];
 
     var cmd: command.Command = .{
@@ -1663,7 +2279,7 @@ test "limits: temporary file medium blocked by limits" {
         .data = data,
     });
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = buf[0..try tmp_dir.dir.realPathFile(testing.io, "tty-graphics-protocol-image.data", &buf)];
 
     var cmd: command.Command = .{
@@ -1701,7 +2317,7 @@ test "limits: temporary file medium allowed by limits" {
         .data = data,
     });
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = buf[0..try tmp_dir.dir.realPathFile(testing.io, "tty-graphics-protocol-image.data", &buf)];
 
     var cmd: command.Command = .{
@@ -1716,7 +2332,7 @@ test "limits: temporary file medium allowed by limits" {
         .data = try alloc.dupe(u8, path),
     };
     defer cmd.deinit(alloc);
-    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var dir_path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var loading = try LoadingImage.init(
         io,
         alloc,

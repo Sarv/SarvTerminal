@@ -3,9 +3,7 @@
 //! in-app Markdown viewer (render + source modes); see ROADMAP.md.
 const std = @import("std");
 
-pub const c = @cImport({
-    @cInclude("md4c-html.h");
-});
+pub const c = @import("md4c_c");
 
 /// Parser flags for GitHub-flavored, SAFE rendering: GFM tables, task lists,
 /// strikethrough, and permissive autolinks, with raw inline/block HTML DISABLED

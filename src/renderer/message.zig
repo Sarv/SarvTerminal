@@ -72,6 +72,12 @@ pub const Message = union(enum) {
     /// running its own CVDisplayLink for the life of the surface.
     macos_vsync_external: bool,
 
+    /// Updates the health of the current presentation state.
+    ///
+    /// If unhealthy, then somehow the apprt failed to present frames from
+    /// the renderer. On GTK, this can be caused by failing to import a DMABUF.
+    presentation_health: renderer.Health,
+
     pub const SearchMatches = struct {
         arena: ArenaAllocator,
         matches: []const terminal.highlight.Flattened,

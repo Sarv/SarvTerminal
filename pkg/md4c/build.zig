@@ -1,4 +1,5 @@
 const std = @import("std");
+const translate_c = @import("translate_c");
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
@@ -44,16 +45,21 @@ pub fn build(b: *std.Build) !void {
         lib.installHeader(upstream.path("src/md4c.h"), "md4c.h");
         lib.installHeader(upstream.path("src/md4c-html.h"), "md4c-html.h");
 
+        // zig 0.17 removed @cImport: the C API is exposed to main.zig as the
+        // build-registered `md4c_c` module instead.
+        try translate_c.addImportToModule(b, "md4c_c", module, .{
+            .source = .{ .includes = .{
+                .files = &.{.{ .path = "md4c-html.h" }},
+            } },
+            .target = target,
+            .optimize = optimize,
+            .include_paths = &.{inc},
+            .link_libs = &.{lib},
+        });
+
         // Self-test: proves the vendored C compiles, links, and renders GFM.
         if (target.query.isNative()) {
-            const test_mod = b.createModule(.{
-                .root_source_file = b.path("main.zig"),
-                .target = target,
-                .optimize = optimize,
-            });
-            test_mod.addIncludePath(inc);
-            const test_exe = b.addTest(.{ .name = "test", .root_module = test_mod });
-            test_exe.root_module.linkLibrary(lib);
+            const test_exe = b.addTest(.{ .name = "test", .root_module = module });
             const tests_run = b.addRunArtifact(test_exe);
             const test_step = b.step("test", "Run md4c tests");
             test_step.dependOn(&tests_run.step);

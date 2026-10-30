@@ -66,11 +66,25 @@ pub const Message = union(enum) {
     /// Report the window title back to the terminal
     report_title: ReportTitleStyle,
 
+    /// Resize the window to the given grid size, as requested by the
+    /// running program (CSI 8 t).
+    resize_window: terminal.StreamAction.ResizeWindow,
+
     /// Set the mouse shape.
     set_mouse_shape: terminal.MouseShape,
 
     /// Read the clipboard and write to the pty.
     clipboard_read: apprt.Clipboard,
+
+    /// A Kitty clipboard protocol (OSC 5522) read request. The receiver
+    /// takes ownership of the request state and must eventually destroy
+    /// it.
+    kitty_clipboard_read: *apprt.ClipboardRequest.KittyRead,
+
+    /// A committed Kitty clipboard protocol (OSC 5522) write
+    /// transaction. The receiver takes ownership of the request state
+    /// and must eventually destroy it.
+    kitty_clipboard_write: *apprt.ClipboardRequest.KittyWrite,
 
     /// Write the clipboard contents.
     clipboard_write: struct {
@@ -142,6 +156,9 @@ pub const Message = union(enum) {
 
     /// Selected search index change
     search_selected: ?usize,
+
+    /// Renderer pushed a new frame, redraw this surface.
+    redraw,
 
     pub const ReportTitleStyle = enum {
         csi_21_t,

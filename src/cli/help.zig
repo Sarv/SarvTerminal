@@ -17,7 +17,7 @@ pub const Options = struct {
 };
 
 /// The `help` command shows general help about Ghostty. Recognized as either
-/// `-h, `--help`, or like other actions `+help`.
+/// `-h`, `--help`, or like other actions `+help`.
 ///
 /// You can also specify `--help` or `-h` along with any action such as
 /// `+list-themes` to see help for a specific action.
@@ -63,8 +63,8 @@ pub fn run(alloc: Allocator) !u8 {
         \\
     );
 
-    inline for (@typeInfo(Action).@"enum".fields) |field| {
-        try stdout.print("  +{s}\n", .{field.name});
+    inline for (@typeInfo(Action).@"enum".field_names) |field| {
+        try stdout.print("  +{s}\n", .{field});
     }
 
     try stdout.writeAll(

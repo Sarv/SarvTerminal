@@ -2051,7 +2051,7 @@ final class VaultsTabsModel: ObservableObject {
         let title: String
         switch kind {
         case .paste: title = "Potentially Unsafe Paste"
-        case .osc_52_read, .osc_52_write: title = "Authorize Clipboard Access"
+        case .osc_52_read, .osc_52_write, .kitty_read, .kitty_write: title = "Authorize Clipboard Access"
         }
 
         // The alert shows a short preview, not the full contents — pastes can

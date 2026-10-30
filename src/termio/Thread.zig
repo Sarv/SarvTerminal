@@ -200,8 +200,7 @@ pub fn threadMain(self: *Thread, io: *termio.Termio) void {
             },
 
             else => {
-                const str = std.fmt.allocPrint(
-                    alloc,
+                const str = alloc.print(
                     \\error starting IO thread: {}
                     \\
                     \\The underlying shell or command was unable to be started.
@@ -240,7 +239,7 @@ fn threadMain_(self: *Thread, io: *termio.Termio) !void {
     // Right now, on Darwin, `std.Thread.setName` can only name the current
     // thread, and we have no way to get the current thread from within it,
     // so instead we use this code to name the thread instead.
-    if (builtin.os.tag.isDarwin()) {
+    if (builtin.target.os.tag.isDarwin()) {
         internal_os.macos.pthread_setname_np(&"io".*);
     }
 
@@ -337,6 +336,14 @@ fn drainMailbox(
                 }
             },
             .jump_to_prompt => |v| try io.jumpToPrompt(v),
+            .kitty_clipboard_grant_read => |v| {
+                defer v.alloc.free(v.pw);
+                try io.kittyClipboardGrant(v.pw, .read);
+            },
+            .kitty_clipboard_grant_write => |v| {
+                defer v.alloc.free(v.pw);
+                try io.kittyClipboardGrant(v.pw, .write);
+            },
             .start_synchronized_output => self.startSynchronizedOutput(cb),
             .linefeed_mode => |v| self.flags.linefeed_mode = v,
             .focused => |v| try io.focusGained(data, v),

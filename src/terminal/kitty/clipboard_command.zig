@@ -70,77 +70,108 @@ pub const Metadata = struct {
     /// Parse the metadata field. The raw value is expected to be exactly
     /// the metadata (prefix and payload and separators stripped out).
     ///
-    /// A null result means it was invalid but without any response.
-    /// Silently drop the OSC.
+    /// A null result means the packet should be silently dropped. An
+    /// InvalidValue error means a decoded textual value was not valid
+    /// UTF-8 or exceeded a local safety limit. Callers use the raw
+    /// operation to decide whether that invalid value aborts an in-flight
+    /// write transaction.
     pub fn parse(
         alloc: Allocator,
         raw: []const u8,
-    ) Allocator.Error!?Metadata {
-        var op_raw: ?[]const u8 = null;
-        var result: Metadata = .{ .op = undefined };
+    ) error{ OutOfMemory, InvalidValue }!?Metadata {
+        const fields = Raw.parse(raw) orelse return null;
+        var result: Metadata = .{
+            .op = Operation.init(fields.op orelse return null) orelse return null,
+            .loc = if (std.mem.eql(u8, fields.loc, "primary"))
+                .primary
+            else
+                .standard,
+            .id = try sanitizeId(alloc, fields.id),
+        };
 
-        // Note this loop visits every record even though an empty raw
-        // string yields a single empty record: that record has no '='
-        // and correctly drops the packet, matching kitty which requires
-        // at least a valid `type` record.
-        var it = std.mem.splitScalar(u8, raw, ':');
-        while (it.next()) |record| {
-            // Every record must be key=value. Any single invalid record
-            // is dropped, matching Kitty's behavior.
-            const eql_idx = std.mem.indexOfScalar(u8, record, '=') orelse return null;
-            const key = record[0..eql_idx];
-            const value = record[eql_idx + 1 ..];
-
-            if (std.mem.eql(u8, key, "type")) {
-                // Validated after the loop: a duplicate key's last
-                // occurrence wins. This isn't specified but its how Kitty
-                // works.
-                op_raw = value;
-            } else if (std.mem.eql(u8, key, "loc")) {
-                result.loc = if (std.mem.eql(u8, value, "primary"))
-                    .primary
-                else
-                    .standard;
-            } else if (std.mem.eql(u8, key, "id")) {
-                result.id = try sanitizeId(alloc, value);
-            } else if (std.mem.eql(u8, key, "mime")) {
-                result.mime = decodeValue(
-                    alloc,
-                    value,
-                    max_mime_len,
-                ) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.Overflow, error.Invalid => return null,
-                };
-            } else if (std.mem.eql(u8, key, "pw")) {
-                result.pw = decodeValue(
-                    alloc,
-                    value,
-                    max_pw_len,
-                ) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    // An over-long password behaves as if none was
-                    // given: it can never match a stored grant.
-                    error.Overflow => "",
-                    error.Invalid => return null,
-                };
-            } else if (std.mem.eql(u8, key, "name")) {
-                result.name = decodeValue(
-                    alloc,
-                    value,
-                    max_name_len,
-                ) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.Overflow, error.Invalid => return null,
-                };
-            }
-            // Unknown keys are ignored.
-        }
-
-        // A missing or unknown operation drops the request.
-        result.op = Operation.init(op_raw orelse return null) orelse return null;
+        result.mime = decodeValue(
+            alloc,
+            fields.mime,
+            max_mime_len,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Overflow,
+            error.InvalidBase64,
+            error.InvalidUtf8,
+            => return error.InvalidValue,
+        };
+        result.pw = decodeValue(
+            alloc,
+            fields.pw,
+            max_pw_len,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidBase64, error.InvalidUtf8 => return error.InvalidValue,
+            // An over-long password behaves as if none was given: it can
+            // never match a stored grant.
+            error.Overflow => "",
+        };
+        result.name = decodeValue(
+            alloc,
+            fields.name,
+            max_name_len,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Overflow,
+            error.InvalidBase64,
+            error.InvalidUtf8,
+            => return error.InvalidValue,
+        };
         return result;
     }
+
+    /// Return the last recognized operation from syntactically valid raw
+    /// metadata. This intentionally does not decode any values, so callers
+    /// can still classify an InvalidValue parse error.
+    pub fn operation(raw: []const u8) ?Operation {
+        const fields = Raw.parse(raw) orelse return null;
+        return Operation.init(fields.op orelse return null);
+    }
+
+    const Raw = struct {
+        op: ?[]const u8 = null,
+        loc: []const u8 = "",
+        id: []const u8 = "",
+        mime: []const u8 = "",
+        pw: []const u8 = "",
+        name: []const u8 = "",
+
+        fn parse(raw: []const u8) ?Raw {
+            var result: Raw = .{};
+
+            // This visits every record even though an empty raw string
+            // yields one empty record. Validating the complete structure
+            // before decoding also ensures the last duplicate value wins.
+            var it = std.mem.splitScalar(u8, raw, ':');
+            while (it.next()) |record| {
+                const eql_idx = std.mem.indexOfScalar(u8, record, '=') orelse return null;
+                const key = record[0..eql_idx];
+                const value = record[eql_idx + 1 ..];
+
+                if (std.mem.eql(u8, key, "type")) {
+                    result.op = value;
+                } else if (std.mem.eql(u8, key, "loc")) {
+                    result.loc = value;
+                } else if (std.mem.eql(u8, key, "id")) {
+                    result.id = value;
+                } else if (std.mem.eql(u8, key, "mime")) {
+                    result.mime = value;
+                } else if (std.mem.eql(u8, key, "pw")) {
+                    result.pw = value;
+                } else if (std.mem.eql(u8, key, "name")) {
+                    result.name = value;
+                }
+                // Unknown keys are ignored.
+            }
+
+            return result;
+        }
+    };
 
     /// Sanitize the ID according to the spec:
     ///
@@ -163,11 +194,13 @@ pub const Metadata = struct {
 
     /// Base64-decode a metadata value. Per the spec these values "are
     /// UTF-8 strings that are base64 encoded", so the decoded result
-    /// must be valid UTF-8.
+    /// must be valid UTF-8, and the encoding is strict RFC 4648 with
+    /// required padding per the spec's "Encoding of payloads" section.
     fn decodeValue(alloc: Allocator, value: []const u8, max_len: usize) error{
         OutOfMemory,
         Overflow,
-        Invalid,
+        InvalidBase64,
+        InvalidUtf8,
     }![]const u8 {
         const Encoder = std.base64.standard.Encoder;
 
@@ -177,13 +210,14 @@ pub const Metadata = struct {
         // Decode
         const buf = try alloc.alloc(u8, simd.base64.maxLen(value));
         errdefer alloc.free(buf);
-        const decoded = simd.base64.decode(
+        const decoded = simd.base64.decodeStrict(
             value,
             buf,
-        ) catch return error.Invalid;
+            .required,
+        ) catch return error.InvalidBase64;
 
         // Must be valid UTF-8
-        if (!std.unicode.utf8ValidateSlice(decoded)) return error.Invalid;
+        if (!std.unicode.utf8ValidateSlice(decoded)) return error.InvalidUtf8;
         if (decoded.len > max_len) return error.Overflow;
         return decoded;
     }
@@ -196,23 +230,30 @@ pub const Payload = struct {
     buf: []u8,
     data: []const u8,
 
-    /// Decode a base64 payload into freshly allocated memory. An
-    /// invalid payload means the sequence is dropped.
+    /// Decode a base64 payload into freshly allocated memory. The
+    /// encoding is strict RFC 4648 with required padding per the
+    /// spec's "Encoding of payloads" section; how an invalid payload
+    /// is reported (or not) depends on the packet type.
     pub fn init(
         alloc: Allocator,
         payload: []const u8,
     ) error{ OutOfMemory, Invalid }!Payload {
         const buf = try alloc.alloc(u8, simd.base64.maxLen(payload));
         errdefer alloc.free(buf);
-        const data = simd.base64.decode(
+        const data = simd.base64.decodeStrict(
             payload,
             buf,
+            .required,
         ) catch return error.Invalid;
         return .{ .buf = buf, .data = data };
     }
 
     pub fn deinit(self: *const Payload, alloc: Allocator) void {
         alloc.free(self.buf);
+    }
+
+    pub fn isValidUtf8(self: *const Payload) bool {
+        return std.unicode.utf8ValidateSlice(self.data);
     }
 
     /// Iterate the whitespace-separated MIME types of the payload.
@@ -225,6 +266,12 @@ pub const Payload = struct {
         );
     }
 };
+
+/// Whether a read request with this many data MIME types (the targets
+/// type '.' excluded) is exempt from the user permission prompt.
+pub fn readPromptExempt(data_mimes: usize) bool {
+    return data_mimes == 0;
+}
 
 test "metadata: empty is dropped" {
     const testing = std.testing;
@@ -308,7 +355,8 @@ test "metadata: id truncated to max" {
     const testing = std.testing;
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const raw = "type=read:id=" ++ "a" ** (max_id_len + 100);
+    const long_id: [max_id_len + 100]u8 = @splat('a');
+    const raw = "type=read:id=" ++ long_id;
     const meta = (try Metadata.parse(arena.allocator(), raw)).?;
     try testing.expectEqual(@as(usize, max_id_len), meta.id.len);
 }
@@ -322,19 +370,50 @@ test "metadata: mime decoded" {
     try testing.expectEqualStrings("text/plain", meta.mime);
 }
 
-test "metadata: invalid mime base64 dropped" {
+test "metadata: invalid mime base64 reported" {
     const testing = std.testing;
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    try testing.expect((try Metadata.parse(arena.allocator(), "type=wdata:mime=!!!")) == null);
+
+    // Invalid base64 in a metadata value aborts an in-flight write
+    // per the spec, so like invalid UTF-8 it is reported rather than
+    // silently dropping the packet. Unpadded or whitespace-laced
+    // values are invalid too: metadata values use the same strict
+    // encoding as payloads.
+    const cases = [_][]const u8{
+        "type=wdata:mime=!!!",
+        // "text/plain" without its padding.
+        "type=wdata:mime=dGV4dC9wbGFpbg",
+        // "text/plain" with its final byte replaced by '!'.
+        "type=wdata:mime=dGV4dC9wbGFpbg=!",
+        // A newline inside otherwise valid base64.
+        "type=wdata:mime=dGV4dC9w\nbGFpbg==",
+    };
+    for (cases) |case| {
+        try testing.expectError(
+            error.InvalidValue,
+            Metadata.parse(arena.allocator(), case),
+        );
+        try testing.expectEqual(
+            Operation.wdata,
+            Metadata.operation(case).?,
+        );
+    }
 }
 
-test "metadata: invalid mime utf8 dropped" {
+test "metadata: invalid mime utf8 reported" {
     const testing = std.testing;
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     // base64 of 0xff 0xfe
-    try testing.expect((try Metadata.parse(arena.allocator(), "type=wdata:mime=//4=")) == null);
+    try testing.expectError(
+        error.InvalidValue,
+        Metadata.parse(arena.allocator(), "type=wdata:mime=//4="),
+    );
+    try testing.expectEqual(
+        Operation.wdata,
+        Metadata.operation("type=wdata:mime=//4=").?,
+    );
 }
 
 test "metadata: pw and name" {
@@ -347,18 +426,21 @@ test "metadata: pw and name" {
     try testing.expectEqualStrings("app", meta.name);
 }
 
-test "metadata: over-long name dropped" {
+test "metadata: over-long name reported" {
     const testing = std.testing;
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const Encoder = std.base64.standard.Encoder;
-    const long = "n" ** (max_name_len + 1);
+    const long: [max_name_len + 1]u8 = @splat('n');
     var buf: [Encoder.calcSize(long.len)]u8 = undefined;
     const raw = try std.mem.concat(arena.allocator(), u8, &.{
         "type=read:name=",
-        Encoder.encode(&buf, long),
+        Encoder.encode(&buf, &long),
     });
-    try testing.expect((try Metadata.parse(arena.allocator(), raw)) == null);
+    try testing.expectError(
+        error.InvalidValue,
+        Metadata.parse(arena.allocator(), raw),
+    );
 }
 
 test "metadata: empty name" {
@@ -367,6 +449,16 @@ test "metadata: empty name" {
     defer arena.deinit();
     const meta = (try Metadata.parse(arena.allocator(), "type=read:pw=c2VjcmV0:name=")).?;
     try testing.expectEqual(@as(usize, 0), meta.name.len);
+}
+
+test "read prompt exemption: only requests without data types" {
+    const testing = std.testing;
+
+    // A targets-only ('.') read parses to zero data MIME types and is
+    // served without a prompt; any data type, even alongside the
+    // targets listing, still prompts.
+    try testing.expect(readPromptExempt(0));
+    try testing.expect(!readPromptExempt(1));
 }
 
 test "payload: mime iterator" {
@@ -386,8 +478,26 @@ test "payload: mime iterator" {
 
 test "payload: invalid base64" {
     const testing = std.testing;
-    try testing.expectError(
-        error.Invalid,
-        Payload.init(testing.allocator, "!!!"),
-    );
+    const cases = [_][]const u8{
+        "!!!",
+        // "text/plain" without its padding: payloads use the strict
+        // encoding, so missing padding is rejected.
+        "dGV4dC9wbGFpbg",
+        // A newline inside otherwise valid base64.
+        "dGV4dC9w\nbGFpbg==",
+    };
+    for (cases) |case| {
+        try testing.expectError(
+            error.Invalid,
+            Payload.init(testing.allocator, case),
+        );
+    }
+}
+
+test "payload: decoded text must be valid utf8" {
+    const testing = std.testing;
+    // Valid base64 encoding of a single 0xff byte.
+    const payload = try Payload.init(testing.allocator, "/w==");
+    defer payload.deinit(testing.allocator);
+    try testing.expect(!payload.isValidUtf8());
 }
