@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sarv Terminal 1.11.0</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Sarv Terminal 1.11.0</h1>
+  <div class="meta">Improvements &amp; fixes</div>
+  <h2>Hosts</h2>
+  <ul>
+    <li>add Copy SSH Key to Server to run ssh-copy-id with a chosen local key</li>
+  </ul>
+  <h2>SFTP</h2>
+  <ul>
+    <li>never terminate a file-browser helper that was never launched so the app stops crashing at startup</li>
+  </ul>
+  <h2>SSH</h2>
+  <ul>
+    <li>announce an auto-reconnect in the replacement terminal so a recovered session can't look untouched</li>
+    <li>give an unconfigured keepalive a 3-minute deadline so a network blip stops killing sessions</li>
+  </ul>
+</body>
+</html>
