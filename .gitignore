@@ -43,3 +43,6 @@ signing/
 *.p12
 zig-out-linux/
 /sprite_face_test*
+
+# Graphify outputs
+graphify-out/
