@@ -10,7 +10,7 @@ so we never re-plan shipped work.
 > or secondary sources, not independently verified; 🧭 **synthesis** = our
 > strategic judgement, not a sourced fact.
 >
-> Last market scan: **2026-07-15** (Warp / Termius / WezTerm covered in depth;
+> Last market scan: **2026-07-21** (Warp / Termius / WezTerm covered in depth;
 > others partial — see [Open items](#open-items-unassessed-competitors)).
 
 ---
@@ -36,7 +36,8 @@ and SSH/connection managers.
   macOS Shortcuts / AppleScript automation, notifications, custom app icon,
   Sparkle auto-update, secure keyboard entry, **broadcast input to all panes**,
   **focus mode**, **in-app Markdown/file viewer + editor** (Rendered/Raw, in-file
-  find, syntax highlighting, full-window overlay).
+  find, syntax highlighting, full-window overlay), **AI command-failure assist**
+  with Claude/OpenAI BYOK or local Ollama, and **Docker/Kubernetes shell attach**.
 
 ### Known constraint
 - **macOS-only.** Upstream Ghostty is Linux + macOS; Windows is not near-term
@@ -46,9 +47,11 @@ and SSH/connection managers.
 
 ## 2. Gap analysis — what competitors have that we don't
 
-### Theme A — AI / agentic ⭐ (biggest gap) ✅
-The defining shift of the market. We have **nothing** here. Warp rebuilt its
-identity around it:
+### Theme A — deeper agentic workflows ⭐ (biggest gap) ✅
+The defining shift of the market. We now have a focused first layer—explain a
+failed command and suggest a fix using Claude/OpenAI BYOK or local Ollama—but we
+do not yet provide agent orchestration or a structured agent workspace. Warp
+rebuilt its identity around those broader capabilities:
 - Natural-language → command generation (⌘I); "Universal Input" auto-detects
   command vs. prompt.
 - **Agent Mode**: task agents that gather context via CLI, MCP, and codebase
@@ -102,14 +105,14 @@ Strategic judgement, ordered by leverage. Revisit as the market moves.
 
 | # | Initiative | Why it matters | Effort |
 |---|---|---|---|
-| **P1** | **AI command assist + agent integration** | The market's defining gap; pairs with our SSH context (AI that knows *which host*). Start by embedding an agent CLI (e.g. Claude Code) rather than building an LLM UI from scratch. | High (phased) |
+| **P1** | **Agent integration beyond command assist** | Build on the shipped failure explain/fix flow with SSH-aware context and first-class agent CLI integration. The opportunity is an agent that knows *which host* and workspace it is operating in—not another generic chat box. | High (phased) |
 | **P2** | **Live session sharing** | Completes the team story — share the *secret* **and** the *session*; differentiates the vault. | Med-High |
 | **P3** | **Cross-platform — Linux first, then Windows** | Neutralizes Termius's structural win. Linux is comparatively cheap (Ghostty already has a GTK apprt); Windows is the hard, long-horizon lift (blocked on `libghostty`). | Linux: Low-Med / Windows: High |
 | **P4** | **tmux / multiplexer integration** | Table-stakes vs WezTerm / iTerm2 for power users; persistent/detachable sessions. | Medium |
 | ~~**P5**~~ ✅ | **Ansible-native connection sync** — **DONE** | Meets Infra-as-Code teams where they live; unique angle vs Warp (no SSH manager) / Termius (no IaC). Read-only import of Ansible inventory → hosts + groups, plus group-driven theming. Built on **`feat/ansible`** (in DevOps testing). See §5. | Delivered |
 
 ### The wedge (recommended focus) 🧭
-Our most **defensible** play is **P1 + P2 fused**: an **AI agent that operates
+Our most **defensible** play is **P1 + P2 fused**: an **agent that operates
 across our saved hosts and team vault, with shareable live sessions.** Neither
 Warp (no SSH manager / vault) nor Termius (no AI) has this intersection — it's
 unique to our positioning.
@@ -190,7 +193,8 @@ Unranked; promote into the table above when scoped.
 
 ## 7. Open items (unassessed competitors)
 Not covered by the last verified scan — research before relying on these:
-- **iTerm2** — tmux control-mode integration, triggers, Python API.
+- **iTerm2** — tmux control-mode integration, triggers, and Python API. Its
+  optional generative-AI plugin was verified on 2026-07-21.
 - **Wave Terminal** — AI + graphical widgets / blocks.
 - **SecureCRT / Royal TSX** — enterprise credential brokering, non-SSH connection
   types (RDP/VNC/serial/telnet), session organization at scale.
@@ -215,3 +219,4 @@ Market scan 2026-07-15 (fact-checked, 25 verified claims):
 - Termius — https://termius.com/vault , https://termius.com/enterprise , https://termius.com/blog/meet-vaults , https://termius.com/pricing
 - WezTerm — https://github.com/wezterm/wezterm
 - Ghostty cross-platform — https://github.com/ghostty-org/ghostty/discussions/12290
+- iTerm2 AI plugin — https://iterm2.com/ai-plugin.html
