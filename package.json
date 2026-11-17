@@ -1,0 +1,12 @@
+{
+  "name": "sarv-terminal-scripts",
+  "private": true,
+  "description": "Release shortcuts for SarvTerminal. The app itself builds with zig build.",
+  "scripts": {
+    "release:patch": "./scripts/release-ci.sh patch",
+    "release:minor": "./scripts/release-ci.sh minor",
+    "release:major": "./scripts/release-ci.sh major",
+    "release:dry": "./scripts/release-ci.sh dry",
+    "release:secrets": "./scripts/set-release-secrets.sh"
+  }
+}
