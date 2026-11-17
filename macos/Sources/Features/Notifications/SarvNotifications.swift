@@ -35,6 +35,9 @@ enum SarvNotificationEvent {
     /// A tab emitted a desktop notification with a message (e.g. Claude Code's
     /// "needs your permission to…" via an OSC 9/777 sequence).
     case tabMessage(tab: String, message: String, tabID: UUID)
+    /// A tab's agent is still waiting on the user minutes after it first asked.
+    /// Replaces that tab's banner and stays out of the inbox.
+    case agentReminder(tab: String, tabID: UUID)
 }
 
 /// Central macOS-notification helper for SarvTerminal's app-level events
@@ -152,8 +155,10 @@ final class SarvNotifications {
         }
 
         // Mirror into the in-app inbox (the toolbar bell).
-        SarvNotificationCenter.shared.add(title: copy.title, body: copy.body,
-                                          route: copy.route, url: copy.url, tabID: copy.tabID)
+        if copy.addsToInbox {
+            SarvNotificationCenter.shared.add(title: copy.title, body: copy.body,
+                                              route: copy.route, url: copy.url, tabID: copy.tabID)
+        }
 
         var userInfo: [String: Any] = [Self.kindKey: copy.route.rawValue,
                                         Self.routeKey: copy.route.rawValue]
@@ -242,24 +247,30 @@ final class SarvNotifications {
                 HostManagerController.shared.show()
             }
         case .tab:
-            HostManagerController.shared.show()
-            if let tabID { VaultsTabsModel.shared.selectTerminal(tabID) }
+            // The tab may live in any window, not just the front one.
+            let owner = tabID.flatMap { id in
+                HostManagerController.all.first { $0.tabs.terminals.contains { $0.id == id } }
+            } ?? HostManagerController.shared
+            owner.show()
+            if let tabID { owner.tabs.focusAgentTab(tabID) }
         }
     }
 
     // MARK: - Copy
 
-    private struct Copy {
+    struct Copy {
         let title: String
         let body: String
         let route: SarvNotificationRoute
-        var url: URL? = nil
-        var tabID: UUID? = nil
+        var url: URL?
+        var tabID: UUID?
         /// Suffix that lets same-kind notifications collapse vs. stack.
         var dedupe: String = "latest"
+        /// Whether the in-app inbox also records it.
+        var addsToInbox = true
     }
 
-    private static func copy(for event: SarvNotificationEvent) -> Copy {
+    static func copy(for event: SarvNotificationEvent) -> Copy {
         switch event {
         case let .sftpFinished(file, host):
             return Copy(
@@ -345,6 +356,16 @@ final class SarvNotifications {
                 route: .tab,
                 tabID: tabID,
                 dedupe: tabID.uuidString
+            )
+        case let .agentReminder(tab, tabID):
+            return Copy(
+                title: tab,
+                body: "Still waiting for your input — click to open.",
+                route: .tab,
+                tabID: tabID,
+                // Same id as the tab's first banner, so the reminder replaces it.
+                dedupe: tabID.uuidString,
+                addsToInbox: false
             )
         }
     }

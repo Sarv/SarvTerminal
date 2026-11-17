@@ -14,6 +14,8 @@ struct VaultsTabStrip: View {
     @ObservedObject var tabs: VaultsTabsModel = .shared
     @ObservedObject var section: HostManagerSelection = .shared
     @ObservedObject private var syncSettings: SyncSettings = .shared
+    /// Agent states, for the tab dots.
+    @ObservedObject private var agents: AgentWatcherStore = .shared
     /// Opens the command palette (quick connect / Local Terminal / Serial).
     let newTabAction: () -> Void
 
@@ -32,6 +34,7 @@ struct VaultsTabStrip: View {
             // a subtle "island" so the navigation cluster (Vaults / SFTP) reads
             // as distinct from the terminal tabs and isn't mistaken for one.
             navSegment
+            AgentWatcherButton(tabs: tabs)
             divider
             // Only the terminal tabs scroll horizontally when they overflow.
             ScrollViewReader { proxy in
@@ -42,7 +45,7 @@ struct VaultsTabStrip: View {
                                 tab: tab,
                                 number: index + 1,
                                 isActive: tabs.selection == .terminal(tab.id),
-                                needsAttention: tabs.attentionTabs.contains(tab.id),
+                                dot: chipDot(for: tab),
                                 onRename: { renameText = tab.displayName; renamingTab = tab },
                                 onSaveSession: { tabs.promptSaveSession(for: tab) }
                             )
@@ -92,6 +95,15 @@ struct VaultsTabStrip: View {
             }
             renamingTab = nil
         }
+    }
+
+    /// The tab's agent state dot, or the plain attention dot for a tab
+    /// without an agent.
+    private func chipDot(for tab: VaultsTabsModel.TerminalTab) -> AgentChipDot? {
+        let state = AgentWatcherPresentation.tabState(
+            surfaceIDs: (tab.surfaceTree.root?.leaves() ?? []).map(\.id), snapshots: agents.snapshots)
+        return AgentWatcherPresentation.chipDot(
+            agentState: state, hasAttention: tabs.attentionTabs.contains(tab.id))
     }
 
     // MARK: - Section pills
@@ -347,8 +359,8 @@ private struct TerminalTabItem: View {
     let isActive: Bool
     /// Optional accent color set via the Tab Color menu.
     var color: Color?
-    /// The tab rang the bell while off-screen (e.g. a Claude Code prompt).
-    var needsAttention: Bool = false
+    /// Agent state or attention dot; nil shows the terminal icon.
+    var dot: AgentChipDot?
     /// Mouse is over the chip — blank the leading slot for the close overlay.
     let hovering: Bool
 
@@ -364,8 +376,9 @@ private struct TerminalTabItem: View {
             Group {
                 if hovering {
                     Color.clear
-                } else if needsAttention {
-                    Circle().fill(Color.orange).frame(width: 8, height: 8)
+                } else if let dot {
+                    Circle().fill(dot.color.color).frame(width: 8, height: 8)
+                        .accessibilityLabel(dot.label)
                 } else {
                     Image(systemName: "terminal")
                         .font(.system(size: 10, weight: .medium))
@@ -466,7 +479,7 @@ private struct TabChip: View {
     @ObservedObject var tab: VaultsTabsModel.TerminalTab
     let number: Int
     let isActive: Bool
-    var needsAttention: Bool = false
+    var dot: AgentChipDot?
     let onRename: () -> Void
     let onSaveSession: () -> Void
 
@@ -506,7 +519,7 @@ private struct TabChip: View {
             number: number,
             isActive: isActive,
             color: tab.color,
-            needsAttention: needsAttention,
+            dot: dot,
             hovering: hovering
         )
         // Close button, drawn over the leading icon slot on hover. Visual only —

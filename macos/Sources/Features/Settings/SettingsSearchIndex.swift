@@ -99,6 +99,10 @@ struct SettingsSearchEntry: Identifiable {
         e("Master password", .sync, "sync", "master", "password", "encrypt", "key"),
         e("Pull / Sync now", .sync, "sync", "pull", "push", "upload", "download"),
 
+        // AI Agents
+        e("AI Agent Watcher", .aiAgents, "ai", "agent", "watcher", "robot", "binoculars", "enable", "disable", "needs you", "done", "idle", "show done"),
+        e("Agent hooks", .aiAgents, "hook", "hooks", "claude", "codex", "gemini", "status", "setup"),
+
         // Advanced
         e("Edit config file", .advanced, "config", "edit", "file", "raw", "editor"),
         e("Open config externally", .advanced, "config", "external", "editor", "open"),

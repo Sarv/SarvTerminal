@@ -839,6 +839,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_PROGRESS_REPORT:
                 progressReport(app, target: target, v: action.action.progress_report)
 
+            case GHOSTTY_ACTION_PROGRAM_STATUS:
+                programStatus(app, target: target, v: action.action.program_status)
+
             case GHOSTTY_ACTION_CONFIG_CHANGE:
                 configChange(app, target: target, v: action.action.config_change)
 
@@ -2017,6 +2020,13 @@ extension Ghostty {
                 guard let surface = target.target.surface else { return }
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
                 guard let title = String(cString: v.title!, encoding: .utf8) else { return }
+                // Raw and undebounced: the agent watcher reads spinner glyphs
+                // even when a user rename hides the terminal's own title.
+                NotificationCenter.default.post(
+                    name: .sarvSurfaceTitle,
+                    object: surfaceView,
+                    userInfo: ["title": title]
+                )
                 surfaceView.setTitle(title)
 
             default:
@@ -2422,6 +2432,25 @@ extension Ghostty {
             }
         }
 
+        /// OSC 7501: hand the program's status to the agent watcher.
+        private static func programStatus(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_program_status_s) {
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface),
+                  let status = AgentProgramStatus(v.state)
+            else { return }
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .sarvSurfaceProgramStatus,
+                    object: surfaceView,
+                    userInfo: ["status": status]
+                )
+            }
+        }
+
         private static func progressReport(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
@@ -2434,6 +2463,18 @@ extension Ghostty {
             case GHOSTTY_TARGET_SURFACE:
                 guard let surface = target.target.surface else { return }
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
+
+                // The agent watcher needs progress even when the progress bar
+                // is turned off in config, so post before that guard.
+                let agentProgress = AgentProgress(Ghostty.Action.ProgressReport.State(v.state))
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: .sarvSurfaceProgress,
+                        object: surfaceView,
+                        userInfo: ["progress": agentProgress]
+                    )
+                }
+
                 guard let config = (NSApplication.shared.delegate as? AppDelegate)?.ghostty.config else { return }
 
                 guard config.progressStyle else {

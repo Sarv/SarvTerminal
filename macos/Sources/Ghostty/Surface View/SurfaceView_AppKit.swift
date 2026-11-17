@@ -200,40 +200,35 @@ extension Ghostty {
         /// (~150ms) to detect host-key/password prompts and connection results,
         /// so it must see fresh output on every tick.
         func liveVisibleText() -> String {
-            guard let surface = self.surface else { return "" }
-            var text = ghostty_text_s()
-            let sel = ghostty_selection_s(
-                top_left: ghostty_point_s(
-                    tag: GHOSTTY_POINT_VIEWPORT,
-                    coord: GHOSTTY_POINT_COORD_TOP_LEFT,
-                    x: 0,
-                    y: 0),
-                bottom_right: ghostty_point_s(
-                    tag: GHOSTTY_POINT_VIEWPORT,
-                    coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
-                    x: 0,
-                    y: 0),
-                rectangle: false)
-            guard ghostty_surface_read_text(surface, sel, &text) else { return "" }
-            defer { ghostty_surface_free_text(surface, &text) }
-            guard let ptr = text.text else { return "" }
-            return String(cString: ptr)
+            readText(GHOSTTY_POINT_VIEWPORT)
         }
 
         /// Read the full screen text INCLUDING scrollback (uncached). Backs the
         /// search bar's grep-style "only matching lines" filter, which needs the
         /// whole buffer — not just the visible viewport — to filter against.
         func liveScreenText() -> String {
+            readText(GHOSTTY_POINT_SCREEN)
+        }
+
+        /// Read the active area (the bottom screenful the program draws into),
+        /// uncached and independent of where the user has scrolled. The agent
+        /// watcher reads prompts from it.
+        func liveActiveText() -> String {
+            readText(GHOSTTY_POINT_ACTIVE)
+        }
+
+        /// Read every line of one point space, top-left to bottom-right.
+        private func readText(_ tag: ghostty_point_tag_e) -> String {
             guard let surface = self.surface else { return "" }
             var text = ghostty_text_s()
             let sel = ghostty_selection_s(
                 top_left: ghostty_point_s(
-                    tag: GHOSTTY_POINT_SCREEN,
+                    tag: tag,
                     coord: GHOSTTY_POINT_COORD_TOP_LEFT,
                     x: 0,
                     y: 0),
                 bottom_right: ghostty_point_s(
-                    tag: GHOSTTY_POINT_SCREEN,
+                    tag: tag,
                     coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
                     x: 0,
                     y: 0),

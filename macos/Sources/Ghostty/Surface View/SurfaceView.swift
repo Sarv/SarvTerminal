@@ -807,17 +807,23 @@ extension Ghostty {
                     return try initialInput.withCString { cInput in
                         config.initial_input = cInput
 
+                        // Every pane tells agent hooks where to report status
+                        // and which pane they run in (AgentHookEnvironment).
+                        let environment = environmentVariables.merging(
+                            AgentHookEnvironment.values(socketPath: AgentStatusSocket.path, paneID: view.id)
+                        ) { _, paneValue in paneValue }
+
                         // Convert dictionary to arrays for easier processing
-                        let keys = Array(environmentVariables.keys)
-                        let values = Array(environmentVariables.values)
+                        let keys = Array(environment.keys)
+                        let values = Array(environment.values)
 
                         // Create C strings for all keys and values
                         return try keys.withCStrings { keyCStrings in
                             return try values.withCStrings { valueCStrings in
                                 // Create array of ghostty_env_var_s
                                 var envVars = [ghostty_env_var_s]()
-                                envVars.reserveCapacity(environmentVariables.count)
-                                for i in 0..<environmentVariables.count {
+                                envVars.reserveCapacity(environment.count)
+                                for i in 0..<environment.count {
                                     envVars.append(ghostty_env_var_s(
                                         key: keyCStrings[i],
                                         value: valueCStrings[i]
@@ -826,7 +832,7 @@ extension Ghostty {
 
                                 return try envVars.withUnsafeMutableBufferPointer { buffer in
                                     config.env_vars = buffer.baseAddress
-                                    config.env_var_count = environmentVariables.count
+                                    config.env_var_count = environment.count
                                     return try body(&config)
                                 }
                             }

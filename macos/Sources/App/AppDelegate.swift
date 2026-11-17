@@ -273,6 +273,10 @@ class AppDelegate: NSObject,
         // Initial config loading
         ghosttyConfigDidChange(config: ghostty.config)
 
+        // Watch every tab's AI agent (working / needs you / done), unless
+        // turned off in Settings ▸ AI Agents.
+        if AgentWatcherStore.enabledInSettings { AgentWatcherStore.shared.start() }
+
         // Relabel the static menu titles ("About X", "Hide X", "Quit X", …) from
         // the bundle name so the dev build reads "Sarv Terminal Dev" everywhere.
         // No-op for the release build (its name is already "Sarv Terminal").
@@ -498,6 +502,8 @@ class AppDelegate: NSObject,
         // Capture the final set of open tabs so they can be reopened next launch
         // (picks up renames the per-change autosave may have missed).
         VaultsTabsModel.shared.persistSession()
+        // Removes the agent status socket file.
+        AgentWatcherStore.shared.stop()
 
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be

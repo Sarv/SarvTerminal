@@ -51,6 +51,15 @@ extension Notification.Name {
     /// Posted (object = `SurfaceView`) when a surface emits an OSC desktop
     /// notification; `userInfo["title"]`/`["body"]` carry the message text.
     static let sarvSurfaceDesktopNotification = Notification.Name("com.sarv.terminal.surfaceDesktopNotification")
+    /// Posted (object = `SurfaceView`) when a program reports its status with
+    /// OSC 7501; `userInfo["status"]` carries an `AgentProgramStatus`.
+    static let sarvSurfaceProgramStatus = Notification.Name("com.sarv.terminal.surfaceProgramStatus")
+    /// Posted (object = `SurfaceView`) on every OSC 9;4 progress report, even
+    /// with the progress bar disabled; `userInfo["progress"]` is an `AgentProgress`.
+    static let sarvSurfaceProgress = Notification.Name("com.sarv.terminal.surfaceProgress")
+    /// Posted (object = `SurfaceView`) with each raw title the terminal sets,
+    /// before debouncing; `userInfo["title"]` is the `String`.
+    static let sarvSurfaceTitle = Notification.Name("com.sarv.terminal.surfaceTitle")
 }
 
 /// Transferable drag payload for a terminal tab (modern SwiftUI
@@ -202,6 +211,8 @@ final class VaultsTabsModel: ObservableObject {
     /// libghostty. Embedded Vaults surfaces have no BaseTerminalController, so
     /// this model answers those requests itself.
     private var clipboardObservers: [AnyCancellable] = []
+    /// Watcher banners for this window's panes.
+    private var agentEffectObserver: AnyCancellable?
     /// Coalesce a burst of tab changes into a single write per runloop tick.
     private var persistScheduled = false
     /// Tabs from the previous run, loaded at init and offered for reopen once
@@ -219,6 +230,8 @@ final class VaultsTabsModel: ObservableObject {
             if case let .terminal(id) = selection {
                 lastTerminalID = id
                 attentionTabs.remove(id)
+                // A finished agent tab turns idle once it is seen.
+                MainActor.assumeIsolated { AgentWatcherStore.shared.sampleAll() }
             }
         }
     }
@@ -572,6 +585,10 @@ final class VaultsTabsModel: ObservableObject {
 
     private func tab(containing surface: Ghostty.SurfaceView) -> TerminalTab? {
         terminals.first { $0.surfaceTree.contains(surface) }
+    }
+
+    private func tab(containingSurfaceID surfaceID: UUID) -> TerminalTab? {
+        terminals.first { tab in tab.surfaceTree.root?.leaves().contains { $0.id == surfaceID } == true }
     }
 
     // MARK: - Connection registry (per surface)
@@ -1537,6 +1554,45 @@ final class VaultsTabsModel: ObservableObject {
         selection = .terminal(id)
     }
 
+    /// Selects a tab and puts keyboard focus on one of its panes, showing the
+    /// pane first when focus mode or a zoomed split would hide it.
+    @MainActor
+    func focusPane(tabID: UUID, surfaceID: UUID) {
+        guard let tab = terminals.first(where: { $0.id == tabID }),
+              let surface = tab.surfaceTree.root?.leaves().first(where: { $0.id == surfaceID })
+        else { return selectTerminal(tabID) }
+        selectTerminal(tabID)
+        if focusMode { focusModeSurfaceID = surfaceID }
+        if let zoomed = tab.surfaceTree.zoomed, zoomed != tab.surfaceTree.root?.node(view: surface) {
+            tab.surfaceTree = SplitTree(root: tab.surfaceTree.root, zoomed: nil)
+        }
+        Ghostty.moveFocus(to: surface)
+    }
+
+    /// Selects a tab and focuses its most urgent agent pane, so a split tab
+    /// lands on the agent that needs the user. Plain select without an agent.
+    @MainActor
+    func focusAgentTab(_ tabID: UUID) {
+        let paneIDs = terminals.first { $0.id == tabID }?.surfaceTree.root?.leaves().map(\.id) ?? []
+        guard let lead = AgentWatcherPresentation.leadPane(
+            of: paneIDs, snapshots: AgentWatcherStore.shared.snapshots)
+        else { return selectTerminal(tabID) }
+        focusPane(tabID: tabID, surfaceID: lead)
+    }
+
+    /// Every tab with its panes, in position order, for the agent watcher.
+    @MainActor
+    func agentWatcherInputs() -> [AgentWatcherTabInput] {
+        terminals.map { tab in
+            AgentWatcherTabInput(
+                tabID: tab.id,
+                name: tab.displayName,
+                panes: (tab.surfaceTree.root?.leaves() ?? []).map {
+                    AgentWatcherTabInput.Pane(surfaceID: $0.id, name: paneDisplayTitle(for: $0))
+                })
+        }
+    }
+
     /// Select the Nth terminal tab (0-based) — backs ⌘1…⌘8.
     func selectTab(index: Int) {
         guard terminals.indices.contains(index) else { return }
@@ -1953,7 +2009,7 @@ final class VaultsTabsModel: ObservableObject {
     /// i.e. the user can actually see it, so it needs no attention dot or banner.
     /// When the app is in the background, even the selected tab isn't visible, so
     /// we still flag it (the user notices it on return).
-    private func isTabOnScreen(_ id: UUID) -> Bool {
+    func isTabOnScreen(_ id: UUID) -> Bool {
         selection == .terminal(id) && NSApp.isActive
     }
 
@@ -1977,41 +2033,6 @@ final class VaultsTabsModel: ObservableObject {
         }
     }
 
-    /// Whether an OSC notification message warrants a BANNER (vs. just flagging
-    /// the tab). AI agents emit a message BOTH when they need the user to act
-    /// ("… needs your permission") AND when they merely end their turn and go idle
-    /// ("… is waiting for your input") — the latter needs nothing from the user.
-    /// We can't know every agent's wording, so: default to notifying, and only
-    /// suppress messages that clearly read as an idle / turn-ended state — UNLESS
-    /// the text also looks actionable, which always wins (so we never drop a real
-    /// prompt). Agent-agnostic (keys off universal vocabulary, not agent names);
-    /// tune the lists below if some agent's phrasing slips through.
-    private func messageNeedsAttention(_ body: String) -> Bool {
-        let text = body.lowercased()
-        // Actionable — the user must DO something. Checked first, so it ALWAYS
-        // banners even when the text also contains an idle word (e.g. "waiting for
-        // your approval"). A trailing "?" is treated as a prompt too.
-        let actionable = ["permission", "approv", "confirm", "authoriz", "y/n",
-                          "yes/no", "needs your", "need your", "requires your",
-                          "require your", "requires", "action required",
-                          "action needed", "attention required", "needs attention",
-                          "input required", "response required", "decision",
-                          "decide", "choose", "select", "proceed", "allow",
-                          "deny", "grant", "review", "?"]
-        if actionable.contains(where: text.contains) { return true }
-        // Idle / turn-ended — nothing needed from the user; dot only, no banner.
-        // Anything that matches NEITHER list still notifies (default-notify), so a
-        // new/unknown "needs you" message is never silently dropped.
-        let idle = ["waiting for your", "waiting for input", "awaiting", "is ready",
-                    "ready for input", "standing by", "on standby", "task complete",
-                    "task finished", "is complete", "completed", "all done",
-                    "finished", "success", "succeeded", "idle", "no action needed",
-                    "nothing to do", "session ended", "session complete",
-                    "up to date", "turn complete", "response complete",
-                    "generation complete"]
-        return !idle.contains(where: text.contains)
-    }
-
     /// A surface emitted an OSC desktop notification with a message (e.g.
     /// Claude Code's "needs your permission to…"). Flag the tab, and banner the
     /// message ONLY when it needs the user (an idle "waiting for input" gets the
@@ -2023,15 +2044,47 @@ final class VaultsTabsModel: ObservableObject {
         guard !body.isEmpty else { return }
         let name = tab.displayName
         let id = tab.id
+        let surfaceID = surface.id
         Task { @MainActor in
             // Never flag or banner the tab that's on screen; re-checked here since
             // selection may have changed since the OSC notification arrived.
             guard !self.isTabOnScreen(id) else { return }
             // Attention dot regardless; banner only when the message needs the user.
             self.attentionTabs.insert(id)
-            guard self.messageNeedsAttention(body) else { return }
+            let paneIsAgent = AgentWatcherStore.shared.state(of: surfaceID).isAgent
+            guard AgentMessageClassifier.bannersTabMessage(body, paneIsAgent: paneIsAgent) else { return }
             SarvNotifications.shared.notify(.tabMessage(tab: name, message: body, tabID: id))
         }
+    }
+
+    /// Banners the watcher's needs-you and reminder effects for panes in this
+    /// window's tabs. The tab on screen is never bannered.
+    @MainActor private func handleAgentEffect(_ effect: AgentWatcherEffect) {
+        guard let tab = tab(containingSurfaceID: effect.surfaceID),
+              !visiblePaneIDs(of: tab).contains(effect.surfaceID)
+        else { return }
+        let leaves = tab.surfaceTree.root?.leaves() ?? []
+        let paneName = leaves.first { $0.id == effect.surfaceID }.map(paneDisplayTitle(for:)) ?? ""
+        let name = AgentWatcherPresentation.bannerName(
+            tab: tab.displayName, pane: paneName, paneCount: leaves.count)
+        switch effect.effect {
+        case .notify:
+            let message = effect.message ?? "Needs your input"
+            SarvNotifications.shared.notify(.tabMessage(tab: name, message: message, tabID: tab.id))
+        case .remind:
+            SarvNotifications.shared.notify(.agentReminder(tab: name, tabID: tab.id))
+        }
+    }
+
+    /// The panes of a tab the user can see right now: none when the tab is
+    /// not on screen, else what focus mode or a zoomed split leaves showing.
+    func visiblePaneIDs(of tab: TerminalTab) -> Set<UUID> {
+        guard isTabOnScreen(tab.id) else { return [] }
+        return AgentWatcherPresentation.visiblePanes(
+            all: (tab.surfaceTree.root?.leaves() ?? []).map(\.id),
+            zoomed: tab.surfaceTree.zoomed?.leaves().map(\.id),
+            focusMode: focusMode,
+            focusModeSurfaceID: focusModeSurfaceID)
     }
 
     /// libghostty asks for confirmation before completing a clipboard action —
@@ -2105,6 +2158,9 @@ final class VaultsTabsModel: ObservableObject {
         observe(Ghostty.Notification.ghosttyToggleFullscreen) { [weak self] in self?.handleToggleFullscreen($0) }
         observe(.ghosttyBellDidRing) { [weak self] in self?.handleBell($0) }  // tab needs attention
         observe(.sarvSurfaceDesktopNotification) { [weak self] in self?.handleSurfaceNotification($0) }
+        agentEffectObserver = MainActor.assumeIsolated {
+            AgentWatcherStore.shared.effects.sink { [weak self] in self?.handleAgentEffect($0) }
+        }
         observe(.ghosttyCloseTab) { [weak self] in self?.handleCloseTabNote($0, kind: .this) }
         observe(.ghosttyCloseOtherTabs) { [weak self] in self?.handleCloseTabNote($0, kind: .other) }
         observe(.ghosttyCloseTabsOnTheRight) { [weak self] in self?.handleCloseTabNote($0, kind: .right) }

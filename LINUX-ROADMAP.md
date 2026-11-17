@@ -2219,6 +2219,83 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **Verify on Linux.** Hover a tab-bar button until its tip shows, then click it: the tip disappears and the popover opens clean. Hover the same button while its popover is open: no tip. Close the popover and hover again: the tip returns.
 
+## 47. AI Agent Watcher (per-tab agent state, hooks, reminders)
+
+**What it is.** A robot icon in the tab bar, right after the Vaults/SFTP island, shows which tabs have an AI coding agent (Claude Code, Codex, Gemini CLI, Copilot CLI, Cursor CLI, Droid, Qwen Code) **working**, **needing you**, or **done**.
+- **The icon.** It shows an orange count badge and pulses while any agent needs you. It goes blue and "breathes" while agents are only working. It is plain when idle. Under Reduce Motion it keeps the colors and drops the motion.
+- **Clicking the icon** opens a popover headed "AI Agents". The popover lists agent tabs in tab-position order: the ⌘N number, the tab name, a colored state chip and the time in that state. Needs-you rows are tinted orange. Split panes running several agents show as indented sub-rows. Clicking a row jumps to that tab and closes the popover. A footer reads "N other tabs have no AI agent".
+- **Each tab chip** gets a persistent state-colored dot.
+- **While an agent needs you,** a desktop reminder repeats every 5 minutes. Clicking the reminder focuses the tab.
+- **Settings ▸ AI Agents** (robot glyph) holds:
+  - the on/off switch. Off means no icon, no dots, no sampling and no socket.
+  - "Show done for" (`SarvAgentDoneHold`, default 2 minutes).
+  - per-agent hook install/remove, plus "Set Up All".
+- **Hook setup offer.** The first time an agent without hooks runs, SarvTerminal offers once per session to set them up.
+
+**Symptom it solves.** With agents in many tabs, you had to poll every tab to find the one waiting on a permission prompt. The old attention dot cleared the moment you selected the tab, even if the agent was still blocked.
+
+**Root cause & reasoning.** The terminal already sees the signals: OSC 9;4 progress, titles with spinner glyphs, OSC 9/777 desktop notifications, the foreground process, and the screen. Nothing combined them into one durable per-pane state. On their own, the signals are ambiguous. "Done" and "waiting for you" look the same from progress alone, which is why hooks exist: the agent reports its exact state.
+- **The state is level-triggered.** It changes only when a signal changes it. Merely looking at a tab never clears needs-you.
+- **Done is the exception.** A done pane turns idle only after it has been on screen and the done-hold has passed since it finished, so a finished tab you never looked at stays done.
+
+**Platform-agnostic logic.**
+1. **One pure reducer**, `reduce(paneState, event, now) -> (paneState, effects)`, owns every decision. The rest is I/O at the edges.
+   - **States:** `noAgent < idle < working < done < needsYou`, in increasing urgency. A tab shows its most urgent pane.
+   - **Events:** `progress(active|cleared|error)`, `title`, `notification(body)`, `programStatus(idle|working|done|blocked|error)`, `screenSample(tail)`, `foreground(process)`, `viewed(doneHold)`, `tick`.
+   - **Rules:**
+     - Progress active → working. Progress cleared while working → done. Progress error → done.
+     - A program status of blocked → needsYou. Done and error → done.
+     - A spinner glyph in the title means working; `✳` means idle.
+     - Working expires after 20 s with no fresh signal.
+     - A screen sample is read only for panes in done, or in needsYou that came from the screen, and only for known prompts. It can turn done into needsYou, or clear a screen-sourced needsYou.
+     - When the foreground process is a shell again (`zsh`/`bash`/`fish`/`sh`), the agent has exited, so the pane is dropped back to noAgent.
+     - `viewed(doneHold)` turns done into idle once `now − since ≥ doneHold`.
+     - `tick` emits `remind` every 5 minutes while the pane is in needsYou. Entering needsYou emits `notify`.
+2. **The OSC 7501 core parser** (committed separately in `src/`):
+   - Reports look like `ESC ] 7501 ; state=<idle|working|done|blocked|error|clear>[:kind=permission|question|auth][:id=…] ST|BEL`, and become the apprt action `program_status`. `clear` means idle.
+   - The query `7501;?` gets the reply `7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth`.
+   - Claude Code hooks can't write raw OSC 7501, so an OSC 777 notification titled `sarv-agent-status`, with the state word as its body, is routed the same way.
+3. **Hook transports.** Every pane's environment gets three variables: `SARV_AGENT_STATUS=1`, `SARV_AGENT_SOCKET=<path>` and `SARV_PANE_ID=<surface uuid>`.
+   - *Terminal sequence* (Claude Code): the hook prints `{"terminalSequence":"\e]777;notify;sarv-agent-status;<state>\a"}`, guarded by `[ -n "$SARV_AGENT_STATUS" ]`.
+   - *Socket* (all the others): the hook pipes the line `sarv-agent-status <pane-uuid> <state>` to `nc -U -w 2 "$SARV_AGENT_SOCKET"`.
+   - Both forms are silent and exit 0 outside SarvTerminal, so agents run elsewhere or over SSH are unaffected.
+   - **The socket** is per process, at `<tmp>/sarvterminal-agents-<pid>.sock`, or `/tmp/sarvterminal-agents-<uid>-<pid>.sock` when that path exceeds 103 bytes. It reads at most 512 bytes per client and only the first line. A line naming a pane this app doesn't own is dropped.
+4. **Hook install** edits each agent's own config. Our entries are marked by the command containing `sarv-agent-status`.
+   - Install and remove touch only our entries and leave the user's other hooks alone.
+   - A shared file is backed up before it is changed. Copilot gets a file of its own, which is deleted on remove.
+   - Per-agent event maps, file paths and env overrides (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`) live in one table, `AgentHookIntegration.all`.
+   - After any change, post `hooksChanged` so every view rereads its install state.
+5. **Sampling.** Sample every pane every 2 s, and also when the app activates or a tab is selected.
+   - Each sample records the foreground process, the screen tail (only when the reducer needs it), and `onScreen`.
+   - `onScreen` is true only when the app is active, the window is visible and not minimized, and the pane is in the selected tab or its visible split.
+   - Panes missing from a sample are dropped.
+6. **Publishing.** Publish per-pane `(state, since)` snapshots only when one of them changes, so spinner frames don't redraw the tab strip.
+
+**macOS→Linux/GTK equivalents.**
+
+| macOS | Why | Linux/GTK |
+|---|---|---|
+| `AgentStateReducer` (pure Swift) | All decisions, unit-tested | Port as a pure Zig module with the same table of tests (AgentStateReducerTests, AgentClaudeReplayTests) |
+| `AgentWatcherStore` + `Timer` (2 s) | Sampling edge | `g_timeout_add_seconds(2, …)` on the main loop |
+| `NotificationCenter` `.sarvSurfaceProgress/Title/DesktopNotification/ProgramStatus` | Surface signals | Handle the apprt actions (`progress_report`, `set_title`, `desktop_notification`, `program_status`) in the GTK `Application` action switch, which currently logs `program_status` as unimplemented |
+| `surfaceModel.foregroundProcessName` | Agent running? | `tcgetpgrp(pty_fd)` → `/proc/<pgid>/comm` |
+| `liveActiveText()` | Screen tail | The core's viewport text read used by GTK selection/search |
+| `AgentStatusSocket` (BSD socket on a dispatch source) | Hook transport | `GSocketService` on a `GUnixSocketAddress` under `$XDG_RUNTIME_DIR` (fall back to `/tmp` with the uid), `0600`. `nc -U` exists on most distros; otherwise use `socat` in the hook |
+| `AgentHookEnvironment` merged in `SurfaceView` | Per-pane env | Add the three variables to the surface's env before spawning the pty |
+| `UserDefaults` (`SarvAgentWatcherEnabled`, `SarvAgentDoneHold`) | Settings | `GSettings` keys or the app's settings file |
+| `SarvNotifications` `.agentReminder` | Reminder + click-to-focus | `GNotification` with a default action carrying the tab id |
+| SwiftUI popover + `AIAgentGlyph` shape | Watcher UI | `GtkMenuButton` + `GtkPopover` with a `GtkListBox`. Draw the glyph with a Cairo path or ship it as a symbolic SVG icon |
+| `Motion` pulse/breathe, Reduce Motion | Icon animation | CSS animations on the button, gated on `gtk-enable-animations` |
+
+**Verify on Linux.**
+1. Run `claude` in tab 1 and `codex` in a split of tab 2, then install hooks from Settings.
+2. Ask tab 1 something that needs a permission. Its dot and the icon badge go orange, and a reminder fires again after 5 minutes. Answering returns it to working (blue, breathing icon). When it finishes, it shows done.
+3. Look at tab 1: it stays done for the configured hold, then turns idle.
+4. Leave a done tab unseen: it stays done.
+5. Quit the agent to the shell: the tab drops out of the popover, and the footer count rises.
+6. Run `printf '\e]7501;?\a'`: the reply lists the states and kinds.
+7. Disable the watcher: the icon and dots vanish, and the socket file is removed.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
