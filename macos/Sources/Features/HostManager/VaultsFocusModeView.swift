@@ -173,6 +173,7 @@ final class TooltipPresenter: ObservableObject {
 }
 
 extension View {
+    /// A hover tooltip. Empty text shows none.
     func hoverTip(_ text: String) -> some View {
         modifier(HoverTip(text: text))
     }
@@ -200,7 +201,7 @@ private struct HoverTip: ViewModifier {
             )
             .onHover { hovering in
                 pending?.cancel()
-                if hovering {
+                if hovering, !text.isEmpty {
                     let work = DispatchWorkItem {
                         TooltipPresenter.shared.show(text, anchor: frame, id: id)
                     }
@@ -210,6 +211,20 @@ private struct HoverTip: ViewModifier {
                     TooltipPresenter.shared.hide(id: id)
                 }
             }
+            // Clearing the text (a control that shouldn't show a tip right
+            // now) hides one already up.
+            .onChange(of: text) { newText in
+                if newText.isEmpty {
+                    pending?.cancel()
+                    TooltipPresenter.shared.hide(id: id)
+                }
+            }
+            // A click dismisses the tip, as native tooltips do, so it never
+            // sits on top of the popover or menu the click opened.
+            .simultaneousGesture(TapGesture().onEnded {
+                pending?.cancel()
+                TooltipPresenter.shared.hide(id: id)
+            })
     }
 }
 

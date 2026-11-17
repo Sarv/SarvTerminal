@@ -2194,6 +2194,31 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **Verify on Linux.** On a host with port 2011 and a ProxyJump, pick `id_ed25519 (ED25519)`: the tab runs `ssh-copy-id -i '~/.ssh/id_ed25519.pub' -p 2011 -o ProxyJump=… -o StrictHostKeyChecking=… 'root@<ip>'`, with `~` expanded. After the password, `ssh -p 2011 root@<ip>` logs in without a password. Set the host's identity file to a non-default key and confirm it moves to the top of the submenu. Empty `~/.ssh` gives the single disabled item. A host that can't connect has the whole submenu disabled.
 
+## 46. Hover tooltips hide on click and while their text is empty
+
+**What it is.** The app's shared hover tooltip (`.hoverTip(text)`, drawn once per window by `TooltipOverlay`) now gets out of the way. A click on the control hides its tip, and a control can turn its tip off by passing empty text.
+
+**Symptom.** Clicking a tab-bar button that opens a popover left the hover tip drawn on top of the popover until the pointer moved away.
+
+**Root cause & reasoning.** The tip only listened to hover in and hover out. A click doesn't end the hover, so the tip stayed up, and the window-level overlay drew it above the new popover. Native tooltips hide on click; ours didn't.
+
+**Platform-agnostic logic.**
+1. Hover in with non-empty text: schedule the tip after the shared appear delay (0.2 s). Hover out: cancel the pending show and hide the tip.
+2. Any click on the control: cancel the pending show and hide the tip.
+3. Text changes to empty: cancel and hide. Empty text never schedules a tip. A control with an open popover passes `""`, so hovering it shows nothing until the popover closes.
+4. Hide only clears the tip if this control is still the one showing it, so a stale hover-out can't wipe a newer tip.
+
+**macOS→Linux/GTK equivalents.**
+
+| macOS | Why | Linux/GTK |
+|---|---|---|
+| `HoverTip` modifier + `TooltipPresenter` singleton | One app-drawn tip per window | A shared tooltip popover per window, or `gtk_widget_set_tooltip_text` where the native tip suffices |
+| `.onHover` + `DispatchWorkItem` delay | Delayed show, cancellable | `GtkEventControllerMotion` enter/leave + `g_timeout_add` (remove the source on leave) |
+| `.simultaneousGesture(TapGesture())` | Hide on click without eating the click | `GtkGestureClick` in the capture phase that hides the tip and doesn't claim the sequence |
+| `.onChange(of: text)` to empty | Turn the tip off while a popover is open | Clear the tooltip (`gtk_widget_set_has_tooltip(FALSE)`) when the popover opens, restore it on close |
+
+**Verify on Linux.** Hover a tab-bar button until its tip shows, then click it: the tip disappears and the popover opens clean. Hover the same button while its popover is open: no tip. Close the popover and hover again: the tip returns.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
