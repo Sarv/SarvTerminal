@@ -1,0 +1,108 @@
+# Builds, signs, notarizes and publishes a SarvTerminal release from GitHub.
+#
+# Runs scripts/release.sh, the same script used for local releases, so the two
+# paths can never drift. Start it from Actions → release → Run workflow and
+# pick the bump. The script then:
+#   1. bumps VERSION and builds the app (ReleaseLocal, ReleaseFast)
+#   2. signs it with the Developer ID and packages and notarizes the DMG
+#   3. adds the Sparkle appcast item and the generated release notes under docs/
+#   4. commits "release: SarvTerminal X.Y.Z", tags vX.Y.Z, and pushes both
+#   5. creates the GitHub release with the DMG attached
+#   6. bumps the Homebrew cask in Sarv/homebrew-tap
+# The docs/ push then triggers pages.yml, which publishes the appcast.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   SARV_P12_BASE64          base64 of the Developer ID Application .p12
+#                            (base64 -i sarv-developerID-application.p12 | pbcopy)
+#   SARV_P12_PASSWORD        that .p12's password
+#   NOTARY_APPLE_ID          Apple ID used for notarization
+#   NOTARY_PASSWORD          app-specific password for that Apple ID
+#   SPARKLE_ED_PRIVATE_KEY   Sparkle EdDSA private key, exported with
+#                            `generate_keys -x sparkle_key.txt`
+#   RELEASE_TOKEN            fine-grained token from a repo admin, with
+#                            Contents: read and write on Sarv/SarvTerminal and
+#                            Sarv/homebrew-tap. It must be an admin's: the
+#                            "Protect main" ruleset lets only admins push to
+#                            main, and GITHUB_TOKEN pushes would not trigger
+#                            pages.yml either.
+#   HOMEBREW_TAP_TOKEN       optional; a separate token for the tap if
+#                            RELEASE_TOKEN can't reach it
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: Exact version (X.Y.Z). Overrides the bump when set.
+        type: string
+        required: false
+      dry_run:
+        description: Build, sign and notarize only. Push and publish nothing.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and tags: the release notes are generated from the
+          # commits since the previous vX.Y.Z tag.
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Select Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      # Xcode 26 ships the Metal compiler as a separate download.
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898969+github-actions[bot]@users.noreply.github.com"
+
+      - name: Build, sign, notarize and publish
+        env:
+          RELEASE_ARG: ${{ inputs.version != '' && inputs.version || inputs.bump }}
+          NO_PUSH: ${{ inputs.dry_run && '1' || '' }}
+          SARV_P12_BASE64: ${{ secrets.SARV_P12_BASE64 }}
+          SARV_P12_PASSWORD: ${{ secrets.SARV_P12_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: ./scripts/release.sh "$RELEASE_ARG"
+
+      - name: Keep the DMG as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SarvTerminal-dmg
+          path: dist/*.dmg
+          if-no-files-found: ignore
+          retention-days: 14

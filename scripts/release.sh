@@ -20,6 +20,10 @@
 #   after the local commit/tag and push everything (repo, tag, release, tap) by hand.
 #   With no arg it just builds the current ./VERSION (no commit/tag/push).
 #
+#   The same script runs in CI: .github/workflows/release.yml (Actions → release
+#   → Run workflow) passes the credentials as environment variables, listed in
+#   the Credentials section below.
+#
 # Credentials are kept in your macOS Keychain — never written to disk, never
 # seen by anyone but you:
 #   • Notarization: a notarytool Keychain profile you create ONCE (see below).
@@ -55,13 +59,27 @@ mkdir -p "$DIST_DIR"
 DMG_OUT="$DIST_DIR/SarvTerminal-$VERSION.dmg"
 
 # ── Credentials — Keychain only, nothing written to disk ─────────────────
+# CI (.github/workflows/release.yml) passes every credential as an environment
+# variable instead, from repository secrets:
+#   SARV_P12_BASE64 + SARV_P12_PASSWORD     Developer ID .p12 (base64) and its password
+#   NOTARY_APPLE_ID + NOTARY_PASSWORD       Apple ID + app-specific password for notarytool
+#   SPARKLE_ED_PRIVATE_KEY                  Sparkle EdDSA private key (`generate_keys -x`)
+#   HOMEBREW_TAP_TOKEN                      token that can push Sarv/homebrew-tap
+# Any variable left unset falls back to the local Keychain flow below.
+CI_TMP=$(mktemp -d)
+if [[ -n "${SARV_P12_BASE64:-}" ]]; then
+  SARV_P12_PATH="$CI_TMP/developer-id.p12"
+  printf '%s' "$SARV_P12_BASE64" | base64 --decode > "$SARV_P12_PATH"
+fi
 : "${SARV_P12_PATH:=$HOME/Downloads/sarv-developerID-application.p12}"
 [[ -f "$SARV_P12_PATH" ]] || { echo "✗ .p12 not found at $SARV_P12_PATH (set SARV_P12_PATH)"; exit 1; }
 
-# .p12 password: read from the login Keychain. If it's not there yet, prompt once
-# and store it in the Keychain (protected + never in a plaintext file).
+# .p12 password: from the environment, else the login Keychain. If it's in
+# neither, prompt once and store it in the Keychain (never in a plaintext file).
 P12_KC_SERVICE="sarv-terminal-p12"
-SARV_P12_PASSWORD=$(security find-generic-password -a "$USER" -s "$P12_KC_SERVICE" -w 2>/dev/null || true)
+if [[ -z "${SARV_P12_PASSWORD:-}" ]]; then
+  SARV_P12_PASSWORD=$(security find-generic-password -a "$USER" -s "$P12_KC_SERVICE" -w 2>/dev/null || true)
+fi
 if [[ -z "$SARV_P12_PASSWORD" ]]; then
   read -rsp "Password for the .p12 ($SARV_P12_PATH): " SARV_P12_PASSWORD; echo
   [[ -z "$SARV_P12_PASSWORD" ]] && { echo "✗ .p12 password required"; exit 1; }
@@ -74,7 +92,12 @@ fi
 #   xcrun notarytool store-credentials "sarv-notary" \
 #     --apple-id "you@sarv.com" --team-id "LV54AA5562" --password "<app-specific-pw>"
 NOTARY_PROFILE="${NOTARY_PROFILE:-sarv-notary}"
-APPLE_TEAM_ID="${APPLE_TEAM_ID:-LV54AA5562}"   # not secret; only used in the setup hint
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-LV54AA5562}"   # not secret
+if [[ -n "${NOTARY_APPLE_ID:-}" && -n "${NOTARY_PASSWORD:-}" ]]; then
+  NOTARY_AUTH=(--apple-id "$NOTARY_APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$NOTARY_PASSWORD")
+else
+  NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
+fi
 
 # ── Ephemeral signing keychain (no prompts) ────────────────────────────
 BUILD_KC="$HOME/Library/Keychains/sarv-build.keychain-db"
@@ -85,6 +108,7 @@ cleanup() {
   # shellcheck disable=SC2086
   security list-keychains -d user -s $ORIG_KEYCHAINS >/dev/null 2>&1 || true
   security delete-keychain "$BUILD_KC" 2>/dev/null || true
+  rm -rf "$CI_TMP"
 }
 trap cleanup EXIT
 
@@ -187,9 +211,11 @@ sign "$DMG_OUT"
 
 # ── Notarize + staple ──────────────────────────────────────────────────
 echo "=== Notarizing (a few minutes) ==="
-echo "  (using Keychain profile '$NOTARY_PROFILE' — if this fails, run once:"
-echo "     xcrun notarytool store-credentials $NOTARY_PROFILE --apple-id <you@…> --team-id $APPLE_TEAM_ID --password <app-specific-pw>)"
-xcrun notarytool submit "$DMG_OUT" --keychain-profile "$NOTARY_PROFILE" --wait
+if [[ "${NOTARY_AUTH[0]}" == "--keychain-profile" ]]; then
+  echo "  (using Keychain profile '$NOTARY_PROFILE' — if this fails, run once:"
+  echo "     xcrun notarytool store-credentials $NOTARY_PROFILE --apple-id <you@…> --team-id $APPLE_TEAM_ID --password <app-specific-pw>)"
+fi
+xcrun notarytool submit "$DMG_OUT" "${NOTARY_AUTH[@]}" --wait
 xcrun stapler staple "$DMG_OUT"
 xcrun stapler staple "$APP"
 
@@ -226,7 +252,14 @@ if [[ -f "$APPCAST" ]]; then
   LEN=$(stat -f%z "$DMG_OUT")
   SIGN_UPDATE="${SPARKLE_SIGN_UPDATE:-$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*artifacts/sparkle/Sparkle/bin/sign_update' 2>/dev/null | head -1)}"
   [[ -x "$SIGN_UPDATE" ]] || { echo "✗ Sparkle sign_update not found — build once so the Sparkle SPM artifacts exist, or set SPARKLE_SIGN_UPDATE"; exit 1; }
-  EDSIG=$("$SIGN_UPDATE" "$DMG_OUT" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')
+  # In CI the private key comes from SPARKLE_ED_PRIVATE_KEY on stdin (never a
+  # command-line argument); locally sign_update reads it from the Keychain.
+  if [[ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ]]; then
+    SIGN_OUT=$(printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$SIGN_UPDATE" --ed-key-file - "$DMG_OUT")
+  else
+    SIGN_OUT=$("$SIGN_UPDATE" "$DMG_OUT")
+  fi
+  EDSIG=$(sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/' <<<"$SIGN_OUT")
   [[ -n "$EDSIG" ]] || { echo "✗ Could not produce an EdDSA signature — is the Sparkle private key in your Keychain? (run generate_keys)"; exit 1; }
   BODY="      <enclosure url=\"$DL_URL\" sparkle:version=\"$VERSION\" sparkle:shortVersionString=\"$VERSION\" length=\"$LEN\" type=\"application/octet-stream\" sparkle:edSignature=\"$EDSIG\"/>"
 
@@ -432,6 +465,11 @@ fi
 # HOMEBREW_TAP_DIR to your local clone. Only version + sha256 are rewritten so
 # any hand-edits elsewhere in the cask survive. Skipped cleanly if absent.
 TAP_DIR="${HOMEBREW_TAP_DIR:-../homebrew-tap}"
+# CI has no local clone: fetch the tap with HOMEBREW_TAP_TOKEN, which can push.
+if [[ "$PUBLISHED" == "1" && ! -d "$TAP_DIR" && -n "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+  TAP_DIR="$CI_TMP/homebrew-tap"
+  git clone -q --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/Sarv/homebrew-tap.git" "$TAP_DIR"
+fi
 CASK_FILE="$TAP_DIR/Casks/sarv-terminal.rb"
 if [[ "$PUBLISHED" == "1" && -f "$CASK_FILE" ]]; then
   echo "=== Updating Homebrew cask $CASK_FILE ==="
