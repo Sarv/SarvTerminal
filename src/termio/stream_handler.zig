@@ -383,8 +383,9 @@ pub const StreamHandler = struct {
             .title_pop,
             .kitty_dnd,
             .osc_unknown,
-            .program_status,
             => {},
+
+            .program_status => self.programStatus(value),
         }
     }
 
@@ -1833,6 +1834,15 @@ pub const StreamHandler = struct {
         title: []const u8,
         body: []const u8,
     ) !void {
+        // An agent hook's status record rides on OSC 777 because hooks may
+        // not emit OSC 7501. Route it like 7501, ahead of the notification
+        // rate limit and the desktop-notifications setting, and never show it.
+        if (std.mem.eql(u8, title, apprt.action.ProgramStatus.hook_marker)) {
+            if (apprt.action.ProgramStatus.fromHookBody(body)) |status| {
+                self.surfaceMessageWriter(.{ .program_status = status });
+            }
+            return;
+        }
         self.surfaceMessageWriter(.{
             .desktop_notification = .init(title, body),
         });
@@ -1945,7 +1955,40 @@ pub const StreamHandler = struct {
     fn progressReport(self: *StreamHandler, report: terminal.osc.Command.ProgressReport) void {
         self.surfaceMessageWriter(.{ .progress_report = report });
     }
+
+    /// OSC 7501: answer the support query and pass the program's own
+    /// status record to the apprt.
+    fn programStatus(self: *StreamHandler, cmd: terminal.osc.Command.ProgramStatus) void {
+        switch (cmd) {
+            .report => |report| {
+                const status = apprt.action.ProgramStatus.fromReport(report) orelse return;
+                self.surfaceMessageWriter(.{ .program_status = status });
+            },
+            .query => |terminator| switch (terminator) {
+                inline else => |t| self.messageWriter(.{
+                    .write_stable = programStatusQueryReply(t),
+                }),
+            },
+        }
+    }
 };
+
+/// The full OSC 7501 query reply, ended like the query was.
+fn programStatusQueryReply(comptime terminator: terminal.osc.Terminator) []const u8 {
+    return "\x1b]7501;" ++ terminal.osc.program_status.query_reply ++ comptime terminator.string();
+}
+
+test "program_status query reply lists states and kinds" {
+    const testing = std.testing;
+    try testing.expectEqualStrings(
+        "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\",
+        programStatusQueryReply(.st),
+    );
+    try testing.expectEqualStrings(
+        "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x07",
+        programStatusQueryReply(.bel),
+    );
+}
 
 test "kitty clipboard read: targets-only never consumes a one-time grant" {
     const testing = std.testing;

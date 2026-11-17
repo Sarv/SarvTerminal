@@ -140,6 +140,9 @@ pub const Message = union(enum) {
     /// Report the progress of an action using a GUI element
     progress_report: terminal.osc.Command.ProgressReport,
 
+    /// A program reported its status with OSC 7501.
+    program_status: apprt.action.ProgramStatus,
+
     /// A command has started in the shell, start a timer.
     start_command,
 

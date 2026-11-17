@@ -368,6 +368,9 @@ pub const Action = union(Key) {
     /// split or the window is fullscreen.
     resize_window: ResizeWindow,
 
+    /// A program reported its status with OSC 7501.
+    program_status: ProgramStatus,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -441,6 +444,7 @@ pub const Action = union(Key) {
         reopen_closed_tab,
         move_tab_to_new_window,
         resize_window,
+        program_status,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -743,6 +747,113 @@ pub const InitialSize = extern struct {
 
         .none => void,
     };
+};
+
+/// An OSC 7501 program status report, reduced to the state and what a
+/// blocked program needs. No strings cross to the apprt.
+///
+/// Sync with: ghostty_action_program_status_s
+pub const ProgramStatus = extern struct {
+    state: State,
+    kind: Kind = .none,
+
+    pub const State = enum(c_int) {
+        idle,
+        working,
+        done,
+        blocked,
+        @"error",
+
+        test "ghostty.h ProgramStatus.State" {
+            try lib.checkGhosttyHEnum(State, "GHOSTTY_PROGRAM_STATUS_");
+        }
+    };
+
+    pub const Kind = enum(c_int) {
+        none,
+        permission,
+        question,
+        auth,
+
+        test "ghostty.h ProgramStatus.Kind" {
+            try lib.checkGhosttyHEnum(Kind, "GHOSTTY_PROGRAM_STATUS_KIND_");
+        }
+    };
+
+    /// The status for a report on the program's own record, or null for
+    /// a record a program keeps under an `id` (a sub-task), which the app
+    /// does not track. `clear` removes the record, so it reads as idle.
+    pub fn fromReport(
+        report: terminal.osc.Command.ProgramStatus.Report,
+    ) ?ProgramStatus {
+        if (report.readOption(.id) != null) return null;
+        const state: State = switch (report.state) {
+            .idle, .clear => .idle,
+            .working => .working,
+            .done => .done,
+            .blocked => .blocked,
+            .@"error" => .@"error",
+        };
+        const kind: Kind = if (report.readOption(.kind)) |k| switch (k) {
+            .permission => .permission,
+            .question => .question,
+            .auth => .auth,
+        } else .none;
+        return .{ .state = state, .kind = kind };
+    }
+
+    /// The OSC 777 notification title that marks a status record from an
+    /// agent hook. Hooks such as Claude Code's may only emit OSC 0/1/2/9/99/
+    /// 777, not 7501, so they carry the state word as the notification body.
+    /// Such a notification is a status report and is never shown.
+    pub const hook_marker = "sarv-agent-status";
+
+    /// The status a hook notification carries, or null for an unknown word.
+    /// `clear` reads as idle, as it does in OSC 7501.
+    pub fn fromHookBody(body: []const u8) ?ProgramStatus {
+        const trimmed = std.mem.trim(u8, body, " \t\r\n");
+        if (std.mem.eql(u8, trimmed, "clear")) return .{ .state = .idle };
+        const state = std.meta.stringToEnum(State, trimmed) orelse return null;
+        return .{ .state = state };
+    }
+
+    test "program_status fromHookBody reads the state word" {
+        const testing = std.testing;
+        try testing.expectEqual(ProgramStatus{ .state = .blocked }, fromHookBody("blocked").?);
+        try testing.expectEqual(ProgramStatus{ .state = .working }, fromHookBody(" working\n").?);
+        try testing.expectEqual(ProgramStatus{ .state = .@"error" }, fromHookBody("error").?);
+        try testing.expectEqual(ProgramStatus{ .state = .idle }, fromHookBody("clear").?);
+        try testing.expect(fromHookBody("paused") == null);
+        try testing.expect(fromHookBody("") == null);
+    }
+
+    test "program_status fromReport maps state and kind" {
+        const testing = std.testing;
+        var parser: terminal.osc.Parser = .init(testing.allocator);
+        defer parser.deinit();
+
+        parser.nextSlice("7501;state=blocked:kind=permission");
+        const blocked = parser.end('\x1b').?.program_status.report;
+        try testing.expectEqual(
+            ProgramStatus{ .state = .blocked, .kind = .permission },
+            fromReport(blocked).?,
+        );
+
+        parser.reset();
+        parser.nextSlice("7501;state=clear");
+        const cleared = parser.end('\x1b').?.program_status.report;
+        try testing.expectEqual(ProgramStatus{ .state = .idle }, fromReport(cleared).?);
+    }
+
+    test "program_status fromReport ignores records with an id" {
+        const testing = std.testing;
+        var parser: terminal.osc.Parser = .init(testing.allocator);
+        defer parser.deinit();
+
+        parser.nextSlice("7501;state=working:id=sync");
+        const report = parser.end('\x1b').?.program_status.report;
+        try testing.expect(fromReport(report) == null);
+    }
 };
 
 pub const ResizeWindow = extern struct {

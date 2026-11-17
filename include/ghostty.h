@@ -914,6 +914,29 @@ typedef struct {
   int8_t progress;
 } ghostty_action_progress_report_s;
 
+// apprt.action.ProgramStatus.State
+typedef enum {
+  GHOSTTY_PROGRAM_STATUS_IDLE,
+  GHOSTTY_PROGRAM_STATUS_WORKING,
+  GHOSTTY_PROGRAM_STATUS_DONE,
+  GHOSTTY_PROGRAM_STATUS_BLOCKED,
+  GHOSTTY_PROGRAM_STATUS_ERROR,
+} ghostty_action_program_status_state_e;
+
+// apprt.action.ProgramStatus.Kind
+typedef enum {
+  GHOSTTY_PROGRAM_STATUS_KIND_NONE,
+  GHOSTTY_PROGRAM_STATUS_KIND_PERMISSION,
+  GHOSTTY_PROGRAM_STATUS_KIND_QUESTION,
+  GHOSTTY_PROGRAM_STATUS_KIND_AUTH,
+} ghostty_action_program_status_kind_e;
+
+// apprt.action.ProgramStatus
+typedef struct {
+  ghostty_action_program_status_state_e state;
+  ghostty_action_program_status_kind_e kind;
+} ghostty_action_program_status_s;
+
 // apprt.action.CommandFinished.C
 typedef struct {
   // -1 if no exit code was reported, otherwise 0-255
@@ -1017,6 +1040,7 @@ typedef enum {
   GHOSTTY_ACTION_REOPEN_CLOSED_TAB,
   GHOSTTY_ACTION_MOVE_TAB_TO_NEW_WINDOW,
   GHOSTTY_ACTION_RESIZE_WINDOW,
+  GHOSTTY_ACTION_PROGRAM_STATUS,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1055,6 +1079,7 @@ typedef union {
   ghostty_action_close_tab_mode_e close_tab_mode;
   ghostty_surface_message_childexited_s child_exited;
   ghostty_action_progress_report_s progress_report;
+  ghostty_action_program_status_s program_status;
   ghostty_action_command_finished_s command_finished;
   ghostty_action_start_search_s start_search;
   ghostty_action_search_total_s search_total;
