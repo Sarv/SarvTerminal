@@ -11,7 +11,8 @@
 #   6. bumps the Homebrew cask in Sarv/homebrew-tap
 # The docs/ push then triggers pages.yml, which publishes the appcast.
 #
-# Repository secrets (Settings → Secrets and variables → Actions):
+# Secrets on the "release" environment (Settings → Environments → release),
+# which only the main branch may use. Set them with npm run release:secrets.
 #   SARV_P12_BASE64          base64 of the Developer ID Application .p12
 #                            (base64 -i sarv-developerID-application.p12 | pbcopy)
 #   SARV_P12_PASSWORD        that .p12's password
@@ -56,10 +57,15 @@ concurrency:
 jobs:
   release:
     if: github.ref == 'refs/heads/main'
+    # The secrets are scoped to this environment, whose branch policy allows
+    # main only: a workflow on any other branch gets none of them.
+    environment: release
     runs-on: macos-26
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to commit SHAs: this job holds the signing and
+      # release secrets, so a moved tag must not change what runs here.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Full history and tags: the release notes are generated from the
           # commits since the previous vX.Y.Z tag.
@@ -76,9 +82,25 @@ jobs:
       - name: Install the Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.17.0
+
+      # Fetch every dependency up front, with retries: codeberg.org (arocc and
+      # other ziglang deps) sometimes drops connections from CI runners, and a
+      # single failed fetch would otherwise abort the build.
+      - name: Fetch Zig dependencies
+        run: |
+          # --fetch=all walks the whole tree, lazy and transitive deps
+          # included, through the same path the build uses, then exits. Each
+          # retry resumes from what is already fetched.
+          for attempt in 1 2 3 4 5; do
+            zig build --fetch=all && exit 0
+            echo "Fetch attempt $attempt failed; retrying"
+            sleep $((attempt * 15))
+          done
+          echo "Could not fetch the Zig dependencies"
+          exit 1
 
       - name: Configure git identity
         run: |
@@ -97,12 +119,3 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.RELEASE_TOKEN }}
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: ./scripts/release.sh "$RELEASE_ARG"
-
-      - name: Keep the DMG as a workflow artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: SarvTerminal-dmg
-          path: dist/*.dmg
-          if-no-files-found: ignore
-          retention-days: 14
