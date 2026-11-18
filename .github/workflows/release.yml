@@ -9,7 +9,13 @@
 #   4. commits "release: SarvTerminal X.Y.Z", tags vX.Y.Z, and pushes both
 #   5. creates the GitHub release with the DMG attached
 #   6. bumps the Homebrew cask in Sarv/homebrew-tap
-# The docs/ push then triggers pages.yml, which publishes the appcast.
+# The pages job then publishes docs/ (appcast + release notes) to GitHub Pages.
+# It runs only after the release job succeeds, so Sparkle never sees an update
+# whose DMG and GitHub release don't exist yet. To republish docs/ alone (e.g.
+# after hand-editing release notes), run the workflow with "pages_only".
+#
+# Requires the repo's Pages source set to "GitHub Actions"
+# (Settings → Pages → Build and deployment → Source).
 #
 # Secrets on the "release" environment (Settings → Environments → release),
 # which only the main branch may use. Set them with npm run release:secrets.
@@ -24,8 +30,7 @@
 #                            Contents: read and write on Sarv/SarvTerminal and
 #                            Sarv/homebrew-tap. It must be an admin's: the
 #                            "Protect main" ruleset lets only admins push to
-#                            main, and GITHUB_TOKEN pushes would not trigger
-#                            pages.yml either.
+#                            main.
 #   HOMEBREW_TAP_TOKEN       optional; a separate token for the tap if
 #                            RELEASE_TOKEN can't reach it
 name: release
@@ -46,6 +51,10 @@ on:
         description: Build, sign and notarize only. Push and publish nothing.
         type: boolean
         default: false
+      pages_only:
+        description: Skip the release and only republish docs/ to GitHub Pages.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -56,7 +65,7 @@ concurrency:
 
 jobs:
   release:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && !inputs.pages_only
     # The secrets are scoped to this environment, whose branch policy allows
     # main only: a workflow on any other branch gets none of them.
     environment: release
@@ -119,3 +128,48 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.RELEASE_TOKEN }}
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: ./scripts/release.sh "$RELEASE_ARG"
+
+  # Publishes docs/ (appcast.xml + release notes) to GitHub Pages from the
+  # commit the release job just pushed to main.
+  pages:
+    needs: release
+    if: >-
+      always() && github.ref == 'refs/heads/main' && !inputs.dry_run &&
+      (needs.release.result == 'success' || (inputs.pages_only && needs.release.result == 'skipped'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+      actions: write   # delete stale artifacts so re-runs don't collide
+    concurrency:
+      group: pages
+      cancel-in-progress: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # main, not the dispatch SHA: the release commit was pushed after this
+      # run started.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/configure-pages@v5
+      # A re-run keeps the PRIOR attempt's "github-pages" artifact around, and
+      # deploy-pages then aborts on two artifacts with that name. Delete any
+      # stale one first: a no-op on a fresh run, idempotent on re-run.
+      - name: Remove stale github-pages artifact from earlier attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '.artifacts[] | select(.name=="github-pages") | .id' \
+          | while read -r id; do
+              echo "Deleting stale artifact $id"
+              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
+            done
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: deployment
+        uses: actions/deploy-pages@v4
