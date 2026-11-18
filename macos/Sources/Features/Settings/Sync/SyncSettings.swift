@@ -123,7 +123,7 @@ final class SyncSettings: ObservableObject {
     // MARK: - Derived
 
     /// Versions kept when the user never chose a number.
-    static let defaultHistoryKeepCount = 20
+    static let defaultHistoryKeepCount = 30
 
     /// The user's choice wins, 0 (unlimited) included. Otherwise a nonzero
     /// legacy value carries over; a legacy 0 was the old "unset" default, so
@@ -134,7 +134,7 @@ final class SyncSettings: ObservableObject {
     }
 
     /// Choices offered in the "Versions to keep" menu; 0 = unlimited.
-    static let historyKeepPresets = [5, 10, 20, 50, 100, 0]
+    static let historyKeepPresets = [10, 20, 30, 50, 100, 0]
 
     /// The menu's choices, plus the current value when it isn't a preset
     /// (a legacy or hand-set count), so it shows instead of being snapped.

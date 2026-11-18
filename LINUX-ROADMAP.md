@@ -2350,13 +2350,13 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 2. Loading a state (latest or history) = decode manifest → verify master password → decrypt every listed payload. Any failure throws **before** local data changes.
 3. Restore: test the connection; refuse if the remote has a newer unpulled version; push the current state first (a no-op when already synced) so the restore itself can be undone; load the chosen version; replace local data (mirror, not merge); push it as a new latest version with force.
 4. Keep count: a new key where *absent* = default (20) and 0 = unlimited. When the new key is absent, a nonzero legacy value carries over and a legacy 0 becomes the default. Prune keeps the newest N version folders after each snapshot.
-5. Settings UI: a menu of presets 5, 10, 20 (marked "(default)"), 50, 100 and Unlimited. A non-preset current value (legacy or hand-set) is added to the menu in sorted order, not snapped. The version list marks the version equal to the last synced one as "Current"; the others get a restore button behind a confirmation.
+5. Settings UI: a menu of presets 10, 20, 30 (marked "(default)"), 50, 100 and Unlimited. A non-preset current value (legacy or hand-set) is added to the menu in sorted order, not snapped. The version list marks the version equal to the last synced one as "Current"; the others get a restore button behind a confirmation.
 
 **macOS → Linux equivalents.**
 - macOS: `FolderSyncProvider.historyEntries` / `versionsNewestFirst` / `historyDirectory`, `SyncEngine.historyVersions` / `restore(version:masterPassword:)` / `loadSnapshot`, `SyncSettings.resolvedKeepCount` / `historyKeepOptions` / `historyKeepLabel`, history card in `SyncSectionView`.
 - GTK/Zig: list with `std.fs.Dir.iterate`; the keep menu is a `GtkDropDown` over a `GtkStringList` built from the same options function; version rows in a `GtkListBox`; the restore confirmation is an `AdwAlertDialog`.
 
-**How to verify on Linux.** Set the keep menu to 5 and make 7 changes: exactly 5 `vN` folders remain. Restore an older version: hosts/settings match it, a new latest version is written, and restoring the version made just before brings the previous state back. Drop a stray `vfoo` folder and a `v9` without a manifest into `history/`: neither is listed. Write a legacy count of 30: the menu shows "30 versions".
+**How to verify on Linux.** Set the keep menu to 10 and make 12 changes: exactly 10 `vN` folders remain. Restore an older version: hosts/settings match it, a new latest version is written, and restoring the version made just before brings the previous state back. Drop a stray `vfoo` folder and a `v9` without a manifest into `history/`: neither is listed. Write a legacy count of 30: the menu shows "30 versions".
 
 ## 51. Hosts list sorts by "Recently used" by default
 

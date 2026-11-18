@@ -98,9 +98,9 @@ struct SyncHistoryLimitTests {
     }
 
     @Test func keepMenuOffersPresetsAndKeepsAnOffPresetValue() {
-        #expect(SyncSettings.historyKeepOptions(current: 20) == SyncSettings.historyKeepPresets)
-        #expect(SyncSettings.historyKeepOptions(current: 30) == [5, 10, 20, 30, 50, 100, 0])
-        #expect(SyncSettings.historyKeepLabel(20) == "20 versions (default)")
+        #expect(SyncSettings.historyKeepOptions(current: 30) == SyncSettings.historyKeepPresets)
+        #expect(SyncSettings.historyKeepOptions(current: 25) == [10, 20, 25, 30, 50, 100, 0])
+        #expect(SyncSettings.historyKeepLabel(30) == "30 versions (default)")
         #expect(SyncSettings.historyKeepLabel(0) == "Unlimited")
     }
 

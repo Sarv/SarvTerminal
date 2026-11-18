@@ -204,7 +204,7 @@ struct FolderSyncProvider: SyncProvider {
     /// Whether to write version snapshots under `history/` at all.
     var writeHistory: Bool = true
     /// Max version snapshots to keep under `history/`. `nil` = keep all.
-    var historyLimit: Int? = 20
+    var historyLimit: Int? = SyncSettings.defaultHistoryKeepCount
 
     /// All payloads live inside a dedicated `SarvTerminal/` subfolder of the
     /// folder the user chose — so pointing sync at a shared/busy location
