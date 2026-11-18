@@ -6,7 +6,8 @@
 
 **An open-source, full-fledged terminal _and_ SSH connection manager for macOS.**
 Fast GPU-accelerated terminal, a built-in host vault, SFTP/SCP file manager, SSH key & tunnel
-manager, and end-to-end-encrypted settings sync — in one native app.
+manager, an AI agent watcher for Claude Code, Codex and friends, and end-to-end-encrypted settings
+sync — in one native app.
 
 [Website](https://sarv.com) · [Features](#features) · [How it compares](#how-it-compares) · [Security & Privacy](#security--privacy) · [Install](#install) · [Build](#build-from-source) · [FAQ](FAQ.md) · [Contributing](#contributing) · [Credits](#credits--license)
 
@@ -29,6 +30,33 @@ It is built for developers and operators who live in the terminal and manage mor
 
 Everything Ghostty gives you — fast GPU rendering, ligatures, true color, native macOS feel — **plus
 the Sarv Terminal layer.** Each section below shows the feature in action.
+
+### 🤖 AI Agent Watcher <sup>new in 1.12</sup>
+
+> **Run AI coding agents in ten tabs and never poll them again.** Sarv Terminal knows which tab's
+> agent is working, which one is done, and which one is stuck waiting on *you*, and takes you there
+> in one click.
+
+- **Works with the agents you already use:** **Claude Code**, **Codex**, **Gemini CLI**,
+  **Copilot CLI**, **Cursor CLI**, **Droid** and **Qwen Code**.
+- **One icon, every agent.** A robot icon next to Vaults/SFTP shows an **orange badge with a count
+  and pulses** when an agent needs you, **glows blue** while agents work, and stays quiet when all
+  is idle.
+- **Click it for the full picture:** every agent tab in tab order, with its **⌘N shortcut**, a
+  colored **Working / Needs you / Done / Idle** chip and **how long** it has been in that state.
+  Click a row to **jump straight to that tab**. Split panes running several agents get their own
+  sub-rows.
+- **State that sticks.** "Needs you" doesn't clear just because you glanced at the tab. It clears
+  when the agent moves on or you answer it. Each tab chip carries a matching colored dot.
+- **Reminders that don't let a prompt rot:** a desktop notification when an agent needs you, repeated
+  every 5 minutes until it's handled. Click it to land on the tab.
+- **Exact, not guessed.** **Settings ▸ AI Agents** installs lightweight hooks for each agent in one
+  click (**Set Up All**), so agents report their real status. Your own hooks are left untouched, and
+  the hooks stay silent outside Sarv Terminal. Without hooks it still works from progress, title,
+  notification and screen signals, including over SSH.
+- **Open protocol:** any tool can report its status with the **OSC 7501** escape sequence.
+
+![AI Agent Watcher — every agent tab with its live state, one click to jump](assets/screenshots/ai-agents.png)
 
 ### 🗄️ Connection Manager (Vaults)
 - **Saved hosts** with a full SSH profile: user, port, identity file, agent forwarding, compression,
@@ -137,6 +165,7 @@ built on the Ghostty engine, with a local-first SSH client layered on top. Other
 | End-to-end-encrypted settings sync | ✅ | ⬜ | 🟡 | 🟡 | ⬜ | ⬜ |
 | AI explain/fix for failed commands (bring-your-own-key, local option) | ✅ | ⬜ | ⬜ | 🟡 | ⬜ | ⬜ |
 | One-click Docker / Kubernetes container attach | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Watcher for AI coding agents across tabs (Claude Code, Codex, …) | ✅ | ⬜ | ⬜ | 🟡 | ⬜ | ⬜ |
 | GPU-accelerated rendering | ✅ | ✅ | ✅ | ✅ | ⬜ | ✅ |
 | Local-first · no account · no telemetry | ✅ | ✅ | ✅ | 🟡 | ✅ | ✅ |
 

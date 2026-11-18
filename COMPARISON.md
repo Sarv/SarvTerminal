@@ -23,6 +23,9 @@ plugins, no separate SSH manager, no config-file spelunking.
 - **AI command assist.** When a command fails, get a one-click explanation and a suggested fix you
   can paste straight in — bring your own key, using Claude, OpenAI or a local Ollama model. Your key
   is stored encrypted on your Mac and never synced.
+- **AI agent watcher.** Run Claude Code, Codex, Gemini CLI, Copilot CLI, Cursor CLI, Droid or Qwen
+  Code in many tabs and see at a glance which agent is working, done or waiting on you. One click
+  jumps to that tab, and a reminder repeats every 5 minutes until a waiting agent is answered.
 - **Docker & Kubernetes attach.** List your running containers and pods and open a shell inside any
   of them in a click — no `docker exec` / `kubectl exec` to remember.
 - **Snippets & shell history.** A library of your most-used commands; browse recent shell history
@@ -56,6 +59,7 @@ manager, or tunnel UI.
 | End-to-end-encrypted settings sync | ✅ | ⬜ | 🟡 | 🟡 | ⬜ | ⬜ |
 | AI explain/fix for failed commands (bring-your-own-key, local option) | ✅ | ⬜ | ⬜ | 🟡 | ⬜ | ⬜ |
 | One-click Docker / Kubernetes container attach | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Watcher for AI coding agents across tabs (Claude Code, Codex, …) | ✅ | ⬜ | ⬜ | 🟡 | ⬜ | ⬜ |
 | Serial console (USB-serial) | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ✅ |
 | Known-hosts manager | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | GPU-accelerated rendering | ✅ | ✅ | ✅ | ✅ | ⬜ | ✅ |
