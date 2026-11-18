@@ -263,8 +263,8 @@ struct FolderSyncProvider: SyncProvider {
             guard fm.fileExists(atPath: src.path), !fm.fileExists(atPath: dst.path) else { continue }
             try? fm.moveItem(at: src, to: dst)
         }
-        let srcHistory = base.appendingPathComponent("history", isDirectory: true)
-        let dstHistory = storage.appendingPathComponent("history", isDirectory: true)
+        let srcHistory = base.appendingPathComponent(Self.historyFolderName, isDirectory: true)
+        let dstHistory = storage.appendingPathComponent(Self.historyFolderName, isDirectory: true)
         var isDir: ObjCBool = false
         if fm.fileExists(atPath: srcHistory.path, isDirectory: &isDir), isDir.boolValue,
            !fm.fileExists(atPath: dstHistory.path) {
@@ -321,7 +321,7 @@ struct FolderSyncProvider: SyncProvider {
         guard let manifestData = files[SyncManifest.manifestFile],
               let manifest = try? JSONDecoder.sync.decode(SyncManifest.self, from: manifestData) else { return }
 
-        let historyRoot = dir.appendingPathComponent("history", isDirectory: true)
+        let historyRoot = dir.appendingPathComponent(Self.historyFolderName, isDirectory: true)
         let versionDir = historyRoot.appendingPathComponent("v\(manifest.version)", isDirectory: true)
         guard (try? FileManager.default.createDirectory(at: versionDir, withIntermediateDirectories: true)) != nil
         else { return }
@@ -338,11 +338,52 @@ struct FolderSyncProvider: SyncProvider {
     private func pruneHistory(_ root: URL) {
         guard let keep = historyLimit, keep > 0 else { return }
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
-        let versionDirs = entries.filter { $0.lastPathComponent.hasPrefix("v") }
-        let sorted = versionDirs.sorted {
-            (Int($0.lastPathComponent.dropFirst()) ?? 0) > (Int($1.lastPathComponent.dropFirst()) ?? 0)
+        guard let names = try? fm.contentsOfDirectory(atPath: root.path) else { return }
+        for version in Self.versionsNewestFirst(folderNames: names).dropFirst(keep) {
+            try? fm.removeItem(at: root.appendingPathComponent("v\(version)", isDirectory: true))
         }
-        for old in sorted.dropFirst(keep) { try? fm.removeItem(at: old) }
     }
+
+    // MARK: History listing
+
+    static let historyFolderName = "history"
+
+    /// Path, relative to the storage folder, of one version's snapshot (with
+    /// a trailing slash so file names can be appended).
+    static func historyDirectory(version: Int) -> String { "\(historyFolderName)/v\(version)/" }
+
+    /// `v12` → 12. Anything else (stray files, `vfoo`, `v-1`) is not a version.
+    static func historyVersion(folderName: String) -> Int? {
+        guard folderName.hasPrefix("v"), let version = Int(folderName.dropFirst()), version > 0,
+              folderName == "v\(version)" else { return nil }
+        return version
+    }
+
+    static func versionsNewestFirst(folderNames: [String]) -> [Int] {
+        folderNames.compactMap(historyVersion(folderName:)).sorted(by: >)
+    }
+
+    /// The snapshots under `history/`, newest first. A folder whose manifest
+    /// is missing or unreadable can't be restored, so it is left out.
+    func historyEntries() throws -> [SyncHistoryEntry] {
+        let base = try resolve()
+        defer { base.stopAccessingSecurityScopedResource() }
+        let root = try storageDir(in: base).appendingPathComponent(Self.historyFolderName, isDirectory: true)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        return Self.versionsNewestFirst(folderNames: names).compactMap { version in
+            let file = root.appendingPathComponent("v\(version)").appendingPathComponent(SyncManifest.manifestFile)
+            guard let data = try? Data(contentsOf: file),
+                  let manifest = try? JSONDecoder.sync.decode(SyncManifest.self, from: data),
+                  manifest.version == version else { return nil }
+            return SyncHistoryEntry(version: version, date: manifest.lastSyncDate, deviceName: manifest.deviceName)
+        }
+    }
+}
+
+/// One restorable version, as listed in Settings → Sync.
+struct SyncHistoryEntry: Identifiable, Equatable {
+    let version: Int
+    let date: Date
+    let deviceName: String
+    var id: Int { version }
 }

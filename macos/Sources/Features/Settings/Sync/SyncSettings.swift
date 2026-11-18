@@ -42,7 +42,10 @@ final class SyncSettings: ObservableObject {
         static let lastFingerprint = "SarvSyncLastFingerprint"
         static let historyEnabled = "SarvSyncHistoryEnabled"
         static let historyLimitEnabled = "SarvSyncHistoryLimitEnabled"
-        static let historyKeepCount = "SarvSyncHistoryKeepCount"
+        /// Pre-1.13 key, where 0 meant both "never set" and "unlimited".
+        static let legacyHistoryKeepCount = "SarvSyncHistoryKeepCount"
+        /// Absent = never configured (use `defaultHistoryKeepCount`); 0 = unlimited.
+        static let historyKeepCount = "SarvSyncHistoryKeep"
     }
 
     // These hold the APPLIED provider config — they are only written by an
@@ -112,10 +115,43 @@ final class SyncSettings: ObservableObject {
         lastSyncedFingerprint = d.string(forKey: Keys.lastFingerprint) ?? ""
         historyEnabled = d.object(forKey: Keys.historyEnabled) as? Bool ?? true       // keep history by default
         historyLimitEnabled = d.object(forKey: Keys.historyLimitEnabled) as? Bool ?? false
-        historyKeepCount = d.integer(forKey: Keys.historyKeepCount)                   // 0 (unset) = Unlimited by default
+        historyKeepCount = Self.resolvedKeepCount(
+            configured: d.object(forKey: Keys.historyKeepCount) as? Int,
+            legacy: d.integer(forKey: Keys.legacyHistoryKeepCount))
     }
 
     // MARK: - Derived
+
+    /// Versions kept when the user never chose a number.
+    static let defaultHistoryKeepCount = 20
+
+    /// The user's choice wins, 0 (unlimited) included. Otherwise a nonzero
+    /// legacy value carries over; a legacy 0 was the old "unset" default, so
+    /// it falls back to the default limit instead of unbounded history.
+    static func resolvedKeepCount(configured: Int?, legacy: Int) -> Int {
+        if let configured { return max(0, configured) }
+        return legacy > 0 ? legacy : defaultHistoryKeepCount
+    }
+
+    /// Choices offered in the "Versions to keep" menu; 0 = unlimited.
+    static let historyKeepPresets = [5, 10, 20, 50, 100, 0]
+
+    /// The menu's choices, plus the current value when it isn't a preset
+    /// (a legacy or hand-set count), so it shows instead of being snapped.
+    static func historyKeepOptions(current: Int) -> [Int] {
+        guard !historyKeepPresets.contains(current) else { return historyKeepPresets }
+        let limited = (historyKeepPresets.filter { $0 > 0 } + [current]).sorted()
+        return limited + [0]
+    }
+
+    /// Menu label for a keep count, marking the default.
+    static func historyKeepLabel(_ count: Int) -> String {
+        let base = count == 0 ? "Unlimited" : "\(count) versions"
+        return count == defaultHistoryKeepCount ? "\(base) (default)" : base
+    }
+
+    /// How many history snapshots to keep; nil = keep all.
+    var historyLimit: Int? { historyKeepCount == 0 ? nil : historyKeepCount }
 
     var deviceName: String { Host.current().localizedName ?? "this Mac" }
 

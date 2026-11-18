@@ -12,6 +12,8 @@ struct SyncSectionView: View {
     @State private var patField = ""
     @State private var busy = false
     @State private var message: Message?
+    /// Restorable versions, loaded when the user opens the list (nil = closed).
+    @State private var historyEntries: [SyncHistoryEntry]?
 
     // Draft provider config — edited by the form, committed to `settings` only
     // on Save. This is what makes "peeking" at another provider non-destructive:
@@ -103,7 +105,7 @@ struct SyncSectionView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle("Save a snapshot on every sync", isOn: $settings.historyEnabled)
                         .toggleStyle(.checkbox)
-                    Text("Keeps recoverable versions in a `history/` folder so you can roll back. On by default — all versions are kept.")
+                    Text("Keeps recoverable versions in a `history/` folder so you can roll back. On by default — the last \(SyncSettings.defaultHistoryKeepCount) versions are kept.")
                         .font(.caption).foregroundStyle(.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -112,20 +114,113 @@ struct SyncSectionView: View {
                 divider
                 row("Versions to keep") {
                     VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 8) {
-                            Text(settings.historyKeepCount == 0 ? "Unlimited" : "\(settings.historyKeepCount)")
-                                .monospacedDigit()
-                                .frame(minWidth: 64, alignment: .leading)
-                            Stepper("", value: $settings.historyKeepCount, in: 0...200)
-                                .labelsHidden().fixedSize()
+                        Picker("", selection: $settings.historyKeepCount) {
+                            ForEach(SyncSettings.historyKeepOptions(current: settings.historyKeepCount),
+                                    id: \.self) { count in
+                                Text(SyncSettings.historyKeepLabel(count)).tag(count)
+                            }
                         }
+                        .labelsHidden().pickerStyle(.menu).frame(maxWidth: 200, alignment: .leading)
                         Text(settings.historyKeepCount == 0
-                             ? "0 = keep every version (uses more space over time)."
-                             : "Oldest snapshots are removed automatically.")
+                             ? "Every version is kept, so the folder grows over time."
+                             : "Oldest snapshots are removed automatically. A version is saved only when something changed.")
                             .font(.caption).foregroundStyle(.secondaryText)
                     }
                 }
             }
+            // Restoring reads the ACTIVE folder, so it needs the applied config,
+            // not a draft that hasn't been saved yet.
+            if settings.provider == .folder && settings.canSync {
+                divider
+                row("Restore") { restoreVersionsView }
+            }
+        }
+    }
+
+    private var restoreVersionsView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button(historyEntries == nil ? "Show versions…" : "Hide versions") {
+                    if historyEntries == nil { loadHistory() } else { historyEntries = nil }
+                }
+                .disabled(busy)
+                if historyEntries != nil {
+                    Button { loadHistory() } label: { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.borderless)
+                        .help("Reload the version list")
+                        .disabled(busy)
+                }
+            }
+            if let entries = historyEntries {
+                if entries.isEmpty {
+                    Text("No saved versions yet.")
+                        .font(.caption).foregroundStyle(.secondaryText)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(entries) { entry in historyRow(entry) }
+                        }
+                    }
+                    .frame(maxHeight: 220)
+                }
+            }
+            Text("Restoring replaces your hosts and settings with that version. What you have now is saved as a version first, so you can switch back.")
+                .font(.caption).foregroundStyle(.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func historyRow(_ entry: SyncHistoryEntry) -> some View {
+        let isCurrent = entry.version == settings.lastSyncedVersion
+        return HStack(spacing: 8) {
+            Text("v\(entry.version)")
+                .monospacedDigit()
+                .frame(minWidth: 44, alignment: .leading)
+            Text(entry.date.formatted(date: .abbreviated, time: .shortened))
+            Text(entry.deviceName)
+                .foregroundStyle(.secondaryText)
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 8)
+            if isCurrent {
+                Text("Current").font(.caption).foregroundStyle(.secondaryText)
+            } else {
+                Button { confirmRestore(entry) } label: { Image(systemName: "clock.arrow.circlepath") }
+                    .buttonStyle(.borderless)
+                    .help("Restore version \(entry.version)")
+                    .disabled(busy)
+            }
+        }
+        .padding(.horizontal, 6).padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .listRowHover()
+    }
+
+    private func loadHistory() {
+        Task {
+            do {
+                let entries = try await SyncEngine.historyVersions()
+                await MainActor.run { historyEntries = entries }
+            } catch {
+                await MainActor.run { message = .error(error.localizedDescription) }
+            }
+        }
+    }
+
+    private func confirmRestore(_ entry: SyncHistoryEntry) {
+        let when = entry.date.formatted(date: .abbreviated, time: .shortened)
+        SarvAlert.present(
+            title: "Restore Version \(entry.version)?",
+            message: "Your hosts, groups, snippets, sessions, port forwards and settings will be replaced with the version saved \(when) on \(entry.deviceName).\n\nYour current data is saved as a version first, so you can restore it later.",
+            buttons: [
+                SarvAlert.Button("Restore", isDefault: true, isDestructive: true),
+                SarvAlert.Button("Cancel", isCancel: true),
+            ]
+        ) { result in
+            guard result.buttonIndex == 0 else { return }
+            run("Restored v\(entry.version)", onSuccess: {
+                loadHistory()
+                promptRestart(summary: "Version \(entry.version) was restored.")
+            }) { try await SyncEngine.restore(version: entry.version, masterPassword: $0) }
         }
     }
 
@@ -361,7 +456,7 @@ struct SyncSectionView: View {
             }
             return FolderSyncProvider(bookmark: bm,
                                       writeHistory: settings.historyEnabled,
-                                      historyLimit: settings.historyKeepCount == 0 ? nil : settings.historyKeepCount)
+                                      historyLimit: settings.historyLimit)
         }
     }
 
@@ -425,9 +520,14 @@ struct SyncSectionView: View {
     /// everything that changed.
     @MainActor
     private func promptRestartAfterPull() {
+        promptRestart(summary: "Your settings were pulled from \(settings.provider.label).")
+    }
+
+    @MainActor
+    private func promptRestart(summary: String) {
         SarvAlert.present(
             title: "Sync Complete",
-            message: "Your settings were pulled from \(settings.provider.label).\n\nFor all changes to fully take effect, restarting SarvTerminal is recommended.",
+            message: "\(summary)\n\nFor all changes to fully take effect, restarting SarvTerminal is recommended.",
             buttons: [
                 SarvAlert.Button("Restart Now", isDefault: true),
                 SarvAlert.Button("Later", isCancel: true),

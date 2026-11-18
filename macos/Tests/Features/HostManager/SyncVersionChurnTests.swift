@@ -50,3 +50,32 @@ struct RecordUpsertTests {
         #expect(VaultsTabsModel.hostWithWorkingPassword(stored, password: "new") == nil)
     }
 }
+
+@Suite
+struct SyncHistoryLimitTests {
+    @Test func unconfiguredFallsBackToDefault() {
+        #expect(SyncSettings.resolvedKeepCount(configured: nil, legacy: 0) == SyncSettings.defaultHistoryKeepCount)
+    }
+
+    @Test func legacyNonzeroCarriesOver() {
+        #expect(SyncSettings.resolvedKeepCount(configured: nil, legacy: 50) == 50)
+    }
+
+    @Test func userChoiceWinsIncludingUnlimited() {
+        #expect(SyncSettings.resolvedKeepCount(configured: 0, legacy: 50) == 0)
+        #expect(SyncSettings.resolvedKeepCount(configured: 5, legacy: 0) == 5)
+    }
+
+    @Test func keepMenuOffersPresetsAndKeepsAnOffPresetValue() {
+        #expect(SyncSettings.historyKeepOptions(current: 20) == SyncSettings.historyKeepPresets)
+        #expect(SyncSettings.historyKeepOptions(current: 30) == [5, 10, 20, 30, 50, 100, 0])
+        #expect(SyncSettings.historyKeepLabel(20) == "20 versions (default)")
+        #expect(SyncSettings.historyKeepLabel(0) == "Unlimited")
+    }
+
+    @Test func versionFoldersParseStrictly() {
+        let names = ["v3", "v12", "v1", ".DS_Store", "vfoo", "v-2", "v007", "v0"]
+        #expect(FolderSyncProvider.versionsNewestFirst(folderNames: names) == [12, 3, 1])
+        #expect(FolderSyncProvider.historyDirectory(version: 7) == "history/v7/")
+    }
+}

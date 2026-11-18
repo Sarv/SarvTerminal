@@ -26,6 +26,8 @@ enum SyncEngine {
         case integrityCheckFailed
         case remoteHasUnpulledData
         case remoteUnreadable
+        case historyUnavailable
+        case versionMissing
 
         var errorDescription: String? {
             switch self {
@@ -46,6 +48,10 @@ enum SyncEngine {
                 return "The remote has data this device hasn't pulled yet, so nothing was uploaded (to avoid overwriting it). Press “Pull” to bring it in first, then sync."
             case .remoteUnreadable:
                 return "The remote backup exists but couldn't be read (its manifest is missing or corrupt), so nothing was uploaded — your backup is untouched. Check the sync destination."
+            case .historyUnavailable:
+                return "Version history is only kept for folder sync."
+            case .versionMissing:
+                return "That version is no longer in the history folder, so nothing was changed."
             }
         }
     }
@@ -63,11 +69,9 @@ enum SyncEngine {
             )
         case .folder:
             guard let bookmark = settings.folderBookmark else { throw EngineError.notConfigured }
-            // historyKeepCount == 0 → unlimited (no pruning).
-            let limit = settings.historyKeepCount == 0 ? nil : settings.historyKeepCount
             return FolderSyncProvider(bookmark: bookmark,
                                       writeHistory: settings.historyEnabled,
-                                      historyLimit: limit)
+                                      historyLimit: settings.historyLimit)
         }
     }
 
@@ -256,77 +260,128 @@ enum SyncEngine {
         return contentFingerprint(s, h)
     }
 
+    /// A decrypted, complete remote state: the latest one or a history version.
+    private struct Snapshot {
+        let manifest: SyncManifest
+        let settings: SyncSettingsPayload?
+        let hosts: SyncHostsPayload?
+    }
+
     /// Download, decrypt, and merge into local state.
     static func pull(masterPassword: String) async throws {
         let provider = try makeProvider()
         // Same guard as push — refuse to operate against a public repo.
         try await provider.testConnection()
-        guard let manifestData = try await provider.readManifest(),
-              let manifest = try? JSONDecoder.sync.decode(SyncManifest.self, from: manifestData) else {
-            throw EngineError.nothingRemote
-        }
+        guard let manifestData = try await provider.readManifest() else { throw EngineError.nothingRemote }
+        let snapshot = try await loadSnapshot(provider, manifestData: manifestData, directory: "",
+                                              masterPassword: masterPassword)
 
+        await MainActor.run {
+            // First pull on a machine that already has local data: MERGE so we
+            // never wipe hosts created before sync was enabled. After that we
+            // MIRROR (replace), so deletes made elsewhere propagate.
+            let merge = settings.lastSyncedVersion == 0 && !SavedHostsStore.shared.hosts.isEmpty
+            apply(snapshot, merge: merge)
+            settings.recordSync(version: snapshot.manifest.version, date: snapshot.manifest.lastSyncDate,
+                                hostCount: SavedHostsStore.shared.hosts.count,
+                                groupCount: HostGroupsStore.shared.groups.count,
+                                fingerprint: currentFingerprint())
+            ActivityLog.shared.log(.sync, "Pulled from \(settings.provider.label)",
+                                   detail: "v\(snapshot.manifest.version)", success: true)
+        }
+    }
+
+    // MARK: - Version history (folder provider)
+
+    /// The versions kept under `history/`, newest first.
+    static func historyVersions() async throws -> [SyncHistoryEntry] {
+        guard let provider = try makeProvider() as? FolderSyncProvider else { throw EngineError.historyUnavailable }
+        return try provider.historyEntries()
+    }
+
+    /// Make a history version the current state, on this Mac and remotely.
+    ///
+    /// The current state is pushed first (a no-op when already synced), so
+    /// the restore itself can be undone by restoring that version. The
+    /// restored data is then pushed as a new latest version, so other Macs
+    /// pick it up and the history keeps moving forward.
+    static func restore(version: Int, masterPassword: String) async throws {
+        guard let provider = try makeProvider() as? FolderSyncProvider else { throw EngineError.historyUnavailable }
+        try await provider.testConnection()
+        if let remote = try await readManifest(provider), remote.version > settings.lastSyncedVersion {
+            throw EngineError.remoteHasUnpulledData
+        }
+        try await push(masterPassword: masterPassword)
+
+        let directory = FolderSyncProvider.historyDirectory(version: version)
+        guard let manifestData = try await provider.readFile(directory + SyncManifest.manifestFile) else {
+            throw EngineError.versionMissing
+        }
+        let snapshot = try await loadSnapshot(provider, manifestData: manifestData, directory: directory,
+                                              masterPassword: masterPassword)
+        await MainActor.run {
+            apply(snapshot, merge: false)
+            ActivityLog.shared.log(.sync, "Restored version", detail: "v\(version)", success: true)
+        }
+        try await push(masterPassword: masterPassword, force: true)
+    }
+
+    /// Read and decrypt one state (manifest plus payloads under `directory`).
+    /// Throws before anything local changes: a wrong password, or a payload
+    /// that is listed but missing or undecryptable, aborts the whole read.
+    private static func loadSnapshot(
+        _ provider: SyncProvider, manifestData: Data, directory: String, masterPassword: String
+    ) async throws -> Snapshot {
+        guard let manifest = try? JSONDecoder.sync.decode(SyncManifest.self, from: manifestData) else {
+            throw EngineError.remoteUnreadable
+        }
         let key = try SyncCrypto.deriveKey(
             password: masterPassword, salt: manifest.kdfSalt, iterations: manifest.kdfIterations
         )
-        // Validate the master password before touching local state.
         guard (try? SyncCrypto.decrypt(manifest.verifier, key: key)) != nil else {
             throw EngineError.wrongPassword
         }
-
-        // Decode every payload up front. `readEncrypted` THROWS on a decrypt or
-        // decode failure (so a corrupt payload aborts the whole pull before we
-        // touch local state). A file the manifest lists but that's missing is
-        // also treated as incomplete — we apply all-or-nothing, never a partial
-        // snapshot that could blank out one side.
         let settingsPayload = try await readEncrypted(
-            provider, name: SyncManifest.settingsFile, key: key, as: SyncSettingsPayload.self)
+            provider, name: directory + SyncManifest.settingsFile, key: key, as: SyncSettingsPayload.self)
         let hostsPayload = try await readEncrypted(
-            provider, name: SyncManifest.hostsFile, key: key, as: SyncHostsPayload.self)
-
+            provider, name: directory + SyncManifest.hostsFile, key: key, as: SyncHostsPayload.self)
         if manifest.files.contains(SyncManifest.settingsFile) && settingsPayload == nil {
             throw EngineError.remoteIncomplete
         }
         if manifest.files.contains(SyncManifest.hostsFile) && hostsPayload == nil {
             throw EngineError.remoteIncomplete
         }
+        return Snapshot(manifest: manifest, settings: settingsPayload, hosts: hostsPayload)
+    }
 
-        // Apply on the main actor: config file, UserDefaults, image, stores.
-        await MainActor.run {
-            // Suppress the auto-push that our own mutations below would trigger.
-            SyncCoordinator.shared.beginApplyingRemote()
-
-            if let p = settingsPayload { applySettings(p) }
-            if let h = hostsPayload {
-                // First pull on a machine that already has local data: MERGE so
-                // we never wipe hosts created before sync was enabled. After that
-                // we MIRROR (replace), so deletes made elsewhere propagate.
-                let firstPull = settings.lastSyncedVersion == 0
-                let snippets = h.snippets ?? []
-                let savedSessions = h.savedSessions ?? []
-                let portForwards = h.portForwards ?? []
-                if firstPull && !SavedHostsStore.shared.hosts.isEmpty {
-                    HostGroupsStore.shared.ingest(h.groups)
-                    SavedHostsStore.shared.ingest(h.hosts)
-                    SnippetsStore.shared.ingest(snippets)
-                    SavedSessionsStore.shared.ingest(savedSessions)
-                    PortForwardStore.shared.ingest(portForwards)
-                } else {
-                    HostGroupsStore.shared.replaceAll(h.groups)
-                    SavedHostsStore.shared.replaceAll(h.hosts)
-                    SnippetsStore.shared.replaceAll(snippets)
-                    SavedSessionsStore.shared.replaceAll(savedSessions)
-                    PortForwardStore.shared.replaceAll(portForwards)
-                }
+    /// Put a snapshot into local state: config file, UserDefaults, image and
+    /// stores. `merge` keeps local items the snapshot lacks; otherwise the
+    /// stores mirror it exactly. Main actor only.
+    @MainActor
+    private static func apply(_ snapshot: Snapshot, merge: Bool) {
+        // Suppress the auto-push that our own mutations below would trigger.
+        SyncCoordinator.shared.beginApplyingRemote()
+        if let payload = snapshot.settings { applySettings(payload) }
+        if let hosts = snapshot.hosts {
+            let snippets = hosts.snippets ?? []
+            let savedSessions = hosts.savedSessions ?? []
+            let portForwards = hosts.portForwards ?? []
+            if merge {
+                HostGroupsStore.shared.ingest(hosts.groups)
+                SavedHostsStore.shared.ingest(hosts.hosts)
+                SnippetsStore.shared.ingest(snippets)
+                SavedSessionsStore.shared.ingest(savedSessions)
+                PortForwardStore.shared.ingest(portForwards)
+            } else {
+                HostGroupsStore.shared.replaceAll(hosts.groups)
+                SavedHostsStore.shared.replaceAll(hosts.hosts)
+                SnippetsStore.shared.replaceAll(snippets)
+                SavedSessionsStore.shared.replaceAll(savedSessions)
+                PortForwardStore.shared.replaceAll(portForwards)
             }
-            (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
-            NotificationCenter.default.post(name: .sarvSyncDidPull, object: nil)
-            settings.recordSync(version: manifest.version, date: manifest.lastSyncDate,
-                                hostCount: SavedHostsStore.shared.hosts.count,
-                                groupCount: HostGroupsStore.shared.groups.count,
-                                fingerprint: currentFingerprint())
-            ActivityLog.shared.log(.sync, "Pulled from \(settings.provider.label)", detail: "v\(manifest.version)", success: true)
         }
+        (NSApp.delegate as? AppDelegate)?.ghostty.reloadConfig()
+        NotificationCenter.default.post(name: .sarvSyncDidPull, object: nil)
     }
 
     // MARK: - README (human-readable status)

@@ -2337,6 +2337,27 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **How to verify on Linux.** With folder sync on, note the newest `history/vN`. Reconnect an SSH host five times, re-save a host without editing, and open and close the host editor: no new version appears. Change one host field: exactly one new version appears about 10 s later. Edit a host and quit within 10 s, then relaunch: the edit is pushed once.
 
+## 50. Restore a folder-sync history version, with a capped history by default
+
+**Symptom.** Folder sync kept snapshots under `history/vN/`, but there was no way to list or restore them from the app. The keep limit defaulted to "unlimited" (stored as 0, which also meant "never set"), so the folder grew without bound. The limit was a bare stepper, with no visible default.
+
+**Root cause & reasoning.**
+- The engine only knew how to pull the *latest* state. A history version has the same manifest + encrypted payload layout, just in another directory, so the pull logic could be reused for it.
+- The legacy key used 0 for both "unset" and "unlimited", so a default could not be introduced without a new key.
+
+**Platform-agnostic logic.**
+1. Listing: read `history/` folder names; accept only `v<positive int>` written canonically (`v7`, not `v007`/`v-1`/`vfoo`). Sort newest first. Keep only folders whose manifest decodes and whose `version` matches the folder name.
+2. Loading a state (latest or history) = decode manifest → verify master password → decrypt every listed payload. Any failure throws **before** local data changes.
+3. Restore: test the connection; refuse if the remote has a newer unpulled version; push the current state first (a no-op when already synced) so the restore itself can be undone; load the chosen version; replace local data (mirror, not merge); push it as a new latest version with force.
+4. Keep count: a new key where *absent* = default (20) and 0 = unlimited. When the new key is absent, a nonzero legacy value carries over and a legacy 0 becomes the default. Prune keeps the newest N version folders after each snapshot.
+5. Settings UI: a menu of presets 5, 10, 20 (marked "(default)"), 50, 100 and Unlimited. A non-preset current value (legacy or hand-set) is added to the menu in sorted order, not snapped. The version list marks the version equal to the last synced one as "Current"; the others get a restore button behind a confirmation.
+
+**macOS → Linux equivalents.**
+- macOS: `FolderSyncProvider.historyEntries` / `versionsNewestFirst` / `historyDirectory`, `SyncEngine.historyVersions` / `restore(version:masterPassword:)` / `loadSnapshot`, `SyncSettings.resolvedKeepCount` / `historyKeepOptions` / `historyKeepLabel`, history card in `SyncSectionView`.
+- GTK/Zig: list with `std.fs.Dir.iterate`; the keep menu is a `GtkDropDown` over a `GtkStringList` built from the same options function; version rows in a `GtkListBox`; the restore confirmation is an `AdwAlertDialog`.
+
+**How to verify on Linux.** Set the keep menu to 5 and make 7 changes: exactly 5 `vN` folders remain. Restore an older version: hosts/settings match it, a new latest version is written, and restoring the version made just before brings the previous state back. Drop a stray `vfoo` folder and a `v9` without a manifest into `history/`: neither is listed. Write a legacy count of 30: the menu shows "30 versions".
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
