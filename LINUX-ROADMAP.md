@@ -2317,6 +2317,26 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **How to verify on Linux.** Toggle the inspector open and closed rapidly 20+ times, using both the keybind and the menu, including while output is streaming. The app must stay up, and no `.sarvcrash` file may appear. Also check that closing a surface with the inspector open does not crash.
 
+## 49. Sync writes a new backup version only when content really changed
+
+**Symptom.** Folder sync wrote a new history version every few seconds of normal use: reconnecting an SSH tab, re-saving a host or snippet unchanged, or typing in the autosaving host editor each produced another `vN`. The history filled with identical versions, which also pushed real older states out of the kept window.
+
+**Root cause & reasoning.**
+- Every store `upsert` (hosts, groups, snippets, saved sessions, port forwards) stamped `updatedAt = now`, even when nothing else changed. `updatedAt` is part of the synced payload, so the sync fingerprint changed and a push followed.
+- After a successful SSH connect, the app saved the password that worked. It compared against the host snapshot taken when the tab opened, not the stored host, so it re-saved a stale copy. That undid later edits and bumped `updatedAt` on every reconnect.
+- The push debounce was 3 s. The host editor autosaves field by field, so one edit session became several versions.
+
+**Platform-agnostic logic.**
+1. One shared upsert for all timestamped records: insert new records stamped `now`; for an existing id, compare content with both timestamps blanked. Identical → no-op (no write, no `updatedAt` bump). Different → replace and stamp `now`.
+2. "Save the working password" reads the current stored host by id, and returns an updated host only when the auth method stores passwords, the password is non-empty, and it differs. After saving, refresh the connection's host copy from the store.
+3. Push debounce 10 s. At launch, after the pull check, push once if the current fingerprint differs from the last synced one (covers edits made just before quit, whose debounced push never ran).
+
+**macOS → Linux equivalents.**
+- macOS: `TimestampedRecord` protocol + `RecordUpsert.apply` (`TimestampedRecord.swift`), used by `SavedHostsStore`, `HostGroupsStore`, `SnippetsStore`, `SavedSessionsStore`, `PortForwardStore`. `VaultsTabsModel.hostWithWorkingPassword`. `SyncCoordinator.pushDebounce` and `pushIfChangedSinceLastSync`.
+- GTK/Zig: a generic `upsert(comptime T, list, record, now) ?[]T` with a `contentEql` that copies both records, zeroes the two timestamps, and compares. Use it from every store. Debounce with a `glib.timeoutAddSeconds` reset on each change.
+
+**How to verify on Linux.** With folder sync on, note the newest `history/vN`. Reconnect an SSH host five times, re-save a host without editing, and open and close the host editor: no new version appears. Change one host field: exactly one new version appears about 10 s later. Edit a host and quit within 10 s, then relaunch: the edit is pushed once.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

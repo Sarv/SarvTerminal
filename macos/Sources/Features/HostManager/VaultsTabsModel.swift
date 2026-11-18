@@ -1033,6 +1033,7 @@ final class VaultsTabsModel: ObservableObject {
         // Pick up a password the user may have just corrected via "Edit host" —
         // this is what makes Start over work after fixing a wrong saved password.
         if let host = model.host, let latest = SavedHostsStore.shared.host(withID: host.id) {
+            model.host = latest
             model.passwordField = latest.password
         }
         // Only "Ask" hosts re-prompt for a password; "Password" hosts relaunch
@@ -1051,11 +1052,15 @@ final class VaultsTabsModel: ObservableObject {
     func connectionDidConnect(for model: SSHConnectionModel) {
         // Persist a working password only for "Password" hosts. "Ask" hosts must
         // prompt every connect, so we never store what was typed for them.
-        if let host = model.host, host.authMethod != .ask,
-           !model.passwordField.isEmpty, host.password != model.passwordField {
-            var updated = host
-            updated.password = model.passwordField
-            SavedHostsStore.shared.upsert(updated)
+        // Compare against the stored copy, not `model.host`: that snapshot is
+        // from when the tab opened, and re-saving it would undo later edits and
+        // write a new sync version on every reconnect.
+        if let snapshot = model.host {
+            let stored = SavedHostsStore.shared.host(withID: snapshot.id)
+            if let stored, let updated = Self.hostWithWorkingPassword(stored, password: model.passwordField) {
+                SavedHostsStore.shared.upsert(updated)
+            }
+            model.host = SavedHostsStore.shared.host(withID: snapshot.id) ?? snapshot
         }
         model.stage = .connected
         // Logged in: drop the askpass password file. ssh keeps its now-unlinked
@@ -1072,6 +1077,16 @@ final class VaultsTabsModel: ObservableObject {
                 if !startup.isEmpty { send(startup, to: surface) }
             }
         }
+    }
+
+    /// The host with the password that just worked, or nil when there is
+    /// nothing to save: "Ask" hosts never store a password, and an unchanged
+    /// one must not touch the store.
+    static func hostWithWorkingPassword(_ host: SavedHost, password: String) -> SavedHost? {
+        guard host.authMethod != .ask, !password.isEmpty, host.password != password else { return nil }
+        var updated = host
+        updated.password = password
+        return updated
     }
 
     /// A tab label unique among open tabs: `base`, else `base (1)`, `base (2)`…

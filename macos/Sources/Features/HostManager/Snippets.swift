@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 /// A saved command/script the user can run into a terminal in one click.
-struct Snippet: Identifiable, Codable, Hashable {
+struct Snippet: Identifiable, Codable, Hashable, TimestampedRecord {
     var id: UUID
     var name: String
     var command: String
@@ -67,13 +67,8 @@ final class SnippetsStore: ObservableObject {
     // MARK: - CRUD
 
     func upsert(_ snippet: Snippet) {
-        var updated = snippet
-        updated.updatedAt = Date()
-        if let idx = snippets.firstIndex(where: { $0.id == snippet.id }) {
-            snippets[idx] = updated
-        } else {
-            snippets.append(updated)
-        }
+        guard let next = RecordUpsert.apply(snippet, to: snippets, now: Date()) else { return }
+        snippets = next
         sortInPlace()
         persist()
     }

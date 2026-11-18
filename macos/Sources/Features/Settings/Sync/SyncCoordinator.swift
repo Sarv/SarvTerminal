@@ -30,10 +30,10 @@ final class SyncCoordinator {
     /// applying a pulled snapshot (which itself mutates the stores/config).
     private(set) var isApplyingRemote = false
 
-    /// Small debounce so a burst (e.g. importing several hosts, or a
-    /// settings-close flush) collapses into one push. Settings no longer push
-    /// per-change — they flush on window close — so this stays short.
-    private let pushDebounce: TimeInterval = 3
+    /// Debounce so a burst (an import, or editing a host field by field in
+    /// the autosaving editor) collapses into one push and one backup version.
+    /// Edits still pending at quit are pushed by the launch catch-up.
+    private let pushDebounce: TimeInterval = 10
     /// How long to suppress auto-push after beginning to apply a pull — long
     /// enough to absorb the debounced config commit (~150ms) + push debounce.
     private let applySuppression: TimeInterval = 9
@@ -71,7 +71,10 @@ final class SyncCoordinator {
                 onChange()
             }.store(in: &cancellables)
 
-        Task { await pullIfRemoteNewer() }
+        Task {
+            await pullIfRemoteNewer()
+            await pushIfChangedSinceLastSync()
+        }
 
         // Pull hourly to pick up changes pushed from other machines.
         let timer = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in
@@ -156,6 +159,18 @@ final class SyncCoordinator {
             return false
         }
         if runAgain { scheduleAutoPush() }
+    }
+
+    /// Launch catch-up: local edits made right before the last quit never got
+    /// their debounced push. Push them now, but only if content really
+    /// differs from the last synced state.
+    private func pushIfChangedSinceLastSync() async {
+        let changed = await MainActor.run { () -> Bool in
+            let settings = SyncSettings.shared
+            guard settings.canSync, !settings.remoteIsNewer, !settings.lastSyncedFingerprint.isEmpty else { return false }
+            return SyncEngine.currentFingerprint() != settings.lastSyncedFingerprint
+        }
+        if changed { scheduleAutoPush() }
     }
 
     // MARK: - Pull

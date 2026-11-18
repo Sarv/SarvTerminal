@@ -27,13 +27,8 @@ final class SavedHostsStore: ObservableObject {
     // MARK: - Public CRUD
 
     func upsert(_ host: SavedHost) {
-        var updated = host
-        updated.updatedAt = Date()
-        if let idx = hosts.firstIndex(where: { $0.id == host.id }) {
-            hosts[idx] = updated
-        } else {
-            hosts.append(updated)
-        }
+        guard let next = RecordUpsert.apply(host, to: hosts, now: Date()) else { return }
+        hosts = next
         sortInPlace()
         persist()
     }

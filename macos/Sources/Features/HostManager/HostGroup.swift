@@ -4,7 +4,7 @@ import Foundation
 /// points to the parent group; `nil` means a top-level (root) group.
 ///
 /// Persisted as JSON to `~/.config/sarvterminal/groups.json`.
-struct HostGroup: Codable, Identifiable, Hashable {
+struct HostGroup: Codable, Identifiable, Hashable, TimestampedRecord {
     var id: UUID
     var name: String
     var parentID: UUID?

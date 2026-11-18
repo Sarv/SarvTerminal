@@ -24,13 +24,8 @@ final class HostGroupsStore: ObservableObject {
     // MARK: - CRUD
 
     func upsert(_ group: HostGroup) {
-        var u = group
-        u.updatedAt = Date()
-        if let idx = groups.firstIndex(where: { $0.id == u.id }) {
-            groups[idx] = u
-        } else {
-            groups.append(u)
-        }
+        guard let next = RecordUpsert.apply(group, to: groups, now: Date()) else { return }
+        groups = next
         sortInPlace()
         persist()
     }

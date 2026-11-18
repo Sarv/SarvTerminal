@@ -3,7 +3,7 @@ import Combine
 
 /// A saved SSH port-forwarding (tunnel) rule. Persisted as JSON to
 /// `~/.config/sarvterminal/portforwards.json`.
-struct PortForward: Identifiable, Codable, Hashable {
+struct PortForward: Identifiable, Codable, Hashable, TimestampedRecord {
     var id: UUID
     var name: String
     var kind: Kind
@@ -110,13 +110,8 @@ final class PortForwardStore: ObservableObject {
     // MARK: - CRUD
 
     func upsert(_ forward: PortForward) {
-        var updated = forward
-        updated.updatedAt = Date()
-        if let idx = forwards.firstIndex(where: { $0.id == forward.id }) {
-            forwards[idx] = updated
-        } else {
-            forwards.append(updated)
-        }
+        guard let next = RecordUpsert.apply(forward, to: forwards, now: Date()) else { return }
+        forwards = next
         sortInPlace()
         persist()
     }

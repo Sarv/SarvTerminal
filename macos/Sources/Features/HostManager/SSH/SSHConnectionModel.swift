@@ -15,7 +15,7 @@ final class SSHConnectionModel: ObservableObject {
     /// Display name shown in the popup header (host label or target).
     let title: String
     /// The originating saved host, if any.
-    let host: SavedHost?
+    var host: SavedHost?
 
     @Published var stage: SSHConnectionStage
     /// Password typed into the popup (prefilled from the saved host).

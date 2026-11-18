@@ -7,7 +7,7 @@ import SwiftUI
 /// auto-connects. No secrets are stored: an SSH pane references a `SavedHost`
 /// by id (its password stays in the host store / Keychain) or carries only the
 /// plain `ssh` command as a fallback.
-struct SavedSession: Codable, Identifiable {
+struct SavedSession: Codable, Identifiable, TimestampedRecord {
     var id: UUID = UUID()
     var name: String
     var createdAt: Date
@@ -28,11 +28,11 @@ struct SavedSession: Codable, Identifiable {
     var linksTabName: Bool { linkTabName ?? true }
 
     /// One node of the saved split tree: a single pane, or a split of two children.
-    indirect enum PaneNode: Codable {
+    indirect enum PaneNode: Codable, Equatable {
         case leaf(Pane)
         case split(Split)
 
-        struct Split: Codable {
+        struct Split: Codable, Equatable {
             var direction: Direction
             var ratio: Double
             var left: PaneNode
@@ -46,7 +46,7 @@ struct SavedSession: Codable, Identifiable {
     }
 
     /// A single saved pane.
-    struct Pane: Codable {
+    struct Pane: Codable, Equatable {
         enum Kind: String, Codable { case local, ssh }
         var kind: Kind
         /// Working directory for a local shell, so it reopens where it was.
@@ -120,13 +120,8 @@ final class SavedSessionsStore: ObservableObject {
     // MARK: - CRUD
 
     func upsert(_ session: SavedSession) {
-        var updated = session
-        updated.updatedAt = Date()
-        if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
-            sessions[idx] = updated
-        } else {
-            sessions.append(updated)
-        }
+        guard let next = RecordUpsert.apply(session, to: sessions, now: Date()) else { return }
+        sessions = next
         sortInPlace()
         persist()
     }

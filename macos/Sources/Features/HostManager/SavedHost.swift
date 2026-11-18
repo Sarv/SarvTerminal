@@ -7,7 +7,7 @@ import Foundation
 /// breaking existing files — every field has a safe default and
 /// `Codable` decodes missing fields by using those defaults
 /// (see the custom `init(from:)` below).
-struct SavedHost: Codable, Identifiable, Hashable {
+struct SavedHost: Codable, Identifiable, Hashable, TimestampedRecord {
     var id: UUID
 
     // MARK: Identity
@@ -359,16 +359,6 @@ extension SavedHost {
 
     /// Enough info to save: connectable AND the password rule is satisfied.
     var canSave: Bool { canConnect && passwordRequirementMet }
-
-    /// Equality ignoring the bookkeeping timestamps — "did the user actually
-    /// change anything", used to skip no-op autosaves.
-    func contentEquals(_ other: SavedHost) -> Bool {
-        var a = self
-        var b = other
-        a.createdAt = .distantPast; b.createdAt = .distantPast
-        a.updatedAt = .distantPast; b.updatedAt = .distantPast
-        return a == b
-    }
 }
 
 // MARK: - Helpers
