@@ -2376,6 +2376,31 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **How to verify on Linux.** Connect to host C, then A: the list reads A, C, then the never-used hosts alphabetically. Put C in a nested group: the parent group moves above groups with no used hosts. Connecting must not create a new sync history version, and `host-usage.json` must not appear in the sync folder.
 
+## 52. Reopen All brings back what each pane was running (agents resume their exact session)
+
+**Symptom.** After relaunching, "Reopen All" restored tabs, splits and working directories, but each pane came back as an idle shell. A dev server had to be restarted by hand, and a Claude Code / Codex / Copilot conversation had to be found again with a session picker.
+
+**Root cause & reasoning.**
+- The relaunch snapshot (`session.json`) stored only the layout, never the foreground job.
+- Re-running an agent's argv is not enough: `claude` alone starts a new conversation. The exact session id has to be read from the agent's own per-process records, and accepted only when it provably belongs to that pid. Guessing "the newest session in the folder" would resume the wrong conversation when several run at once.
+- A Claude started with inherited `CLAUDECODE` / `CLAUDE_CODE_*` variables treats itself as a child session and writes no per-pid record. When SarvTerminal is launched from inside Claude Code (e.g. `open -n` from a dev script), the app inherits these variables and passes them to every shell, so no Claude in any pane could be resumed.
+- Saves happen on many events; reading every process each time is wasteful. A save during quit, when processes are already gone, must not wipe the last good capture.
+
+**Platform-agnostic logic.**
+1. Capture (relaunch snapshot only; ⌘S library saves never capture): for each local pane take the foreground process-group leader plus descendants (BFS, capped at 16), each with argv and cwd. Undo `process.title` rewrites (npm's argv[0] = "npm run dev") and drop interpreter wrappers (`node …/bin/pnpm run dev` → `pnpm run dev`). A bare shell leader = idle → nothing.
+2. If any process in the job is a known agent (by executable basename or npm package path), look up its session evidence, trying each pid from the agent down. Claude: `~/.claude/sessions/<pid>.json`, accepted only if its pid matches and the transcript `~/.claude/projects/<slug>/<id>.jsonl` exists, with `CLAUDE_CODE_SESSION_ID` from a long-lived child as a fallback. Codex and Copilot use their own per-pid records. Known id → the agent's exact resume command with behaviour flags kept. Unknown → start the agent fresh (never a picker).
+3. Otherwise replay the normalized command line. Reject any line containing control characters, because it is typed into the shell.
+4. Cache per pane, keyed by foreground pid. Reuse while fresh; invalidate on agent session-file events (watch `~/.claude/sessions`, `~/.codex/sessions`, …); re-capture on a 60 s backstop timer; take a fresh capture at quit; prune closed panes on each save. Skip writing `session.json` when its fingerprint (content without ids/timestamps) is unchanged.
+5. Restore: type `commandLine + "\n"` into the new pane's shell as initial input, so the command runs. The pane's own cwd comes from the capture.
+6. At process start, before the terminal core snapshots its environment, unset `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT` and every `CLAUDE_CODE_*` variable.
+7. Setting: "Bring back what each tab was running" (on by default, only active when tab restore is on). Old snapshots that also hold an `autoRun` key still decode.
+
+**macOS → Linux equivalents.**
+- macOS: `RunningProcessReader` (`KERN_PROCARGS2`, `proc_pidinfo` cwd, `proc_listchildpids`), `PaneCommandLine`, `PaneCommandResolver`, `AgentResumeRules`, `AgentSessionLocator`, `AgentSessionWatch` (FSEvents), `PaneCommandCache`, `PaneRestoreSettings`, `TabSessionStore.fingerprint`, `InheritedAgentEnvironment.scrub()` in `main.swift` before `ghostty_init`, and capture in `VaultsTabsModel.savedPane`.
+- Linux: argv from `/proc/<pid>/cmdline` (NUL-separated; `process.title` rewrites show the same way), cwd from `readlink /proc/<pid>/cwd`, children from `/proc/<pid>/task/*/children`, environment from `/proc/<pid>/environ`. The foreground pgid comes from `tcgetpgrp` on the pty master. Watch directories with `GFileMonitor` (or inotify). Call `unsetenv` in `main()` before `ghostty_init` / `global.zig` state init, since the core copies `environ` there. The resolver, rules, cache and fingerprint are pure and port 1:1.
+
+**How to verify on Linux.** Open three panes: one running `npm run dev`, one running `claude` with a message sent, and one idle. Quit and relaunch, then Reopen All: the dev server starts again in its directory, Claude reopens the same conversation (`claude --resume <id>`), and the idle pane stays idle. Run `/clear` in Claude, wait a second, then quit and reopen: the new session is resumed. Launch the app from a shell where `CLAUDECODE=1` is exported: Claude panes still resume. Turn the setting off: panes reopen idle.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

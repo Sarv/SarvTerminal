@@ -3,6 +3,7 @@ import SwiftUI
 struct GeneralSectionView: View {
     @ObservedObject var viewModel: SettingsViewModel
     @AppStorage("SarvRestoreSession") private var restoreSession = true
+    @AppStorage(PaneRestoreSettings.key) private var restoreRunningCommands = true
     @AppStorage("SarvNewTabDirectory") private var newTabDirectory = ""
     @AppStorage(HostConnectClickMode.storageKey)
     private var hostsConnectClick: HostConnectClickMode = .double
@@ -38,6 +39,18 @@ struct GeneralSectionView: View {
                 Toggle("Reopen last session's tabs when SarvTerminal launches",
                        isOn: $restoreSession)
                     .toggleStyle(.checkbox)
+            }
+            row("Running commands") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Bring back what each tab was running",
+                           isOn: $restoreRunningCommands)
+                        .toggleStyle(.checkbox)
+                        .disabled(!restoreSession)
+                    Text("AI agents (Claude Code, Codex, Copilot) resume their exact session. "
+                        + "Other commands run again, such as a dev server.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

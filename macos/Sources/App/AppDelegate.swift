@@ -501,7 +501,7 @@ class AppDelegate: NSObject,
     func applicationWillTerminate(_ notification: Notification) {
         // Capture the final set of open tabs so they can be reopened next launch
         // (picks up renames the per-change autosave may have missed).
-        VaultsTabsModel.shared.persistSession()
+        VaultsTabsModel.shared.persistSession(freshCommands: true)
         // Removes the agent status socket file.
         AgentWatcherStore.shared.stop()
 

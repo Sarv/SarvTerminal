@@ -53,4 +53,20 @@ enum TabSessionStore {
         guard let data = try? JSONEncoder().encode(sessions) else { return }
         try? data.write(to: fileURL, options: .atomic)
     }
+
+    /// The restorable content of `sessions`, ignoring the per-snapshot id and
+    /// timestamps that change on every capture. Equal fingerprints mean a
+    /// rewrite of session.json would change nothing, so it can be skipped.
+    static func fingerprint(_ sessions: [SavedSession]) -> Data? {
+        let stable = sessions.map { session in
+            var copy = session
+            copy.id = UUID(uuid: UUID_NULL)
+            copy.createdAt = .distantPast
+            copy.updatedAt = .distantPast
+            return copy
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return try? encoder.encode(stable)
+    }
 }

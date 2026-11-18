@@ -66,6 +66,17 @@ struct SavedSession: Codable, Identifiable, TimestampedRecord {
         /// Optional for backward compatibility with sessions saved before this
         /// flag existed (nil is treated as "not user-set").
         var titleIsUserSet: Bool?
+        /// What was running in a LOCAL pane when the app quit, so "Reopen All"
+        /// brings it back. Only the relaunch snapshot fills it; library
+        /// sessions saved with ⌘S never do. Optional for backward compatibility.
+        var restoreCommand: RestoreCommand?
+    }
+
+    /// A command to run again in a reopened pane. Snapshots written before
+    /// every command auto-ran also hold an `autoRun` key; decoding ignores it.
+    struct RestoreCommand: Codable, Equatable {
+        /// The shell line to send, without the trailing newline.
+        var commandLine: String
     }
 }
 

@@ -215,6 +215,19 @@ final class VaultsTabsModel: ObservableObject {
     private var agentEffectObserver: AnyCancellable?
     /// Coalesce a burst of tab changes into a single write per runloop tick.
     private var persistScheduled = false
+    /// Last captured command per pane, for "Reopen All" to bring it back.
+    private let paneCommands = PaneCommandCache()
+    /// Backstop re-capture for what no event reports (a new foreground
+    /// command without a title change, unwatched agents). Weakly bound;
+    /// invalidated in deinit.
+    private var commandRefreshTimer: Timer?
+    static let commandRefreshInterval: TimeInterval = 60
+    /// Agent session-file changes (Claude `/clear`, a new Codex thread), so a
+    /// switch is saved within a second instead of on the next timer tick.
+    /// Weakly bound; stopped in deinit.
+    private var agentSessionEvents: FileEventStream?
+    /// What session.json last held, so unchanged periodic saves skip the write.
+    private var lastPersistedFingerprint: Data?
     /// Tabs from the previous run, loaded at init and offered for reopen once
     /// the app finishes launching. Cleared after the popup is answered.
     private var pendingRestore: [SavedSession] = []
@@ -315,9 +328,12 @@ final class VaultsTabsModel: ObservableObject {
     /// Snapshot the open tabs as restorable entries. Each tab is captured as a
     /// full `SavedSession` so its split layout, per-pane working directories /
     /// SSH hosts, and pane titles all reopen exactly next launch.
-    private func sessionSnapshot() -> [SavedSession] {
-        terminals.compactMap { tab in
-            guard var snapshot = makeSavedSession(from: tab, name: tab.displayName) else { return nil }
+    private func sessionSnapshot(freshCommands: Bool = false) -> [SavedSession] {
+        let commands: PaneCommandCapture = PaneRestoreSettings.isEnabled
+            ? .capture(fresh: freshCommands) : .skip
+        return terminals.compactMap { tab in
+            guard var snapshot = makeSavedSession(from: tab, name: tab.displayName, commands: commands)
+            else { return nil }
             // Carry the tab's saved-session link across relaunch, so ⌘S on a
             // restored tab still offers "update existing / save as new".
             snapshot.linkedSessionID = tab.sessionID
@@ -328,7 +344,9 @@ final class VaultsTabsModel: ObservableObject {
     /// Persist the current open tabs so they can be reopened next launch. Only
     /// the primary window owns session.json — a secondary window persisting would
     /// clobber it with its own tabs.
-    func persistSession() {
+    /// - Parameter freshCommands: re-read every pane's running command now
+    ///   instead of using a recent capture (at quit, while processes live).
+    func persistSession(freshCommands: Bool = false) {
         guard isPrimary else { return }
         // A test host shares the dev app's bundle id, so persisting here would
         // overwrite the developer's real saved session with the test app's
@@ -337,7 +355,50 @@ final class VaultsTabsModel: ObservableObject {
         // Splits and pane drags add surfaces without touching `terminals`, so
         // re-sync the tab and per-surface subscriptions on every persist.
         observeTabChanges()
-        TabSessionStore.save(sessionSnapshot())
+        writeSession(freshCommands: freshCommands)
+    }
+
+    /// The write half of `persistSession`, without re-subscribing to tab
+    /// changes: the refresh timer uses it, because re-subscribing replays a
+    /// pending clipboard confirmation and would stack a duplicate alert.
+    private func writeSession(freshCommands: Bool = false) {
+        guard isPrimary, !isRunningXCTest() else { return }
+        let snapshot = sessionSnapshot(freshCommands: freshCommands)
+        paneCommands.prune(keeping: liveSurfaceIDs())
+        let fingerprint = TabSessionStore.fingerprint(snapshot)
+        guard freshCommands || fingerprint == nil || fingerprint != lastPersistedFingerprint else { return }
+        TabSessionStore.save(snapshot)
+        lastPersistedFingerprint = fingerprint
+    }
+
+    private func liveSurfaceIDs() -> Set<UUID> {
+        Set(terminals.flatMap { ($0.surfaceTree.root?.leaves() ?? []).map(\.id) })
+    }
+
+    /// Keep captures current (a new `npm run dev`, an agent switching
+    /// session) so an unexpected exit still restores them: session-file
+    /// events for agents, plus a slow timer for the rest.
+    private func startCommandRefresh() {
+        guard isPrimary, !isRunningXCTest(), commandRefreshTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.commandRefreshInterval, repeats: true) { [weak self] _ in
+            self?.writeSession()
+        }
+        timer.tolerance = 3
+        RunLoop.main.add(timer, forMode: .common)
+        commandRefreshTimer = timer
+        agentSessionEvents = FileEventStream(
+            directories: AgentSessionWatch.watchedDirectories(
+                home: FileManager.default.homeDirectoryForCurrentUser,
+                exists: { FileManager.default.fileExists(atPath: $0) })
+        ) { [weak self] paths in self?.agentSessionFilesChanged(paths) }
+    }
+
+    private func agentSessionFilesChanged(_ paths: [String]) {
+        guard AgentSessionWatch.isRelevant(paths) else { return }
+        paneCommands.invalidate(panes: AgentSessionWatch.panesToRefresh(
+            changedPaths: paths, tracked: paneCommands.trackedAgents))
+        // Also covers an agent that just started: its new pid is read here.
+        writeSession()
     }
 
     /// Subscribe to each open tab so changes to its own state (color, rename,
@@ -387,6 +448,9 @@ final class VaultsTabsModel: ObservableObject {
         // handshake and steals focus from the real dev app. Leave
         // `pendingRestore` untouched so nothing is consumed.
         guard !isRunningXCTest() else { return }
+        // Start periodic capture only once the offer is answered: a save while
+        // the modal is up would overwrite the last session with an empty one.
+        defer { startCommandRefresh() }
 
         let entries = pendingRestore
         pendingRestore = []
@@ -421,6 +485,8 @@ final class VaultsTabsModel: ObservableObject {
     }
 
     deinit {
+        commandRefreshTimer?.invalidate()
+        agentSessionEvents?.stop()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         pathMonitor.cancel()
@@ -2491,7 +2557,11 @@ extension VaultsTabsModel {
     /// Build a `SavedSession` snapshot of a tab's live split layout. Captures the
     /// tree shape + ratios and, per pane, whether it's a local shell (with its
     /// cwd) or an SSH session (its saved-host id and/or command).
-    func makeSavedSession(from tab: TerminalTab, name: String) -> SavedSession? {
+    func makeSavedSession(
+        from tab: TerminalTab,
+        name: String,
+        commands: PaneCommandCapture = .skip
+    ) -> SavedSession? {
         guard let root = tab.surfaceTree.root else { return nil }
         let now = Date()
         return SavedSession(
@@ -2499,28 +2569,33 @@ extension VaultsTabsModel {
             createdAt: now,
             updatedAt: now,
             colorID: tab.color.flatMap { colorOptionID(for: $0) },
-            layout: savedNode(from: root, tab: tab))
+            layout: savedNode(from: root, tab: tab, commands: commands))
     }
 
     private func savedNode(
         from node: SplitTree<Ghostty.SurfaceView>.Node,
-        tab: TerminalTab
+        tab: TerminalTab,
+        commands: PaneCommandCapture
     ) -> SavedSession.PaneNode {
         switch node {
         case .leaf(let view):
-            return .leaf(savedPane(for: view, tab: tab))
+            return .leaf(savedPane(for: view, tab: tab, commands: commands))
         case .split(let split):
             let direction: SavedSession.PaneNode.Direction =
                 split.direction == .horizontal ? .horizontal : .vertical
             return .split(.init(
                 direction: direction,
                 ratio: split.ratio,
-                left: savedNode(from: split.left, tab: tab),
-                right: savedNode(from: split.right, tab: tab)))
+                left: savedNode(from: split.left, tab: tab, commands: commands),
+                right: savedNode(from: split.right, tab: tab, commands: commands)))
         }
     }
 
-    private func savedPane(for view: Ghostty.SurfaceView, tab: TerminalTab) -> SavedSession.Pane {
+    private func savedPane(
+        for view: Ghostty.SurfaceView,
+        tab: TerminalTab,
+        commands: PaneCommandCapture
+    ) -> SavedSession.Pane {
         // Persist only a STABLE name: an explicit user rename (Change Terminal
         // Title) wins, else the sticky override (SSH host label, dragged-in
         // name). NEVER the live OSC title — it may be a transient running command
@@ -2556,13 +2631,24 @@ extension VaultsTabsModel {
                 title: title,
                 titleIsUserSet: userSet ? true : nil)
         }
+        let running: PaneCapture? = switch commands {
+        case .skip: nil
+        case .capture(let fresh):
+            // Session saves run on the main thread (UI changes, timer, quit).
+            paneCommands.capture(pane: view.id,
+                                 foregroundPID: MainActor.assumeIsolated { view.surfaceModel?.foregroundPID },
+                                 fresh: fresh)
+        }
         return .init(
             kind: .local,
-            workingDirectory: view.pwd,
+            // Start the shell where the command ran: an agent resumes its
+            // session by the folder it was started in.
+            workingDirectory: running?.workingDirectory ?? view.pwd,
             hostID: nil,
             command: nil,
             title: title,
-            titleIsUserSet: userSet ? true : nil)
+            titleIsUserSet: userSet ? true : nil,
+            restoreCommand: running?.command)
     }
 
     // MARK: Restore (open)
@@ -2623,13 +2709,14 @@ extension VaultsTabsModel {
             let surface: Ghostty.SurfaceView
             switch pane.kind {
             case .local:
+                var cfg = Ghostty.SurfaceConfiguration()
                 if let cwd = pane.workingDirectory, !cwd.isEmpty {
-                    var cfg = Ghostty.SurfaceConfiguration()
                     cfg.workingDirectory = cwd
-                    surface = Ghostty.SurfaceView(app, baseConfig: cfg)
-                } else {
-                    surface = Ghostty.SurfaceView(app)
                 }
+                // Typed into the new shell as it starts, with Enter, so the
+                // pane's command (or resumed agent) runs again.
+                cfg.initialInput = pane.restoreCommand.flatMap(PaneRestoreSettings.initialInput)
+                surface = Ghostty.SurfaceView(app, baseConfig: cfg)
             case .ssh:
                 // Blank placeholder; connected after the tab mounts.
                 surface = Ghostty.SurfaceView(app)
