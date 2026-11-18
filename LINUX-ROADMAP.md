@@ -2417,6 +2417,23 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **How to verify on Linux.** Open the inspector: a ✕ sits in the top-right of its title bar and turns red on hover, with the tooltip "Close inspector". Clicking it closes the inspector. Repeat 20 times quickly, with no crash (§48). The pane-header ✕ looks and behaves the same as before.
 
+## 54. Double-clicking blank tab-strip space opens a local tab
+
+**Symptom.** Double-clicking the empty part of the tab strip did nothing. Most tabbed apps (browsers, editors, other terminals) open a new tab there.
+
+**Root cause & reasoning.** The strip's scroll content was only as wide as its chips, so with a few tabs the empty space to their right was not part of any view that could take a click.
+
+**Platform-agnostic logic.**
+1. Make the strip's content at least as wide as the visible scroll area, and track that width as the window resizes.
+2. Put a transparent, hit-testable background behind the chips that handles a double-click by running the same "new local terminal" action as ⌘L.
+3. Chips sit on top, so their own clicks, drags and close buttons are unaffected (§2's hit-testing stays the authority).
+
+**macOS → Linux equivalents.**
+- macOS: `tabViewportWidth` from a `GeometryReader`, `.frame(minWidth:)` on the chip row, and a `.background` with `.onTapGesture(count: 2)` sending `AppDelegate.newLocalTerminal(_:)` in `VaultsTabStrip`.
+- GTK: give the chip box `hexpand` so it fills the scrolled window. Add a `GtkGestureClick` on the strip container that acts when `n_press == 2` and the picked widget is not a chip (use `gtk_widget_pick` at the press point). Activate the `app.new-local-tab` action.
+
+**How to verify on Linux.** With 1, 3 and enough tabs to scroll, double-click empty strip space: one new local tab opens each time. Double-clicking a chip still does what it did before (no new tab). A single click on empty space does nothing. Dragging chips still reorders them.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

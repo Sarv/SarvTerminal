@@ -23,6 +23,9 @@ struct VaultsTabStrip: View {
     @State private var renameText: String = ""
     /// A dragged pane is hovering the strip's empty trailing area.
     @State private var stripDropTargeted = false
+    /// Visible width of the tab scroll area, so its blank trailing space can
+    /// take a double-click even when there are only a few tabs.
+    @State private var tabViewportWidth: CGFloat = 0
 
     private var dashboardActive: Bool {
         tabs.selection == .dashboard
@@ -53,8 +56,21 @@ struct VaultsTabStrip: View {
                         }
                     }
                     .padding(.vertical, 2)
+                    .frame(minWidth: tabViewportWidth, alignment: .leading)
+                    // Double-clicking blank strip space opens a local tab, the
+                    // same as ⌘L. Chips sit on top, so they keep their clicks.
+                    .background(
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture(count: 2, perform: openLocalTab)
+                    )
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { tabViewportWidth = geometry.size.width }
+                        .onChange(of: geometry.size.width) { tabViewportWidth = $0 }
+                })
                 // Bring the active tab into view — e.g. a newly created tab at
                 // the end, or one selected via ⌘-number.
                 .onChange(of: tabs.selection) { newValue in
@@ -318,6 +334,10 @@ struct VaultsTabStrip: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
         )
+    }
+
+    private func openLocalTab() {
+        NSApp.sendAction(#selector(AppDelegate.newLocalTerminal(_:)), to: nil, from: nil)
     }
 
     private var divider: some View {
