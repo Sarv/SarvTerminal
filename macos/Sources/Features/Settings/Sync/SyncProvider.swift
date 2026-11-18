@@ -206,11 +206,19 @@ struct FolderSyncProvider: SyncProvider {
     /// Max version snapshots to keep under `history/`. `nil` = keep all.
     var historyLimit: Int? = SyncSettings.defaultHistoryKeepCount
 
-    /// All payloads live inside a dedicated `SarvTerminal/` subfolder of the
+    /// All payloads live inside a dedicated `SarvTerminal/` (dev: `SarvTerminalDev/`) subfolder of the
     /// folder the user chose — so pointing sync at a shared/busy location
     /// (Desktop, Documents, a Drive root) never scatters our files among the
     /// user's own. Created on demand; legacy root-level files are migrated in.
+    /// The dev build uses its own `SarvTerminalDev/` so it can never write over
+    /// the release app's data, even when both point at the same folder.
+    #if DEBUG
+    static let storageFolderName = "SarvTerminalDev"
+    #else
     static let storageFolderName = "SarvTerminal"
+    #endif
+    /// The release folder name, which the dev build copies its data from once.
+    static let releaseStorageFolderName = "SarvTerminal"
 
     /// Resolve the bookmark to the user-selected directory URL, starting
     /// security-scoped access. Caller must `stopAccessingSecurityScopedResource()`
@@ -241,10 +249,31 @@ struct FolderSyncProvider: SyncProvider {
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         } catch {
-            throw SyncProviderError(message: "Couldn't create the SarvTerminal folder in the sync location.")
+            throw SyncProviderError(message: "Couldn't create the \(Self.storageFolderName) folder in the sync location.")
         }
         migrateLegacyLayout(base: base, storage: dir)
+        #if DEBUG
+        adoptReleaseFolder(base: base, storage: dir)
+        #endif
         return dir
+    }
+
+    /// Dev build only: the first time `SarvTerminalDev/` is used, copy in what
+    /// earlier dev builds wrote to `SarvTerminal/` (manifest, payloads and
+    /// history). It's a copy, not a move, because the release app may be
+    /// syncing to that same folder and must keep its data.
+    private func adoptReleaseFolder(base: URL, storage: URL) {
+        let fm = FileManager.default
+        let source = base.appendingPathComponent(Self.releaseStorageFolderName, isDirectory: true)
+        guard source.standardizedFileURL != storage.standardizedFileURL,
+              !fm.fileExists(atPath: storage.appendingPathComponent(SyncManifest.manifestFile).path),
+              fm.fileExists(atPath: source.appendingPathComponent(SyncManifest.manifestFile).path),
+              let names = try? fm.contentsOfDirectory(atPath: source.path) else { return }
+        for name in names where !name.hasPrefix(".") {
+            let dst = storage.appendingPathComponent(name)
+            guard !fm.fileExists(atPath: dst.path) else { continue }
+            try? fm.copyItem(at: source.appendingPathComponent(name), to: dst)
+        }
     }
 
     /// One-time move of payloads written by older builds at the folder root into
