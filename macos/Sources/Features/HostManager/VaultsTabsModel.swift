@@ -1061,6 +1061,7 @@ final class VaultsTabsModel: ObservableObject {
                 SavedHostsStore.shared.upsert(updated)
             }
             model.host = SavedHostsStore.shared.host(withID: snapshot.id) ?? snapshot
+            HostUsageStore.shared.recordUse(of: snapshot.id, at: Date())
         }
         model.stage = .connected
         // Logged in: drop the askpass password file. ssh keeps its now-unlinked

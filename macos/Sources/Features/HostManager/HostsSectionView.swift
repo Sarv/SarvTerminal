@@ -16,6 +16,7 @@ struct HostsSectionView: View {
     @ObservedObject private var groupsStore = HostGroupsStore.shared
     @ObservedObject private var hostSelection = HostManagerSelection.shared
     @ObservedObject private var sshKeys = SSHKeyManager.shared
+    @ObservedObject private var hostUsage = HostUsageStore.shared
 
     /// Single input that doubles as filter (live, as you type) and as an
     /// ssh-command runner (press Enter / click Connect). Matches the
@@ -46,7 +47,7 @@ struct HostsSectionView: View {
     /// view while drilled into a group; levels without an entry fall back to
     /// `defaultViewMode`. Persisted across launches.
     @State private var viewModeOverrides: [UUID: HostsViewMode] = HostsSectionView.loadViewModeOverrides()
-    @State private var sortMode: HostsSortMode = .azAscending
+    @State private var sortMode: HostsSortMode = .recentlyUsed
     @State private var tagFilter: String? = nil
     @State private var showImporter = false
     @State private var contentWidth: CGFloat = 0
@@ -116,9 +117,10 @@ struct HostsSectionView: View {
     }
 
     enum HostsSortMode: String, CaseIterable {
-        case azAscending, azDescending, newestFirst, oldestFirst
+        case recentlyUsed, azAscending, azDescending, newestFirst, oldestFirst
         var label: String {
             switch self {
+            case .recentlyUsed:  return "Recently used"
             case .azAscending:   return "A–Z"
             case .azDescending:  return "Z–A"
             case .newestFirst:   return "Newest first"
@@ -127,6 +129,7 @@ struct HostsSectionView: View {
         }
         var systemImage: String {
             switch self {
+            case .recentlyUsed:  return "clock.arrow.circlepath"
             case .azAscending:   return "textformat.abc"
             case .azDescending:  return "textformat.abc.dottedunderline"
             case .newestFirst:   return "calendar.badge.clock"
@@ -696,6 +699,12 @@ struct HostsSectionView: View {
 
     private func sortGroups(_ list: [HostGroup]) -> [HostGroup] {
         switch sortMode {
+        case .recentlyUsed:
+            let lastUse = Dictionary(uniqueKeysWithValues: list.map { ($0.id, groupLastUse($0.id)) })
+            return list.sorted {
+                HostRecency.precedes(lastUse: (lastUse[$0.id] ?? nil, lastUse[$1.id] ?? nil),
+                                     names: ($0.displayName, $1.displayName))
+            }
         case .azAscending:
             return list.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
         case .azDescending:
@@ -705,8 +714,16 @@ struct HostsSectionView: View {
         }
     }
 
+    /// A group is as recent as the most recently used host anywhere inside it.
+    private func groupLastUse(_ groupID: UUID) -> Date? {
+        let groupIDs = groupsStore.descendants(of: groupID).union([groupID])
+        let hostIDs = hostsStore.hosts.filter { $0.groupID.map(groupIDs.contains) ?? false }.map(\.id)
+        return HostRecency.latestUse(of: hostIDs, usage: hostUsage.usage)
+    }
+
     private func sortHosts(_ list: [SavedHost]) -> [SavedHost] {
         switch sortMode {
+        case .recentlyUsed: return HostRecency.sorted(list, usage: hostUsage.usage)
         case .azAscending:
             return list.sorted { $0.displayLabel.localizedCaseInsensitiveCompare($1.displayLabel) == .orderedAscending }
         case .azDescending:

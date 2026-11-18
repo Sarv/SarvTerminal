@@ -52,6 +52,37 @@ struct RecordUpsertTests {
 }
 
 @Suite
+struct HostRecencyTests {
+    @Test func firstUseCreatesEntryAndLaterUsesCount() {
+        let id = UUID()
+        let once = HostRecency.recording(id, at: earlier, in: [:])
+        #expect(once[id] == HostUsage(lastUsedAt: earlier, useCount: 1))
+        let twice = HostRecency.recording(id, at: later, in: once)
+        #expect(twice[id] == HostUsage(lastUsedAt: later, useCount: 2))
+    }
+
+    @Test func usedHostsFirstByRecencyThenUnusedAlphabetically() {
+        let alpha = host("alpha"), bravo = host("bravo"), charlie = host("charlie"), delta = host("delta")
+        let usage: [UUID: HostUsage] = [
+            charlie.id: HostUsage(lastUsedAt: earlier, useCount: 9),
+            delta.id: HostUsage(lastUsedAt: later, useCount: 1),
+        ]
+        let order = HostRecency.sorted([bravo, charlie, alpha, delta], usage: usage).map(\.label)
+        #expect(order == ["delta", "charlie", "alpha", "bravo"])
+    }
+
+    @Test func groupRecencyIsItsLatestHost() {
+        let first = UUID(), second = UUID()
+        let usage: [UUID: HostUsage] = [
+            first: HostUsage(lastUsedAt: earlier, useCount: 1),
+            second: HostUsage(lastUsedAt: later, useCount: 1),
+        ]
+        #expect(HostRecency.latestUse(of: [first, second, UUID()], usage: usage) == later)
+        #expect(HostRecency.latestUse(of: [UUID()], usage: usage) == nil)
+    }
+}
+
+@Suite
 struct SyncHistoryLimitTests {
     @Test func unconfiguredFallsBackToDefault() {
         #expect(SyncSettings.resolvedKeepCount(configured: nil, legacy: 0) == SyncSettings.defaultHistoryKeepCount)

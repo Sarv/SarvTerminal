@@ -2358,6 +2358,24 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **How to verify on Linux.** Set the keep menu to 5 and make 7 changes: exactly 5 `vN` folders remain. Restore an older version: hosts/settings match it, a new latest version is written, and restoring the version made just before brings the previous state back. Drop a stray `vfoo` folder and a `v9` without a manifest into `history/`: neither is listed. Write a legacy count of 30: the menu shows "30 versions".
 
+## 51. Hosts list sorts by "Recently used" by default
+
+**Symptom.** The Hosts list could only be sorted by name or by creation date. The hosts used every day were scattered among dozens of rarely used ones.
+
+**Root cause & reasoning.** Nothing recorded when a host was used. Storing it on the host record would have been wrong: the record is synced, so every connect would become an edit and a new sync backup version (see §49). Usage is therefore a separate, local-only store.
+
+**Platform-agnostic logic.**
+1. On each successful SSH connect to a saved host, record `{lastUsedAt = now, useCount += 1}` for its id in a local map `hostID → usage`. Never-used hosts have no entry.
+2. "Recently used" order: hosts with a use first, newest use first; equal or missing uses fall back to case-insensitive name order; never-used hosts last, A–Z.
+3. A group sorts by the latest use of any host in it or in any descendant group, using the same comparison.
+4. "Recently used" is the default sort mode. The usage map is encrypted at rest like the host list and is never synced.
+
+**macOS → Linux equivalents.**
+- macOS: `HostRecency` (pure) and `HostUsageStore` (`host-usage.json` via `EncryptedStore`) in `HostUsageStore.swift`. `recordUse` is called from `VaultsTabsModel` after a connect succeeds. `HostsSortMode.recentlyUsed` in `HostsSectionView`.
+- GTK/Zig: a pure `precedes(lastUse, names)` comparator used with `std.sort`, a `std.AutoHashMap(Uuid, HostUsage)` persisted with the §16 encrypted store, and a new sort entry in the hosts sort `GtkDropDown`.
+
+**How to verify on Linux.** Connect to host C, then A: the list reads A, C, then the never-used hosts alphabetically. Put C in a nested group: the parent group moves above groups with no used hosts. Connecting must not create a new sync history version, and `host-usage.json` must not appear in the sync folder.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
