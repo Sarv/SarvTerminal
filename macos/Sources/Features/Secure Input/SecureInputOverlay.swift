@@ -58,8 +58,8 @@ struct SecureInputOverlay: View {
                         Text("""
                         Secure Input is active. Secure Input is a macOS security feature that
                         prevents applications from reading keyboard events. This is enabled
-                        automatically whenever Ghostty detects a password prompt in the terminal,
-                        or at all times if `Ghostty > Secure Keyboard Entry` is active.
+                        automatically whenever Sarv Terminal detects a password prompt in the terminal,
+                        or at all times if `Sarv Terminal > Secure Keyboard Entry` is active.
                         """)
                         .padding(.all)
                     }

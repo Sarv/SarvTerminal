@@ -2434,6 +2434,20 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **How to verify on Linux.** With 1, 3 and enough tabs to scroll, double-click empty strip space: one new local tab opens each time. Double-clicking a chip still does what it did before (no new tab). A single click on empty space does nothing. Dragging chips still reorders them.
 
+## 55. Secure Input help text names Sarv Terminal
+
+**Symptom.** The Secure Input popover said "whenever Ghostty detects a password prompt" and pointed to "`Ghostty > Secure Keyboard Entry`", but the app and its menu are named Sarv Terminal.
+
+**Root cause & reasoning.** Upstream text that the branding pass missed.
+
+**Platform-agnostic logic.** Every user-facing string uses the product name "Sarv Terminal". The menu path in the text must match the real app menu title.
+
+**macOS → Linux equivalents.**
+- macOS: the text in `SecureInputOverlay.swift`.
+- GTK: there is no Secure Keyboard Entry on Linux, so there is nothing to port. When writing any similar help text (e.g. password-prompt detection hints), use "Sarv Terminal" and the real GTK menu path.
+
+**How to verify on Linux.** Grep the GTK UI strings and `.blp` files for user-visible "Ghostty" (excluding config keys, paths and identifiers). There should be none.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
