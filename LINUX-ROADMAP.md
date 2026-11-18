@@ -2449,6 +2449,22 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **How to verify on Linux.** Grep the GTK UI strings and `.blp` files for user-visible "Ghostty" (excluding config keys, paths and identifiers). There should be none.
 
+## 56. Saved data that can't be unlocked shows an error with Retry
+
+**Symptom.** After an update, a user saw no hosts. Restoring brought them back, but after the restart prompt they were gone again.
+
+**Root cause & reasoning.** Local stores (hosts, snippets, saved sessions, port forwards, scratchpad) are encrypted with a data key kept in the Keychain (wrapped by a Secure Enclave key). The Keychain read returned nil for EVERY failure, so "access denied / prompt dismissed / Keychain locked" looked the same as "never created". The key code then treated it as a first run and tried to create a new key over the existing one (deleting the old item first). Stores whose file couldn't be decrypted started empty with `loadFailed`, and every write silently failed (`try?`) because the key was unavailable. So data applied by a pull or restore lived only in memory and vanished on the next launch, with no message.
+
+**Platform-agnostic logic.**
+1. A key lookup has three outcomes: `found(bytes)`, `missing` (item not found) and `unavailable(status)` (any other error). Pure decision `plan(enclave, wrapped)`: any `unavailable` → `locked(status)` (throw, never create); both `found` → use them; otherwise → create (first run). The raw-key fallback follows the same rule. A failed key read is not cached, so a later attempt asks again.
+2. Each encrypted store exposes `loadFailed` and `reload()`. Scratchpad gained `loadFailed` too and skips writes while locked.
+3. At launch, after the stores load, if any store failed, show an alert "Couldn't Unlock Your Saved Data" listing the locked stores ("hosts and port forwards"), saying the data is still on disk, with **Retry** (reload the failed stores, then check again; repeats while still locked) and **Later**.
+4. Sync pull and history restore first check `isKeyAvailable` (can the key be read now?) and fail with "couldn't read its encryption key from the Keychain, so nothing was changed" instead of applying data that can't be saved. Push already refuses while a store is locked.
+
+**macOS → Linux equivalents.** `SecItemCopyMatching` status (`errSecItemNotFound` vs other) → libsecret: `secret_password_lookup_sync` returning NULL with no GError = missing; a GError (locked collection, dismissed unlock prompt, no Secret Service) = unavailable. Secure Enclave wrapping has no direct GTK equivalent (§16); keep the same three-way lookup for whatever holds the key. SarvAlert → an `AdwAlertDialog` with Retry (suggested) and Later. App launch hook → after the stores initialise in the GTK `activate` path.
+
+**How to verify on Linux.** Lock the login keyring (or deny the unlock prompt) and start the app: the alert lists the locked stores, lists are empty, and the encrypted files on disk keep their bytes. Unlock and press Retry: the data appears without a restart. With the keyring still locked, a sync Pull or Restore fails with the Keychain message and changes nothing. Remove the key items entirely (fresh install): no alert, a new key is created.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

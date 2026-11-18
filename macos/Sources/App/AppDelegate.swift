@@ -289,6 +289,10 @@ class AppDelegate: NSObject,
         // auto-push on change + hourly pull.
         SyncCoordinator.shared.start()
 
+        // Saved data that couldn't be unlocked (Keychain access denied) shows
+        // empty lists; say so and offer a retry instead of failing silently.
+        LocalDataUnlock.checkAndPrompt()
+
         // Register our service provider. This must happen after everything is initialized.
         NSApp.servicesProvider = ServiceProvider()
 

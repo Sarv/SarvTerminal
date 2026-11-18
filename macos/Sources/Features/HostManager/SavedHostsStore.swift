@@ -5,7 +5,7 @@ import Combine
 /// from SwiftUI via `@ObservedObject var store = SavedHostsStore.shared`.
 ///
 /// Storage: `~/.config/sarvterminal/hosts.json` (created lazily).
-final class SavedHostsStore: ObservableObject {
+final class SavedHostsStore: ObservableObject, EncryptedReloadable {
     static let shared = SavedHostsStore()
 
     @Published private(set) var hosts: [SavedHost] = []
@@ -133,6 +133,9 @@ final class SavedHostsStore: ObservableObject {
     }
 
     // MARK: - IO
+
+    /// Read the encrypted file again (e.g. after Keychain access is allowed).
+    func reload() { load() }
 
     private func load() {
         // Stored encrypted at rest (AES-256-GCM, Secure-Enclave-protected key).

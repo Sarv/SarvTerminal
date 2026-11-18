@@ -21,6 +21,7 @@ enum SyncEngine {
         case wrongPassword
         case passwordMismatchRemote
         case localDataUnreadable
+        case localDataLocked
         case suspiciousEmptyPush
         case remoteIncomplete
         case integrityCheckFailed
@@ -36,6 +37,8 @@ enum SyncEngine {
             case .wrongPassword:        return "Wrong master password for this synced data."
             case .passwordMismatchRemote:
                 return "Your master password doesn't match the existing synced data. Use the original password, or reset the remote."
+            case .localDataLocked:
+                return "Sarv Terminal couldn't read its encryption key from the Keychain, so nothing was changed. Allow Keychain access when asked, then try again."
             case .localDataUnreadable:
                 return "Local hosts couldn't be read, so sync was paused to protect your backup. Restart the app; if it persists your hosts file may be corrupt."
             case .suspiciousEmptyPush:
@@ -269,6 +272,7 @@ enum SyncEngine {
 
     /// Download, decrypt, and merge into local state.
     static func pull(masterPassword: String) async throws {
+        guard LocalDataCrypto.isKeyAvailable else { throw EngineError.localDataLocked }
         let provider = try makeProvider()
         // Same guard as push — refuse to operate against a public repo.
         try await provider.testConnection()
@@ -306,6 +310,7 @@ enum SyncEngine {
     /// restored data is then pushed as a new latest version, so other Macs
     /// pick it up and the history keeps moving forward.
     static func restore(version: Int, masterPassword: String) async throws {
+        guard LocalDataCrypto.isKeyAvailable else { throw EngineError.localDataLocked }
         guard let provider = try makeProvider() as? FolderSyncProvider else { throw EngineError.historyUnavailable }
         try await provider.testConnection()
         if let remote = try await readManifest(provider), remote.version > settings.lastSyncedVersion {

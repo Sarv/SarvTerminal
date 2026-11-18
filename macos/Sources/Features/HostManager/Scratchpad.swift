@@ -3,7 +3,7 @@ import SwiftUI
 /// Persisted scratchpad text — a place to comfortably stage/edit multi-line
 /// commands or scripts (full mouse + cursor) before firing them into the active
 /// terminal. Encrypted at rest since it may hold secrets. One shared buffer.
-final class ScratchpadStore: ObservableObject {
+final class ScratchpadStore: ObservableObject, EncryptedReloadable {
     static let shared = ScratchpadStore()
 
     @Published var text: String = "" { didSet { schedulePersist() } }
@@ -13,6 +13,8 @@ final class ScratchpadStore: ObservableObject {
     private let queue = DispatchQueue(label: "ScratchpadStore.io", qos: .utility)
     private var pending: DispatchWorkItem?
     private var loaded = false
+    /// The file exists but couldn't be decrypted; never write over it.
+    private(set) var loadFailed = false
 
     private struct Payload: Codable { var text: String; var language: String }
 
@@ -22,18 +24,29 @@ final class ScratchpadStore: ObservableObject {
         loaded = true
     }
 
+    /// Read the encrypted file again (e.g. after Keychain access is allowed),
+    /// without writing back what was just read.
+    func reload() {
+        loaded = false
+        load()
+        loaded = true
+    }
+
     private func load() {
         switch EncryptedStore.read(Payload.self, from: fileURL, decoder: JSONDecoder()) {
         case .loaded(let p), .migrated(let p):
             text = p.text
             language = p.language.isEmpty ? "bash" : p.language
-        case .none, .failed:
-            break
+            loadFailed = false
+        case .none:
+            loadFailed = false
+        case .failed:
+            loadFailed = true
         }
     }
 
     private func schedulePersist() {
-        guard loaded else { return }   // don't write back what we just loaded
+        guard loaded, !loadFailed else { return }   // don't write back what we just loaded, or over a locked file
         pending?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.persist() }
         pending = work

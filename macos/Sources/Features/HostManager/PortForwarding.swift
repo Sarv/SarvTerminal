@@ -92,7 +92,7 @@ struct PortForward: Identifiable, Codable, Hashable, TimestampedRecord {
 
 /// Owns the persisted port-forward rules. Storage:
 /// `~/.config/sarvterminal/portforwards.json`. Mirrors `SnippetsStore`.
-final class PortForwardStore: ObservableObject {
+final class PortForwardStore: ObservableObject, EncryptedReloadable {
     static let shared = PortForwardStore()
 
     @Published private(set) var forwards: [PortForward] = []
@@ -142,6 +142,9 @@ final class PortForwardStore: ObservableObject {
     }
 
     // MARK: - IO
+
+    /// Read the encrypted file again (e.g. after Keychain access is allowed).
+    func reload() { load() }
 
     private func load() {
         // Encrypted at rest; legacy plaintext migrated once (original backed up).

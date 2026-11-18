@@ -112,7 +112,7 @@ extension SavedSession {
 /// Owns the persisted saved-session library. Storage:
 /// `~/.config/sarvterminal/saved-sessions.json`, encrypted at rest like the
 /// other local stores.
-final class SavedSessionsStore: ObservableObject {
+final class SavedSessionsStore: ObservableObject, EncryptedReloadable {
     static let shared = SavedSessionsStore()
 
     @Published private(set) var sessions: [SavedSession] = []
@@ -190,6 +190,9 @@ final class SavedSessionsStore: ObservableObject {
     }
 
     // MARK: - IO
+
+    /// Read the encrypted file again (e.g. after Keychain access is allowed).
+    func reload() { load() }
 
     private func load() {
         let decoder = JSONDecoder()

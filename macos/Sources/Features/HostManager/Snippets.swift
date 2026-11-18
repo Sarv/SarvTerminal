@@ -47,7 +47,7 @@ struct Snippet: Identifiable, Codable, Hashable, TimestampedRecord {
 /// Owns the persisted snippet library. Storage:
 /// `~/.config/sarvterminal/snippets.json`. Mirrors `SavedHostsStore` so it
 /// participates in sync (ingest/replaceAll + `loadFailed`).
-final class SnippetsStore: ObservableObject {
+final class SnippetsStore: ObservableObject, EncryptedReloadable {
     static let shared = SnippetsStore()
 
     @Published private(set) var snippets: [Snippet] = []
@@ -101,6 +101,9 @@ final class SnippetsStore: ObservableObject {
     }
 
     // MARK: - IO
+
+    /// Read the encrypted file again (e.g. after Keychain access is allowed).
+    func reload() { load() }
 
     private func load() {
         // Encrypted at rest; legacy plaintext migrated once (original backed up).

@@ -46,6 +46,11 @@ enum LocalDataCrypto {
 
     // MARK: Key
 
+    /// Whether the encryption key can be read right now (false while Keychain
+    /// access is denied). Anything that replaces local data must check this
+    /// first, or its writes fail and the change is lost on the next launch.
+    static var isKeyAvailable: Bool { (try? key()) != nil }
+
     static func key() throws -> SymmetricKey {
         lock.lock(); defer { lock.unlock() }
         if let cached { return cached }
@@ -54,10 +59,46 @@ enum LocalDataCrypto {
         return k
     }
 
+    /// What a Keychain lookup found. `unavailable` (access denied, prompt
+    /// dismissed, Keychain locked…) is NOT "missing": the key exists but we
+    /// couldn't read it, so a new one must never be created over it.
+    enum KeyLookup: Equatable {
+        case found(Data)
+        case missing
+        case unavailable(OSStatus)
+    }
+
+    /// What to do with the Enclave key pair's two Keychain items.
+    enum KeyPlan: Equatable {
+        case use(enclaveKey: Data, wrappedKey: Data)
+        case create
+        case locked(OSStatus)
+    }
+
+    static func plan(enclave: KeyLookup, wrapped: KeyLookup) -> KeyPlan {
+        switch (enclave, wrapped) {
+        case (.unavailable(let status), _), (_, .unavailable(let status)):
+            return .locked(status)
+        case (.found(let enclaveKey), .found(let wrappedKey)):
+            return .use(enclaveKey: enclaveKey, wrappedKey: wrappedKey)
+        default:
+            return .create
+        }
+    }
+
+    static func lockedError(_ status: OSStatus) -> LocalCryptoError {
+        LocalCryptoError(message: "Couldn't read the encryption key from the Keychain (status \(status)).")
+    }
+
     private static func secureEnclaveKey() throws -> SymmetricKey {
-        if let seData = kcRead(seAccount), let wrapped = kcRead(wrappedAccount) {
+        switch plan(enclave: kcRead(seAccount), wrapped: kcRead(wrappedAccount)) {
+        case .locked(let status):
+            throw lockedError(status)
+        case .use(let seData, let wrapped):
             let se = try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: seData)
             return try unwrap(wrapped, with: se)
+        case .create:
+            break
         }
         // First run: create the Enclave key + a random data key wrapped to it.
         let se = try SecureEnclave.P256.KeyAgreement.PrivateKey()
@@ -70,7 +111,11 @@ enum LocalDataCrypto {
     }
 
     private static func rawKeychainKey() throws -> SymmetricKey {
-        if let raw = kcRead(rawAccount) { return SymmetricKey(data: raw) }
+        switch kcRead(rawAccount) {
+        case .found(let raw): return SymmetricKey(data: raw)
+        case .unavailable(let status): throw lockedError(status)
+        case .missing: break
+        }
         let k = SymmetricKey(size: .bits256)
         let raw = k.withUnsafeBytes { Data($0) }
         guard kcWrite(rawAccount, raw) else { throw LocalCryptoError(message: "failed to persist data key") }
@@ -120,20 +165,20 @@ enum LocalDataCrypto {
         #endif
     }
 
-    private static func kcRead(_ account: String) -> Data? {
+    private static func kcRead(_ account: String) -> KeyLookup {
         #if DEBUG
-        if let fromFile = readKeyFile(account) { return fromFile }
+        if let fromFile = readKeyFile(account) { return .found(fromFile) }
         // One-time migration from the legacy Keychain (prompts once), then
         // persist to a file so every later launch is silent.
-        guard let legacy = keychainRead(account) else { return nil }
-        try? writeKeyFile(account, legacy)
+        let legacy = keychainRead(account)
+        if case .found(let data) = legacy { try? writeKeyFile(account, data) }
         return legacy
         #else
         return keychainRead(account)
         #endif
     }
 
-    private static func keychainRead(_ account: String) -> Data? {
+    private static func keychainRead(_ account: String) -> KeyLookup {
         let q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -142,7 +187,16 @@ enum LocalDataCrypto {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        return SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess ? item as? Data : nil
+        let status = SecItemCopyMatching(q as CFDictionary, &item)
+        switch status {
+        case errSecSuccess:
+            guard let data = item as? Data else { return .unavailable(status) }
+            return .found(data)
+        case errSecItemNotFound:
+            return .missing
+        default:
+            return .unavailable(status)
+        }
     }
 
     #if !DEBUG
