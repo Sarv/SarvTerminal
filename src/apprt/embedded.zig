@@ -1340,7 +1340,9 @@ pub const Inspector = struct {
             command_buffer.msgSend(void, objc.sel("release"), .{});
             desc.msgSend(void, objc.sel("release"), .{});
         }
-        assert(self.backend == .metal);
+        // Not an assert: asserts compile out in release builds, and rendering
+        // without an initialized Metal backend null-derefs inside ImGui.
+        if (self.backend != .metal) return error.MetalBackendNotInitialized;
         //log.debug("render", .{});
 
         // Setup our imgui frame. We need to render multiple frames to ensure

@@ -2296,6 +2296,27 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 6. Run `printf '\e]7501;?\a'`: the reply lists the states and kinds.
 7. Disable the watcher: the icon and dots vanish, and the socket file is removed.
 
+## 48. Closing the terminal inspector must not crash the app
+
+**Symptom.** Choosing **Toggle Terminal Inspector** (context menu or View menu) to close an open inspector sometimes killed the whole app, and with it every running shell. macOS wrote no crash report. launchd logged `exited due to exit(1)` because the bundled Sentry handler caught the `SIGSEGV`, wrote `~/.local/state/sarvterminal/crash/<uuid>.sarvcrash`, and exited. The minidump showed `EXC_BAD_ACCESS` at `0x0` in `ImGui_ImplMetal_NewFrame ← ghostty_inspector_metal_render ← InspectorView.draw`.
+
+**Root cause & reasoning.**
+- `ghostty_surface_inspector(surface)` is **get-or-create**: if the surface has no inspector, it builds a new one with a fresh ImGui context and **no render backend**.
+- Hiding the inspector sets `inspectorVisible = false`, which calls `ghostty_inspector_free`. SwiftUI only removes the `InspectorView` (an `MTKView` redrawing at 30 fps) on a later pass.
+- A draw that lands in that window calls the getter, which silently builds an uninitialized inspector. `metalInit` runs only when `surfaceView` is assigned, so it never runs for this one.
+- `renderMetal` guarded with `assert(backend == .metal)`. Release builds (`ReleaseFast`) compile asserts out, so ImGui dereferenced null backend data.
+
+**Platform-agnostic logic.**
+1. A view that renders the inspector must never call the get-or-create getter while the inspector is hidden. Gate every access on the "inspector visible" flag, so a frame or event that arrives after hiding is a no-op.
+2. The core's render entry point must check, not assert, that a backend is initialized for this inspector's ImGui context. Without one it returns an error (logged) instead of rendering.
+
+**macOS → Linux equivalents.**
+- macOS: `InspectorView.inspector` returns nil unless `surfaceView.inspectorVisible`. `Inspector.renderMetal` returns `error.MetalBackendNotInitialized` when `backend != .metal`.
+- GTK: `imgui_widget.zig` creates its own ImGui context and runs `ImGui_ImplOpenGL3_Init` in realize, then renders in its own render vfunc. So there is no separate get-or-create step between init and render, and no port is needed.
+- Keep the invariant: never call `ImGui_ImplOpenGL3_NewFrame` unless that widget's GL init succeeded. If init fails, or the widget is unrealized, skip the frame. Do not assert.
+
+**How to verify on Linux.** Toggle the inspector open and closed rapidly 20+ times, using both the keybind and the menu, including while output is streaming. The app must stay up, and no `.sarvcrash` file may appear. Also check that closing a surface with the inspector open does not crash.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

@@ -99,7 +99,11 @@ extension Ghostty {
         }
 
         private var inspector: Ghostty.Inspector? {
-            guard let surfaceView = self.surfaceView else { return nil }
+            // `surfaceView.inspector` is get-or-create. Once the inspector is
+            // hidden (and freed), this view can still receive a frame or event
+            // before SwiftUI tears it down; touching the getter then would build
+            // a fresh inspector with no Metal backend and crash in render.
+            guard let surfaceView = self.surfaceView, surfaceView.inspectorVisible else { return nil }
             return surfaceView.inspector
         }
 
