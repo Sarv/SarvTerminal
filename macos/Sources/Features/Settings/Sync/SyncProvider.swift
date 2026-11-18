@@ -387,3 +387,18 @@ struct SyncHistoryEntry: Identifiable, Equatable {
     let deviceName: String
     var id: Int { version }
 }
+
+extension SyncHistoryEntry {
+    /// Dropdown text, e.g. "v201 · 18 Nov 2026 at 5:14 PM (current)".
+    func menuLabel(currentVersion: Int) -> String {
+        let label = "v\(version) · \(date.formatted(date: .abbreviated, time: .shortened))"
+        return version == currentVersion ? label + " (current)" : label
+    }
+
+    /// Keep the user's pick while it still exists; otherwise select the
+    /// version you have now (or the newest, if it isn't in the list).
+    static func defaultSelection(in entries: [SyncHistoryEntry], keeping selected: Int?, currentVersion: Int) -> Int? {
+        if let selected, entries.contains(where: { $0.version == selected }) { return selected }
+        return entries.first { $0.version == currentVersion }?.version ?? entries.first?.version
+    }
+}

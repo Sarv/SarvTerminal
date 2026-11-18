@@ -12,8 +12,10 @@ struct SyncSectionView: View {
     @State private var patField = ""
     @State private var busy = false
     @State private var message: Message?
-    /// Restorable versions, loaded when the user opens the list (nil = closed).
+    /// Restorable versions, loaded when the Restore row appears (nil = loading).
     @State private var historyEntries: [SyncHistoryEntry]?
+    /// The version picked in the Restore dropdown.
+    @State private var selectedVersion: Int?
 
     // Draft provider config — edited by the form, committed to `settings` only
     // on Save. This is what makes "peeking" at another provider non-destructive:
@@ -139,67 +141,59 @@ struct SyncSectionView: View {
 
     private var restoreVersionsView: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Button(historyEntries == nil ? "Show versions…" : "Hide versions") {
-                    if historyEntries == nil { loadHistory() } else { historyEntries = nil }
-                }
-                .disabled(busy)
-                if historyEntries != nil {
-                    Button { loadHistory() } label: { Image(systemName: "arrow.clockwise") }
-                        .buttonStyle(.borderless)
-                        .help("Reload the version list")
-                        .disabled(busy)
-                }
-            }
-            if let entries = historyEntries {
-                if entries.isEmpty {
-                    Text("No saved versions yet.")
-                        .font(.caption).foregroundStyle(.secondaryText)
-                } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 2) {
-                            ForEach(entries) { entry in historyRow(entry) }
+            if let entries = historyEntries, entries.isEmpty {
+                Text("No saved versions yet.")
+                    .font(.caption).foregroundStyle(.secondaryText)
+            } else {
+                HStack(spacing: 8) {
+                    Picker("", selection: $selectedVersion) {
+                        if historyEntries == nil { Text("Loading versions…").tag(Int?.none) }
+                        ForEach(historyEntries ?? []) { entry in
+                            Text(entry.menuLabel(currentVersion: settings.lastSyncedVersion))
+                                .tag(Int?.some(entry.version))
                         }
                     }
-                    .frame(maxHeight: 220)
+                    .labelsHidden().pickerStyle(.menu).frame(maxWidth: 360, alignment: .leading)
+                    .disabled(busy || historyEntries == nil)
+                    Button("Restore") {
+                        if let entry = selectedEntry { confirmRestore(entry) }
+                    }
+                    .disabled(busy || !canRestoreSelection)
+                    .help(canRestoreSelection ? "Restore the selected version" : "Pick an earlier version to restore")
+                    Button { loadHistory() } label: { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.borderless)
+                        .help("Check the sync folder for new versions, such as ones another Mac saved")
+                        .disabled(busy)
                 }
             }
             Text("Restoring replaces your hosts and settings with that version. What you have now is saved as a version first, so you can switch back.")
                 .font(.caption).foregroundStyle(.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        // Reload whenever a push or pull moves the current version, so the
+        // "(current)" mark and the selection follow it.
+        .task(id: settings.lastSyncedVersion) { loadHistory() }
     }
 
-    private func historyRow(_ entry: SyncHistoryEntry) -> some View {
-        let isCurrent = entry.version == settings.lastSyncedVersion
-        return HStack(spacing: 8) {
-            Text("v\(entry.version)")
-                .monospacedDigit()
-                .frame(minWidth: 44, alignment: .leading)
-            Text(entry.date.formatted(date: .abbreviated, time: .shortened))
-            Text(entry.deviceName)
-                .foregroundStyle(.secondaryText)
-                .lineLimit(1).truncationMode(.tail)
-            Spacer(minLength: 8)
-            if isCurrent {
-                Text("Current").font(.caption).foregroundStyle(.secondaryText)
-            } else {
-                Button { confirmRestore(entry) } label: { Image(systemName: "clock.arrow.circlepath") }
-                    .buttonStyle(.borderless)
-                    .help("Restore version \(entry.version)")
-                    .disabled(busy)
-            }
-        }
-        .padding(.horizontal, 6).padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .listRowHover()
+    private var selectedEntry: SyncHistoryEntry? {
+        historyEntries?.first { $0.version == selectedVersion }
+    }
+
+    /// Restore is offered only for a version other than the one you have now.
+    private var canRestoreSelection: Bool {
+        guard let entry = selectedEntry else { return false }
+        return entry.version != settings.lastSyncedVersion
     }
 
     private func loadHistory() {
         Task {
             do {
                 let entries = try await SyncEngine.historyVersions()
-                await MainActor.run { historyEntries = entries }
+                await MainActor.run {
+                    historyEntries = entries
+                    selectedVersion = SyncHistoryEntry.defaultSelection(
+                        in: entries, keeping: selectedVersion, currentVersion: settings.lastSyncedVersion)
+                }
             } catch {
                 await MainActor.run { message = .error(error.localizedDescription) }
             }

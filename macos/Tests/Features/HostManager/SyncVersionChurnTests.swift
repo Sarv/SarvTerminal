@@ -104,6 +104,18 @@ struct SyncHistoryLimitTests {
         #expect(SyncSettings.historyKeepLabel(0) == "Unlimited")
     }
 
+    @Test func restoreDropdownSelectsCurrentAndKeepsUserPick() {
+        let entries = [201, 200, 199].map { SyncHistoryEntry(version: $0, date: later, deviceName: "Mac") }
+        #expect(SyncHistoryEntry.defaultSelection(in: entries, keeping: nil, currentVersion: 201) == 201)
+        #expect(SyncHistoryEntry.defaultSelection(in: entries, keeping: 199, currentVersion: 201) == 199)
+        #expect(SyncHistoryEntry.defaultSelection(in: entries, keeping: 3, currentVersion: 201) == 201)
+        #expect(SyncHistoryEntry.defaultSelection(in: entries, keeping: nil, currentVersion: 999) == 201)
+        #expect(SyncHistoryEntry.defaultSelection(in: [], keeping: nil, currentVersion: 201) == nil)
+        #expect(entries[0].menuLabel(currentVersion: 201).hasSuffix(" (current)"))
+        #expect(entries[1].menuLabel(currentVersion: 201).hasPrefix("v200 · "))
+        #expect(!entries[1].menuLabel(currentVersion: 201).contains("Mac"))
+    }
+
     @Test func versionFoldersParseStrictly() {
         let names = ["v3", "v12", "v1", ".DS_Store", "vfoo", "v-2", "v007", "v0"]
         #expect(FolderSyncProvider.versionsNewestFirst(folderNames: names) == [12, 3, 1])
