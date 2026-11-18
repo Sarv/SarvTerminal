@@ -2401,6 +2401,22 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **How to verify on Linux.** Open three panes: one running `npm run dev`, one running `claude` with a message sent, and one idle. Quit and relaunch, then Reopen All: the dev server starts again in its directory, Claude reopens the same conversation (`claude --resume <id>`), and the idle pane stays idle. Run `/clear` in Claude, wait a second, then quit and reopen: the new session is resumed. Launch the app from a shell where `CLAUDECODE=1` is exported: Claude panes still resume. Turn the setting off: panes reopen idle.
 
+## 53. The terminal inspector gets a close button
+
+**Symptom.** Once the terminal inspector was open, the only ways to close it were the context menu or the View menu. There was no visible close control on the inspector itself.
+
+**Root cause & reasoning.** The inspector is an ImGui view drawn into its own surface, so it has no native chrome. The pane header already had a hover-red ✕. That button is now one shared view, used by both the pane header and the inspector.
+
+**Platform-agnostic logic.**
+1. One reusable close button: a small ✕, white at 75% opacity at rest, red fill with a white glyph on hover, with a tooltip passed in by the caller.
+2. Overlay it in the inspector's top-trailing corner, vertically centred in ImGui's 22 pt title bar, on a translucent dark backing so it reads over any ImGui theme. Clicking it sets "inspector visible" to false, the same path as the menu toggle (which also keeps the §48 crash guard in force).
+
+**macOS → Linux equivalents.**
+- macOS: `HoverCloseButton` (`Helpers/HoverCloseButton.swift`), used by `VaultsSplitTreeView` (replacing the private `PaneCloseButton`) and overlaid in `InspectorView`.
+- GTK: a `GtkButton` with the `window-close-symbolic` icon and a CSS class whose `:hover` sets the red background. Place it in a `GtkOverlay` over the inspector's `GtkGLArea`, aligned top-end. On `clicked`, run the same action as the inspector toggle.
+
+**How to verify on Linux.** Open the inspector: a ✕ sits in the top-right of its title bar and turns red on hover, with the tooltip "Close inspector". Clicking it closes the inspector. Repeat 20 times quickly, with no crash (§48). The pane-header ✕ looks and behaves the same as before.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

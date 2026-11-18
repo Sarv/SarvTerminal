@@ -262,7 +262,7 @@ private struct VaultsSplitLeaf: View {
             headerButton("sidebar.left", help: "Focus mode (⌘⇧M)") {
                 VaultsTabsModel.shared.toggleFocusMode()
             }
-            PaneCloseButton {
+            HoverCloseButton(help: "Close pane") {
                 VaultsTabsModel.shared.requestClosePane(surface: surfaceView)
             }
         }
@@ -288,27 +288,6 @@ private struct VaultsSplitLeaf: View {
         }
         .buttonStyle(.plain)
         .hoverTip(help)
-    }
-}
-
-/// Pane-close ✕ that turns red on hover — same affordance as the tab chip's
-/// close button.
-private struct PaneCloseButton: View {
-    let action: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(hovering ? Color.white : .white.opacity(0.75))
-                .frame(width: 20, height: 18)
-                .background(RoundedRectangle(cornerRadius: 4).fill(hovering ? Color.red : .clear))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .hoverTip("Close pane")
     }
 }
 

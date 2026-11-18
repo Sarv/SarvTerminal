@@ -32,6 +32,15 @@ extension Ghostty {
                         InspectorViewRepresentable(surfaceView: surfaceView)
                             .focused($inspectorFocus)
                             .focusedValue(\.ghosttySurfaceView, surfaceView)
+                            .overlay(alignment: .topTrailing) {
+                                HoverCloseButton(help: "Close inspector") {
+                                    surfaceView.inspectorVisible = false
+                                }
+                                .background(RoundedRectangle(cornerRadius: 4).fill(.black.opacity(0.35)))
+                                // Vertically centre the 18pt button in ImGui's 22pt title bar.
+                                .padding(.top, 2)
+                                .padding(.trailing, 4)
+                            }
                     }, onEqualize: {
                         guard let surface = surfaceView.surface else { return }
                         ghostty.splitEqualize(surface: surface)
