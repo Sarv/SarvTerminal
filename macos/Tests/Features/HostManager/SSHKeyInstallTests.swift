@@ -17,19 +17,6 @@ private let keyBody = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOq+/x=="
 
 @Suite
 struct SSHKeyInstallTests {
-    @Test func passwordIsAskedOnlyWhenNoneIsSaved() {
-        #expect(SSHKeyInstall.needsPasswordPrompt(host(auth: .ask)))
-        #expect(SSHKeyInstall.needsPasswordPrompt(host(auth: .password)))
-        #expect(!SSHKeyInstall.needsPasswordPrompt(host(auth: .password, password: "pw")))
-        #expect(!SSHKeyInstall.needsPasswordPrompt(host(auth: .agent)))
-    }
-
-    @Test func hostKeyAskBecomesAcceptNewSoSshNeverPrompts() {
-        #expect(SSHKeyInstall.hostKeyPolicy(.ask) == "accept-new")
-        #expect(SSHKeyInstall.hostKeyPolicy(.yes) == "yes")
-        #expect(SSHKeyInstall.hostKeyPolicy(.no) == "no")
-    }
-
     @Test func keyBodyDropsCommentAndRejectsJunk() {
         #expect(SSHKeyInstall.keyBody(fromPublicKeyLine: "\(keyBody) me@mac 'quoted'\n") == keyBody)
         #expect(SSHKeyInstall.keyBody(fromPublicKeyLine: "not-a-key") == nil)
@@ -44,17 +31,17 @@ struct SSHKeyInstallTests {
         #expect(script.contains("grep -qF \"\(keyBody)\""))
     }
 
-    @Test func passwordInstallAllowsOnePromptAndKeyInstallNever() {
-        let password = SSHKeyInstall.installArgs(for: host(port: 2222), auth: .password, keyBody: keyBody)
-        #expect(password.contains("NumberOfPasswordPrompts=1"))
-        #expect(!password.contains("BatchMode=yes"))
+    @Test func installArgsUseHostPolicyPortAndOwnKeyOnlyForKeyHosts() {
+        let password = SSHKeyInstall.installArgs(for: host(port: 2222), keyBody: keyBody)
+        #expect(password.contains("StrictHostKeyChecking=ask"))
+        #expect(!password.contains("BatchMode=yes") && !password.contains("-i"))
         #expect(Array(password.prefix(2)) == ["-p", "2222"])
         #expect(password.suffix(2).first == "clickhouse@10.0.5.40")
 
-        let key = SSHKeyInstall.installArgs(
-            for: host(auth: .publicKey), auth: .key(identityFile: "/k/id_x"), keyBody: keyBody)
-        #expect(key.contains("BatchMode=yes"))
-        #expect(key.contains("/k/id_x"))
+        var keyHost = host(auth: .publicKey)
+        keyHost.identityFile = "/k/id_x"
+        let key = SSHKeyInstall.installArgs(for: keyHost, keyBody: keyBody)
+        #expect(key.contains("/k/id_x") && key.contains("IdentitiesOnly=yes"))
     }
 
     @Test func verifyUsesOnlyTheNewKey() {

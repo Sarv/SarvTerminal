@@ -105,6 +105,20 @@ enum SarvAlert {
         }
     }
 
+    /// Async `present` for background flows (ssh prompts, key install, tunnels).
+    static func present(title: String,
+                        message: String = "",
+                        buttons: [Button],
+                        inputInitial: String? = nil,
+                        inputSecure: Bool = false,
+                        copyableText: String? = nil) async -> Result {
+        await withCheckedContinuation { continuation in
+            present(title: title, message: message, buttons: buttons,
+                    inputInitial: inputInitial, inputSecure: inputSecure,
+                    copyableText: copyableText) { continuation.resume(returning: $0) }
+        }
+    }
+
     /// Show the alert as a sheet attached to `parent`, calling `completion` with
     /// the user's choice. `inputInitial` (non-nil) adds a text field under the
     /// message; its final text comes back in `Result.inputText`.

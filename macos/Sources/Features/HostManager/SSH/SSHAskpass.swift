@@ -9,16 +9,41 @@ import Foundation
 /// surface's environment so ssh calls the helper instead of the TTY.
 enum SSHAskpass {
     /// Path to the helper script, (re)created on first access.
-    private static let helperPath: String? = {
-        guard let dir = supportDirectory() else { return nil }
-        let url = dir.appendingPathComponent("sarv-askpass.sh")
-        // Print the password file's contents. ssh may call askpass more than once
-        // (e.g. password + keyboard-interactive), so we do NOT delete the file
-        // here — the app removes it on connect / close / relaunch.
-        let script = """
+    /// Prints the password file's contents. ssh may call askpass more than once
+    /// (e.g. password + keyboard-interactive), so we do NOT delete the file
+    /// here — the app removes it on connect / close / relaunch.
+    private static let helperPath: String? = writeHelper(named: "sarv-askpass.sh", script: """
         #!/bin/sh
         cat "$SARV_ASKPASS_FILE"
-        """
+        """)
+
+    /// Interactive helper for `SSHPromptBroker`: hands the prompt (and the
+    /// asking ssh's pid) to the app as `<id>.req` in `$SARV_PROMPT_DIR`, waits
+    /// for `<id>.resp` ("OK" + answer, or "CANCEL"), and prints the answer.
+    /// Gives up after 10 minutes or when the app removes the directory.
+    static let interactiveHelperPath: String? = writeHelper(named: "sarv-askpass-prompt.sh", script: """
+        #!/bin/sh
+        d="$SARV_PROMPT_DIR"
+        [ -d "$d" ] || exit 1
+        id="$$"
+        printf '%s\\n%s' "$PPID" "$1" > "$d/$id.tmp" || exit 1
+        mv "$d/$id.tmp" "$d/$id.req" || exit 1
+        n=0
+        while [ ! -f "$d/$id.resp" ]; do
+          [ -d "$d" ] || exit 1
+          n=$((n + 1))
+          [ "$n" -gt 3000 ] && exit 1
+          sleep 0.2
+        done
+        { IFS= read -r status; IFS= read -r answer; } < "$d/$id.resp"
+        rm -f "$d/$id.resp"
+        [ "$status" = OK ] || exit 1
+        printf '%s\\n' "$answer"
+        """)
+
+    private static func writeHelper(named name: String, script: String) -> String? {
+        guard let dir = supportDirectory() else { return nil }
+        let url = dir.appendingPathComponent(name)
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             try script.write(to: url, atomically: true, encoding: .utf8)
@@ -27,7 +52,7 @@ enum SSHAskpass {
         } catch {
             return nil
         }
-    }()
+    }
 
     private static func supportDirectory() -> URL? {
         guard let base = FileManager.default.urls(

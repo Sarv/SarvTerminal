@@ -2496,6 +2496,37 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 - Copy again: the alert says "already installed", and `grep -c` on the remote `authorized_keys` still gives 1. `~/.ssh` is 700 and the file is 600.
 - A wrong password shows "Couldn't Copy SSH Key… Permission denied" with Try Again.
 
+## 58. One prompt broker answers every background ssh question (host keys and passwords, every hop)
+
+**Symptom.** Background ssh runs (Copy SSH Key, tunnels) and jump-host connects broke whenever ssh asked something the app hadn't planned for. A jump host's host-key question got the target's password as its answer. The target's password was sent to the bastion's password prompt. A keyscan pre-flight couldn't reach a target that only the bastion can see.
+
+**Root cause & reasoning.** With `SSH_ASKPASS_REQUIRE=force` and no TTY, ssh sends EVERY question to the askpass helper: each hop's host-key confirmation and each hop's password. The old helper only `cat`ed one saved password, so any second question got a wrong answer. Options like `-o StrictHostKeyChecking=accept-new` and `NumberOfPasswordPrompts` don't reach the jump hop (it inherits only `-F` and the config files), so they can't be used to avoid its prompts. The fix is to let ssh ask and answer each question by what it says, in the app.
+
+**Platform-agnostic logic.**
+1. **Interactive helper** (`sarv-askpass-prompt.sh`, 0700): it writes `$SARV_PROMPT_DIR/$$.tmp` holding `$PPID\n<prompt>` and renames it to `$$.req`, so the app never reads half a file. It then polls every 0.2s for `$$.resp` (gives up after 10 min, or as soon as the directory is gone), reads `status\nanswer`, deletes the response, and prints the answer on `OK`. Any other status exits 1, which ssh takes as cancel.
+2. **Broker** (one per ssh run): it creates a private temp dir (0700), watches it for writes and handles one request at a time, in arrival order. It writes each reply as `<id>.resp.tmp` and renames it to `<id>.resp`. Stopping removes the dir.
+3. **Prompt parsing** (pure):
+   - text containing "continue connecting" is a host-key question. The host comes from `authenticity of host '<host>'`, cut at ` (`. The detail is "TYPE key fingerprint:\nSHA256:…".
+   - `^(.+)'s password:$` or `^\((.+)\) [Pp]assword:$` is a password prompt. Split the target at the LAST `@` into user and host.
+   - anything else (key passphrase, OTP) is shown as ssh wrote it.
+4. **Answers.**
+   - Host key: a "Trust <host>?" dialog showing the fingerprint. "Trust and Continue" answers `yes`; Cancel cancels.
+   - Password: use a saved credential matching user and host (host compared case-insensitively; a credential saved without a user matches any user). Credentials are the target's saved password plus every `-J` hop that matches a saved host (same hostname and port, same user when the hop names one). Each `ssh-pid|user@host` is auto-answered only ONCE. If the same ssh process asks again, the password was rejected, so ask the user ("That password didn't work. Try again.") and replace the cached credential with what they type.
+   - Other prompts: a secure-input dialog.
+   - Any cancel sets `userCancelled`, so the caller skips its own "couldn't connect" error.
+5. **`-J` spec parsing:** comma-separated hops, an optional `ssh://` prefix, user split at the last `@`, `[ipv6]:port`, `host:port` (exactly one colon), default port 22.
+6. **Shared background args:** `-p PORT`, `-J spec` when set, `ConnectTimeout` (default 10), and the host's OWN `StrictHostKeyChecking` (an "ask" now reaches the dialog). `-i key -o IdentitiesOnly=yes` is added only for key-auth hosts. The failure reason is the last stderr line that isn't noise (`Warning: Permanently added`, `Authenticated to`, `Transferred:`, `Bytes per second`, `Connection closed by UNKNOWN`).
+7. **Copy SSH Key (section 57) now uses the broker:** no keyscan pre-flight, no `accept-new`, no single password prompt. The install and verify runs share one broker, so a password typed for install is reused if ssh asks again. This replaces steps 2–3 of section 57.
+
+**macOS → Linux equivalents.** The helper script ports as is. The temp dir is `g_dir_make_tmp("sarv-prompt-XXXXXX")` plus `chmod 0700`. Replace the `DispatchSource` dir watch with `GFileMonitor` (`g_file_monitor_directory`, `G_FILE_MONITOR_EVENT_CREATED`/`CHANGES_DONE_HINT`/`RENAMED`), then list the dir and take `*.req` not seen yet. The dialogs are `AdwAlertDialog`, with a `GtkPasswordEntry` for secrets. Keep a FIFO of requests and show one dialog at a time on the main loop. Stop: cancel the monitor and remove the dir recursively.
+
+**How to verify on Linux.** With the test sshd from section 57 (and `AllowTcpForwarding yes`), jump through it to itself: `-J test@127.0.0.1:2222 test@localhost -p 2222`, with an empty `UserKnownHostsFile`.
+- A "Trust [localhost]:2222?" dialog shows the fingerprint.
+- Each password prompt arrives as `test@localhost's password:`.
+- A wrong saved password is tried once, then the user is asked.
+- Cancel ends the run without an error popup.
+- Unit tests: `SSHPromptTests` (parsing, `-J`, credentials, args, failure reason).
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

@@ -4,14 +4,6 @@ import Foundation
 /// public key into a host's `~/.ssh/authorized_keys`, how to read the result,
 /// and what to tell the user. No I/O here — `SSHKeyInstaller` runs it.
 enum SSHKeyInstall {
-    /// How the install connection authenticates.
-    enum Auth: Equatable {
-        /// Key or agent auth; never prompts (`BatchMode`).
-        case key(identityFile: String)
-        /// Password fed through the askpass helper.
-        case password
-    }
-
     enum Outcome: Equatable {
         case added
         case alreadyInstalled
@@ -25,29 +17,6 @@ enum SSHKeyInstall {
 
     static let addedMarker = "SARV_KEY_ADDED"
     static let presentMarker = "SARV_KEY_PRESENT"
-
-    static func auth(for host: SavedHost) -> Auth {
-        switch host.authMethod {
-        case .publicKey: return .key(identityFile: host.identityFile)
-        case .agent:     return .key(identityFile: "")
-        case .password, .ask: return .password
-        }
-    }
-
-    /// The user must type a password: password auth with none saved.
-    static func needsPasswordPrompt(_ host: SavedHost) -> Bool {
-        auth(for: host) == .password && host.password.isEmpty
-    }
-
-    /// The host-key prompt happens before ssh runs (pre-flight scan), so ssh
-    /// itself must never ask: "ask" becomes "accept-new".
-    static func hostKeyPolicy(_ checking: SavedHost.HostKeyChecking) -> String {
-        switch checking {
-        case .yes: return "yes"
-        case .no:  return "no"
-        case .ask, .acceptNew: return "accept-new"
-        }
-    }
 
     /// `type base64` from a `.pub` line, or nil if it doesn't look like a key.
     static func keyBody(fromPublicKeyLine line: String) -> String? {
@@ -83,34 +52,18 @@ enum SSHKeyInstall {
         return "exec sh -c '\(script)'"
     }
 
-    /// Port, jump host, timeout and host-key policy shared by both runs.
-    static func connectionArgs(for host: SavedHost) -> [String] {
-        var args = ["-p", String(host.port)]
-        if !host.proxyJump.isEmpty { args += ["-J", host.proxyJump] }
-        let timeout = host.connectTimeoutSeconds > 0 ? host.connectTimeoutSeconds : 10
-        args += ["-o", "ConnectTimeout=\(timeout)"]
-        args += ["-o", "StrictHostKeyChecking=\(hostKeyPolicy(host.strictHostKeyChecking))"]
-        return args
-    }
-
-    static func installArgs(for host: SavedHost, auth: Auth, keyBody: String) -> [String] {
-        var args = connectionArgs(for: host)
-        switch auth {
-        case .key(let identityFile):
-            args += ["-o", "BatchMode=yes"]
-            if !identityFile.isEmpty {
-                args += ["-i", (identityFile as NSString).expandingTildeInPath]
-            }
-        case .password:
-            args += ["-o", "NumberOfPasswordPrompts=1"]
-        }
-        return args + [host.sshTarget, remoteCommand(keyBody: keyBody)]
+    /// Prompts (host keys, passwords for the host or a jump host) are
+    /// answered by `SSHPromptBroker`, so nothing here needs BatchMode.
+    static func installArgs(for host: SavedHost, keyBody: String) -> [String] {
+        SSHBackgroundArgs.connection(for: host) + SSHBackgroundArgs.identity(for: host)
+            + [host.sshTarget, remoteCommand(keyBody: keyBody)]
     }
 
     /// A login with only the new key, never prompting: success proves a plain
     /// `ssh` with that key now gets in without a password.
+    /// The jump host (if any) still authenticates through the broker.
     static func verifyArgs(for host: SavedHost, privateKeyPath: String) -> [String] {
-        connectionArgs(for: host) + [
+        SSHBackgroundArgs.connection(for: host) + [
             "-o", "BatchMode=yes",
             "-o", "IdentitiesOnly=yes",
             "-o", "PreferredAuthentications=publickey",
@@ -122,16 +75,7 @@ enum SSHKeyInstall {
     static func outcome(status: Int32, stdout: String, stderr: String) -> Outcome {
         if status == 0 && stdout.contains(addedMarker) { return .added }
         if status == 0 && stdout.contains(presentMarker) { return .alreadyInstalled }
-        return .failed(failureReason(stderr: stderr, status: status))
-    }
-
-    /// The most useful stderr line: the last one that isn't a known-hosts
-    /// "Warning: Permanently added" notice.
-    static func failureReason(stderr: String, status: Int32) -> String {
-        let lines = stderr.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("Warning: Permanently added") }
-        return lines.last ?? "ssh exited with status \(status)."
+        return .failed(SSHBackgroundArgs.failureReason(stderr: stderr, status: status))
     }
 
     /// The plain `ssh` command the user can now run, e.g. `ssh -p 2222 root@host`.
