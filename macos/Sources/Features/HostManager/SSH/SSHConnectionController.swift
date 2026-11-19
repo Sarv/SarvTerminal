@@ -241,6 +241,12 @@ final class SSHConnectionController {
                 return
             }
 
+            // A jump-host prompt (trust / password dialog) is waiting on the
+            // user: that time doesn't count toward the session timeout.
+            if MainActor.assumeIsolated({ model.promptBroker?.isAskingUser == true }) {
+                startTime = Date()
+                return
+            }
             let elapsed = Date().timeIntervalSince(startTime)
             if elapsed > handshakeGrace { noteAuthenticating() }
 

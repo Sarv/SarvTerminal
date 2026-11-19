@@ -66,6 +66,8 @@ final class SSHConnectionModel: ObservableObject {
     @Published var showLogs: Bool = false
     /// Path of the temp file holding the password for the askpass helper.
     var passwordFilePath: String?
+    /// Answers a jump-host connect's prompts (hop host keys / passwords) while it logs in.
+    var promptBroker: SSHPromptBroker?
 
     func addLog(_ symbol: String, _ color: Color, _ text: String) {
         logEntries.append(SSHLogEntry(symbol: symbol, color: color, text: text))

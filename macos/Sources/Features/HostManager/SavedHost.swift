@@ -219,7 +219,10 @@ struct SavedHost: Codable, Identifiable, Hashable, TimestampedRecord {
         // trust prompt is handled PRE-FLIGHT (via ssh-keyscan) before this ssh
         // runs, because `SSH_ASKPASS_REQUIRE=force` would otherwise route ssh's
         // interactive host-key question to the password helper and deadlock.
-        let hostKeyChecking = staged ? "accept-new" : strictHostKeyChecking.rawValue
+        // Behind a jump host keyscan can't reach the target; there every prompt
+        // (each hop's host key and password) goes to `SSHPromptBroker`, so the
+        // host's own policy is used as is.
+        let hostKeyChecking = staged && proxyJump.isEmpty ? "accept-new" : strictHostKeyChecking.rawValue
         args.append("-o StrictHostKeyChecking=\(hostKeyChecking)")
         if staged { args.append("-o NumberOfPasswordPrompts=1") }
         for f in localForwards   where !f.isEmpty { args.append("-L \(shellQuote(f))") }

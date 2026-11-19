@@ -2552,6 +2552,26 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 - Start a second rule on the same port: "Port 18599 is already in use on this Mac" with Try Again.
 - Stop: no error. Unit tests: `PortForwardPlanTests`.
 
+## 60. Terminal connects through a jump host trust and log in to every hop
+
+**Symptom.** Connecting to a saved host with a ProxyJump failed. The host-key pre-flight tried to scan the target directly and couldn't reach it. The bastion's yes/no trust question got the target's password as its answer, and the target's password went to the bastion's password prompt.
+
+**Root cause & reasoning.** A guided (staged) connect checks the host key out of band with keyscan, then runs ssh with `accept-new` and a one-password askpass (`SSH_ASKPASS_REQUIRE=force`). Neither works behind a jump: keyscan can't reach the target, and `-o` options don't reach the jump hop, so every hop's questions land on a helper that can only print one password.
+
+**Platform-agnostic logic.**
+1. For a host with ProxyJump set, skip the keyscan pre-flight. The staged ssh command keeps the host's own `StrictHostKeyChecking` (not `accept-new`).
+2. Its environment is the prompt broker's (section 58), not the one-password helper. Credentials: the password typed in the connect popup (or the saved one) for the target, plus saved jump hosts. The hint is "Needed to log in through <jump>."
+3. Store the broker on the connection model. Stop it, along with deleting any password file, when the session is connected, on reconnect/relaunch, and on teardown. Same for "connect in this pane".
+4. The connect watcher's 20s "no session yet" timeout restarts while a broker dialog is open, so reading a trust prompt or typing a password never makes the connect fail.
+5. Direct hosts (no ProxyJump) are unchanged: keyscan pre-flight, `accept-new`, one-password askpass.
+
+**macOS → Linux equivalents.** The env vars are passed the same way (an `env K='V' … ssh …` prefix on the surface command). Store the broker beside the password-file path on the GTK connection state and free it in the same places. The timeout pause is the same check in the GTK poll callback.
+
+**How to verify on Linux.** Save `test@localhost:2222` with ProxyJump `test@127.0.0.1:2222` and an empty known_hosts for `[localhost]:2222`.
+- Connect: a "Trust [localhost]:2222?" dialog appears (no keyscan error). After trusting, you land in the shell.
+- Leave the dialog open more than 20s: the connect doesn't time out.
+- A host without ProxyJump still shows the in-popup trust card from the keyscan pre-flight.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

@@ -750,7 +750,7 @@ final class VaultsTabsModel: ObservableObject {
     private func teardownConnection(surfaceID: UUID) {
         guard let conn = connections[surfaceID] else { return }
         conn.controller.stop()
-        deleteTempFile(conn.model.passwordFilePath)
+        releaseLoginHelpers(conn.model)
         connections[surfaceID] = nil
     }
 
@@ -911,20 +911,24 @@ final class VaultsTabsModel: ObservableObject {
         return "\(shellQuote(exe)) +ssh \(flags.joined(separator: " ")) -- \(command.dropFirst(4))"
     }
 
-    private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?,
+    private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?, host: SavedHost?,
                                 termOverride: String = "", banner: [String] = [])
-        -> (surface: Ghostty.SurfaceView, passwordFile: String?) {
+        -> (surface: Ghostty.SurfaceView, passwordFile: String?, broker: SSHPromptBroker?) {
         var full = wrapSSHCommand(command, termOverride: termOverride)
         var passwordFile: String?
-        if let pw = password, !pw.isEmpty {
-            let env = SSHAskpass.env(forPassword: pw)
+        var env: [String: String] = [:]
+        let broker = host.flatMap { loginBroker(for: $0, password: password) }
+        if let broker {
+            env = MainActor.assumeIsolated { broker.environment }
+        } else if let pw = password, !pw.isEmpty {
+            env = SSHAskpass.env(forPassword: pw)
             passwordFile = env["SARV_ASKPASS_FILE"]
-            // Use the `env` command (not bare VAR=val) so the assignments
-            // survive macOS's `bash -c "exec -l <command>"` wrapper, where
-            // `exec -l VAR=val ssh` would treat "VAR=val" as the program name.
-            let prefix = env.map { "\($0.key)='\($0.value)'" }.joined(separator: " ")
-            if !prefix.isEmpty { full = "env \(prefix) \(full)" }
         }
+        // Use the `env` command (not bare VAR=val) so the assignments
+        // survive macOS's `bash -c "exec -l <command>"` wrapper, where
+        // `exec -l VAR=val ssh` would treat "VAR=val" as the program name.
+        let prefix = env.map { "\($0.key)=\(shellQuote($0.value))" }.joined(separator: " ")
+        if !prefix.isEmpty { full = "env \(prefix) \(full)" }
         // A reconnect prints its banner into the fresh terminal before ssh takes
         // over the pane. It has to go through an inner `bash -c` (with `exec`, so
         // ssh still replaces that shell and we leave no parent hanging around):
@@ -938,7 +942,30 @@ final class VaultsTabsModel: ObservableObject {
         }
         var cfg = Ghostty.SurfaceConfiguration()
         cfg.command = full
-        return (Ghostty.SurfaceView(app, baseConfig: cfg), passwordFile)
+        return (Ghostty.SurfaceView(app, baseConfig: cfg), passwordFile, broker)
+    }
+
+    /// Behind a jump host ssh asks more than one password and host key (one per
+    /// hop), which the single-password askpass file can't answer: the broker
+    /// answers each from saved hosts or a dialog. nil for direct hosts.
+    private func loginBroker(for host: SavedHost, password: String?) -> SSHPromptBroker? {
+        guard !host.proxyJump.isEmpty else { return nil }
+        var credentials = SSHJump.credentials(for: host, savedHosts: SavedHostsStore.shared.hosts)
+        if let password, !password.isEmpty {
+            credentials.removeAll { $0.matches(user: host.username, host: host.hostname) }
+            credentials.insert(SSHCredential(user: host.username, host: host.hostname, password: password), at: 0)
+        }
+        let hint = "Needed to log in through \(host.proxyJump)."
+        return MainActor.assumeIsolated { SSHPromptBroker(credentials: credentials, passwordHint: hint) }
+    }
+
+    /// Drop what only the login needed: the askpass password file (ssh keeps
+    /// its unlinked fd) and the prompt broker.
+    private func releaseLoginHelpers(_ model: SSHConnectionModel) {
+        deleteTempFile(model.passwordFilePath)
+        model.passwordFilePath = nil
+        if let broker = model.promptBroker { MainActor.assumeIsolated { broker.stop() } }
+        model.promptBroker = nil
     }
 
     /// Remove the askpass password temp file (no-op if nil/absent) so we never
@@ -972,7 +999,9 @@ final class VaultsTabsModel: ObservableObject {
     /// scan it and show the trust card; otherwise we proceed straight to connect.
     @MainActor
     private func runHostKeyPreflight(model: SSHConnectionModel) async {
-        if let host = model.host {
+        // Behind a jump host keyscan can't reach the target; ssh asks instead
+        // and the prompt broker shows the trust dialog for each hop.
+        if let host = model.host, host.proxyJump.isEmpty {
             let token = HostKeyScanner.token(host: host.hostname, port: host.port)
             if await HostKeyScanner.isKnown(token) == false {
                 model.addLog("magnifyingglass", .secondary, "Checking host key…")
@@ -1011,7 +1040,7 @@ final class VaultsTabsModel: ObservableObject {
               let tab = tab(containing: oldSurface),
               let node = tab.surfaceTree.root?.node(view: oldSurface),
               let app = (NSApp.delegate as? AppDelegate)?.ghostty.app else { return }
-        deleteTempFile(model.passwordFilePath)   // discard the previous attempt's password file
+        releaseLoginHelpers(model)   // discard the previous attempt's password file / broker
         // Rebuild the command from the LATEST saved host (the user may have just
         // edited it), so changed port/options take effect on reconnect.
         let latestHost = model.host.flatMap { SavedHostsStore.shared.host(withID: $0.id) } ?? model.host
@@ -1027,7 +1056,7 @@ final class VaultsTabsModel: ObservableObject {
                                      now: Date(),
                                      attempt: model.reconnectAttempts)
         } ?? []
-        let made = makeSSHSurface(app: app, command: command, password: password,
+        let made = makeSSHSurface(app: app, command: command, password: password, host: latestHost,
                                   termOverride: latestHost?.termOverride ?? "",
                                   banner: banner)
         applyHostTheme(model.host, to: made.surface)
@@ -1039,6 +1068,7 @@ final class VaultsTabsModel: ObservableObject {
             tab.surfaceTree = .init(view: made.surface)
         }
         model.passwordFilePath = made.passwordFile
+        model.promptBroker = made.broker
         model.silent = true            // attempting with a known password — no field while connecting
         model.stage = .connecting
         conn.controller.stop()
@@ -1130,10 +1160,9 @@ final class VaultsTabsModel: ObservableObject {
             HostUsageStore.shared.recordUse(of: snapshot.id, at: Date())
         }
         model.stage = .connected
-        // Logged in: drop the askpass password file. ssh keeps its now-unlinked
-        // fd; the file is freed when ssh exits.
-        deleteTempFile(model.passwordFilePath)
-        model.passwordFilePath = nil
+        // Logged in: drop the askpass password file (ssh keeps its now-unlinked
+        // fd; the file is freed when ssh exits) and the prompt broker.
+        releaseLoginHelpers(model)
         if let id = surfaceID(for: model), let surface = surface(withID: id) {
             Ghostty.moveFocus(to: surface)
             // Startup command (host editor → Startup): typed into the freshly
@@ -1236,14 +1265,17 @@ final class VaultsTabsModel: ObservableObject {
 
         let boundSurface: Ghostty.SurfaceView
         var passwordFile: String?
+        var broker: SSHPromptBroker?
         if needsPassword {
             // Keep the placeholder surface; the popup collects the password.
             boundSurface = surface
         } else {
             // Swap the placeholder pane for a live ssh surface.
-            let made = makeSSHSurface(app: app, command: command, password: knownPassword, termOverride: host.termOverride)
+            let made = makeSSHSurface(app: app, command: command, password: knownPassword, host: host,
+                                      termOverride: host.termOverride)
             boundSurface = made.surface
             passwordFile = made.passwordFile
+            broker = made.broker
             applyHostTheme(host, to: made.surface)
             if let newTree = try? tab.surfaceTree.replacing(node: node, with: .leaf(view: made.surface)) {
                 tab.surfaceTree = newTree
@@ -1251,7 +1283,10 @@ final class VaultsTabsModel: ObservableObject {
         }
 
         let model = SSHConnectionModel(title: host.displayLabel, host: host, needsPassword: needsPassword)
-        if !needsPassword { model.passwordFilePath = passwordFile }
+        if !needsPassword {
+            model.passwordFilePath = passwordFile
+            model.promptBroker = broker
+        }
         let controller = SSHConnectionController(model: model, surfaceView: boundSurface, tabsModel: self)
         connections[boundSurface.id] = ActiveConnection(model: model, controller: controller, command: command)
         // Label the pane with the host name: the live SSH surface title is the
