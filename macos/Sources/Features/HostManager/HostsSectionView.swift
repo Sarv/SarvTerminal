@@ -809,7 +809,7 @@ struct HostsSectionView: View {
     // MARK: - "Copy SSH Key" submenu
 
     /// One entry per local key with a public half, the likeliest default
-    /// first; picking one runs `ssh-copy-id` for it in a new tab.
+    /// first; picking one installs it on the server in the background.
     @ViewBuilder
     private func copyIdMenuContent(for host: SavedHost) -> some View {
         let keys = copyableKeys(sshKeys.keys, preferredIdentity: host.identityFile)
@@ -823,10 +823,8 @@ struct HostsSectionView: View {
     }
 
     private func copyId(_ key: SSHKey, to host: SavedHost) {
-        guard host.canConnect, let publicPath = key.publicPath else { return }
-        HostConnect.run(
-            command: host.sshCopyIdCommand(publicKeyPath: publicPath),
-            name: "Copy Key · \(host.label)")
+        guard host.canConnect, key.hasPublicKey else { return }
+        SSHKeyInstaller.install(key, on: host)
     }
 
     // MARK: - Empty / state actions

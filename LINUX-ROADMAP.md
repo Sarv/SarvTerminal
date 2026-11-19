@@ -2465,6 +2465,37 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 
 **How to verify on Linux.** Lock the login keyring (or deny the unlock prompt) and start the app: the alert lists the locked stores, lists are empty, and the encrypted files on disk keep their bytes. Unlock and press Retry: the data appears without a restart. With the keyring still locked, a sync Pull or Restore fails with the Keychain message and changes nothing. Remove the key items entirely (fresh install): no alert, a new key is created.
 
+## 57. Copy SSH Key to Server runs in the background and confirms the login
+
+**Symptom.** "Copy SSH Key to Server" opened a terminal tab running `ssh-copy-id`. The user had to answer prompts in it and then read its output to see whether it worked. There was no clear result and no ready command to log in with afterwards.
+
+**Root cause & reasoning.** The action handed the job to an interactive tool in a terminal tab, so the app had no idea how it ended. The goal is different: install the key once with no terminal, so that a plain `ssh` from anywhere on this machine logs in without a password. The app should report that this actually works.
+
+**Platform-agnostic logic.**
+1. Read `<key>.pub` and check it (`type base64`; the type must match `[A-Za-z0-9@.-]+` and the blob must be base64). If either check fails, show an error.
+2. **Host-key trust.** Do the same pre-flight as a guided connect. If checking isn't `no` and `host:port` isn't in known_hosts, scan it and show "Trust host?" with the key type and fingerprint. If the user trusts it, append it to known_hosts. Cancel stops the copy. ssh then runs with `StrictHostKeyChecking=accept-new` (in place of "ask"), so it never prompts.
+3. **Auth.** For publicKey/agent auth, run with `BatchMode=yes` (plus `-i` when the host has an identity file). For password/ask auth, use the saved password, or ask once in a secure-input alert. Pass it to ssh through an askpass helper (`SSH_ASKPASS_REQUIRE=force`, `NumberOfPasswordPrompts=1`). There is no TTY.
+4. **Install.** Run `ssh -p PORT [-J jump] -o ConnectTimeout=N ... user@host "exec sh -c '<script>'"` and send the key line on stdin. The script works under any login shell and contains no `'` or `\`. In order, it:
+   - sets `umask 077`, runs `mkdir -p ~/.ssh`, touches `authorized_keys`, and sets chmod 700/600;
+   - reads the key from stdin;
+   - if `grep -qF "<type base64>"` finds the key, it prints `SARV_KEY_PRESENT` and stops, so the key is never added twice;
+   - if the file doesn't end in a newline, it adds one first;
+   - appends the key, runs `restorecon` if it exists, and prints `SARV_KEY_ADDED`.
+   Exit 0 plus a marker means added or already installed. Anything else is a failure, and the reason shown is the last stderr line that isn't "Warning: Permanently added". The run is stopped after 60s.
+5. **Verify.** Log in with only the new key: `BatchMode=yes IdentitiesOnly=yes PreferredAuthentications=publickey -i <private> user@host true`.
+6. **Report.**
+   - On failure: "Couldn't Copy SSH Key" with the reason, plus Try Again and OK.
+   - On success: "SSH Key Copied", saying whether the key was added or already there. If the key isn't one ssh offers by default (`id_rsa`, `id_ecdsa(_sk)`, `id_ed25519(_sk)`, `id_dsa`), add a hint about passing `-i` or adding it to `~/.ssh/config`. Then "You can now log in without a password:" and a copy box holding `ssh [-i ~/.ssh/key] [-p PORT] user@host`.
+   - If the verify login failed: "SSH Key Copied, Login Not Confirmed" with the error, and no copy box.
+7. **Shared alert additions.** The alert can show a secure (password) input, and a copy row: monospaced, selectable text with a copy button that turns into a checkmark for 1.5s and has a tooltip.
+
+**macOS → Linux equivalents.** `Process` + `Pipe` → `GSubprocess` with `G_SUBPROCESS_FLAGS_STDIN_PIPE | STDOUT_PIPE | STDERR_PIPE` and `g_subprocess_communicate_utf8_async`; stop it after 60s with `g_timeout_add_seconds` + `g_subprocess_force_exit`. The askpass helper is the same env-var mechanism (`SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=force`, `DISPLAY` not needed). SarvAlert → `AdwAlertDialog`. For the secure input, add a `GtkPasswordEntry` as extra child. For the copy row, use a `GtkBox` with a selectable monospace `GtkLabel` and a flat `GtkButton` (`edit-copy-symbolic` → `object-select-symbolic` for 1.5s, tooltip "Copy command"), copying with `gdk_clipboard_set_text`. Run the steps in order with an async chain (GTask/callbacks) on the main loop, and never block the UI thread. The pure planning (args, script, outcome parsing, messages) ports one-to-one; its tests are in `SSHKeyInstallTests.swift`.
+
+**How to verify on Linux.** Use a test sshd, e.g. `docker run -p 2222:2222 -e PASSWORD_ACCESS=true -e USER_NAME=test -e USER_PASSWORD=pw linuxserver/openssh-server`. Save a host for `test@127.0.0.1:2222` with password auth and no saved password. Then:
+- Copy SSH Key: a trust prompt appears, then a password prompt, then "SSH Key Copied" with a copy box holding `ssh -p 2222 test@127.0.0.1`. Run that in any terminal: you get in with no password.
+- Copy again: the alert says "already installed", and `grep -c` on the remote `authorized_keys` still gives 1. `~/.ssh` is 700 and the file is 600.
+- A wrong password shows "Couldn't Copy SSH Key… Permission denied" with Try Again.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

@@ -47,7 +47,9 @@ enum SarvAlert {
                          buttons: [Button],
                          rememberTitle: String? = nil,
                          rememberInitial: Bool = false,
-                         inputInitial: String? = nil) -> Result {
+                         inputInitial: String? = nil,
+                         inputSecure: Bool = false,
+                         copyableText: String? = nil) -> Result {
         precondition(!buttons.isEmpty, "SarvAlert requires at least one button")
         let fallbackIndex = buttons.firstIndex(where: { $0.isCancel }) ?? buttons.count - 1
         var chosen = Result(buttonIndex: fallbackIndex, rememberChecked: false)
@@ -59,7 +61,9 @@ enum SarvAlert {
             buttons: buttons,
             rememberTitle: rememberTitle,
             rememberInitial: rememberInitial,
-            inputInitial: inputInitial) { index, remember, text in
+            inputInitial: inputInitial,
+            inputSecure: inputSecure,
+            copyableText: copyableText) { index, remember, text in
                 chosen = Result(buttonIndex: index, rememberChecked: remember, inputText: text)
                 NSApp.stopModal()
             }
@@ -90,11 +94,14 @@ enum SarvAlert {
                         rememberTitle: String? = nil,
                         rememberInitial: Bool = false,
                         inputInitial: String? = nil,
+                        inputSecure: Bool = false,
+                        copyableText: String? = nil,
                         completion: @escaping (Result) -> Void = { _ in }) {
         DispatchQueue.main.async {
             completion(runModal(title: title, message: message, buttons: buttons,
                                 rememberTitle: rememberTitle, rememberInitial: rememberInitial,
-                                inputInitial: inputInitial))
+                                inputInitial: inputInitial, inputSecure: inputSecure,
+                                copyableText: copyableText))
         }
     }
 
@@ -231,6 +238,10 @@ private struct SarvAlertView: View {
     var rememberInitial: Bool = false
     /// Non-nil shows a text field under the message, pre-filled with this value.
     let inputInitial: String?
+    /// Mask the input field (passwords).
+    var inputSecure: Bool = false
+    /// Non-nil shows this text (e.g. a command) in a box with a copy button.
+    var copyableText: String?
     let onChoose: (Int, Bool, String) -> Void
 
     @State private var remember: Bool
@@ -243,6 +254,8 @@ private struct SarvAlertView: View {
          rememberTitle: String?,
          rememberInitial: Bool = false,
          inputInitial: String?,
+         inputSecure: Bool = false,
+         copyableText: String? = nil,
          onChoose: @escaping (Int, Bool, String) -> Void) {
         self.title = title
         self.message = message
@@ -250,6 +263,8 @@ private struct SarvAlertView: View {
         self.rememberTitle = rememberTitle
         self.rememberInitial = rememberInitial
         self.inputInitial = inputInitial
+        self.inputSecure = inputSecure
+        self.copyableText = copyableText
         self.onChoose = onChoose
         // Seed field/checkbox state up front so the text field already holds its
         // value when the presenter assigns first responder and selects all.
@@ -281,8 +296,18 @@ private struct SarvAlertView: View {
                 }
             }
 
+            if let copyableText {
+                SarvAlertCopyRow(text: copyableText)
+            }
+
             if inputInitial != nil {
-                TextField("", text: $inputText)
+                Group {
+                    if inputSecure {
+                        SecureField("", text: $inputText)
+                    } else {
+                        TextField("", text: $inputText)
+                    }
+                }
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
                     .focused($inputFocused)
@@ -382,5 +407,36 @@ private struct SarvAlertButton: View {
         if button.isDefault { return .defaultAction }
         if button.isCancel { return .cancelAction }
         return nil
+    }
+}
+
+/// A selectable monospaced line with a copy button; the icon turns into a
+/// checkmark for a moment after copying.
+private struct SarvAlertCopyRow: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(text)
+                .font(.system(size: 12, design: .monospaced))
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                copied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.borderless)
+            .help(copied ? "Copied" : "Copy command")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.08)))
     }
 }

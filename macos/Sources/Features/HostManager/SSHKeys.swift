@@ -17,7 +17,7 @@ struct SSHKey: Identifiable, Hashable {
     var hasPublicKey: Bool { publicPath != nil }
 }
 
-/// Keys that `ssh-copy-id` can install (they have a `.pub`), ordered so the
+/// Keys "Copy SSH Key to Server" can install (they have a `.pub`), ordered so the
 /// most likely choice comes first: the host's configured identity file, then
 /// ssh's default identities (`id_ed25519`, `id_ecdsa`, `id_rsa`), then the
 /// rest alphabetically.
