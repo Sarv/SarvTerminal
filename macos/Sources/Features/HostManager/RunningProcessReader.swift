@@ -50,6 +50,24 @@ enum RunningProcessReader {
         return pids.prefix(Int(used) / MemoryLayout<pid_t>.size).filter { $0 > 0 }.map(Int.init)
     }
 
+    /// The name a process was launched as. The kernel's `proc_name` is the
+    /// executable file's basename, which for versioned installs is the version
+    /// (Claude Code's native installer runs `~/.local/bin/claude` →
+    /// `versions/2.1.328`, so `proc_name` says `2.1.328`). Then the name it
+    /// was started under, argv[0], is the meaningful one. Pure.
+    static func launchName(execName: String, argv0: String?) -> String {
+        guard isVersionNumber(execName), let argv0 else { return execName }
+        let base = (argv0 as NSString).lastPathComponent
+        let name = base.hasPrefix("-") ? String(base.dropFirst()) : base
+        return name.isEmpty ? execName : name
+    }
+
+    /// `2.1.328`, `1.0` — digits and dots only, starting with a digit.
+    static func isVersionNumber(_ name: String) -> Bool {
+        guard let first = name.first, first.isASCII, first.isNumber else { return false }
+        return name.allSatisfy { ($0.isASCII && $0.isNumber) || $0 == "." }
+    }
+
     /// argv via `KERN_PROCARGS2`.
     static func arguments(pid: Int) -> [String]? {
         procArgs(pid: pid).map(\.argv)

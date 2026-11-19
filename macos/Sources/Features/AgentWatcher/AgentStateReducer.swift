@@ -18,10 +18,6 @@ enum AgentStateReducer {
     /// Claude Code's idle title glyph.
     private static let idleGlyph: Character = "✳"
 
-    /// Every agent SarvTerminal can install hooks for.
-    private static let agentProcesses: Set<String> = Set(AgentHookIntegration.all.flatMap(\.processNames))
-    private static let shellProcesses: Set<String> = ["zsh", "bash", "fish", "sh"]
-
     typealias Result = (pane: AgentPaneState, effects: [AgentEffect])
 
     static func reduce(_ pane: AgentPaneState, _ event: AgentEvent, now: Date) -> Result {
@@ -118,15 +114,15 @@ enum AgentStateReducer {
         }
     }
 
-    private static func foregroundChanged(_ pane: AgentPaneState, _ process: String?, now: Date) -> Result {
-        guard let name = process.map(processName) else { return (pane, []) }
-        if agentProcesses.contains(name) && pane.state == .noAgent {
+    private static func foregroundChanged(_ pane: AgentPaneState, _ foreground: AgentForeground?, now: Date) -> Result {
+        switch foreground {
+        case .agent where pane.state == .noAgent:
             return (moved(pane, to: .idle, now: now), [])
-        }
-        if shellProcesses.contains(name) && pane.state.isAgent && !pane.titleHasAgentGlyph {
+        case .shell where pane.state.isAgent && !pane.titleHasAgentGlyph:
             return (moved(pane, to: .noAgent, now: now), [])
+        default:
+            return (pane, [])
         }
-        return (pane, [])
     }
 
     private static func viewed(_ pane: AgentPaneState, doneHold: TimeInterval, now: Date) -> Result {

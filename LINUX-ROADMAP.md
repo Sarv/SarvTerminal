@@ -2572,6 +2572,29 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 - Leave the dialog open more than 20s: the connect doesn't time out.
 - A host without ProxyJump still shows the in-popup trust card from the keyscan pre-flight.
 
+## 61. The agent watcher recognises every agent by its command line, not its process name
+
+**Symptom.** After Claude Code updated itself, tabs running `claude` (including tabs brought back by Reopen All) were listed under "other tabs have no AI agent". Agents installed with npm (Codex, Gemini, Copilot, Qwen, Droid) were never detected by process, and agents without hook support (opencode, amp, crush, goose, kimi, Amazon Q, Kiro, auggie, aider) weren't detected at all.
+
+**Root cause & reasoning.** The watcher matched the kernel process name (`proc_name`, the executable's basename) against the 7 hook-capable agents. Claude's native installer links `~/.local/bin/claude` to `versions/2.1.328`, so the name is `2.1.328`. An npm install is just `node`. Session restore already detects agents correctly from argv (`AgentKind.detect`: argv[0] basename, or the npm package path in argv[1]), so the watcher now uses that same rule.
+
+**Platform-agnostic logic.**
+1. Each tick, for each pane, read the foreground pid and its process name.
+2. If the name is a shell (`PaneCommandLine.isShell`), the pane is `shell` and its job isn't read.
+3. Otherwise read the foreground job's argv (leader + descendants, capped at 16) and run `PaneCommandResolver.trackedAgent`. A hit makes it `agent(kind)`, otherwise `other`.
+4. Cache the result per pane, keyed by (pid, process name), so argv is read only when the foreground process changes. Prune entries for closed panes every tick.
+5. Reducer: `agent` while `noAgent` → `idle`; `shell` while an agent state (and no agent title glyph) → `noAgent`; `other` changes nothing.
+6. The hook-setup offer gets the running agents' program names (`kind.program`).
+7. Separately, the pane's displayed process name falls back to argv[0]'s basename when the executable name is only a version number (digits and dots), so titles say `claude`, not `2.1.328`.
+
+**macOS → Linux equivalents.** `proc_name(pid)` → `/proc/<pid>/comm`. `KERN_PROCARGS2` → `/proc/<pid>/cmdline` (NUL-separated). Children via `proc_listpids(PROC_PPID_ONLY)` → `/proc/<pid>/task/*/children`, or scan `/proc/*/stat` for the ppid. The foreground pid is `tcgetpgrp` on the pty in both. Classification, the cache and the reducer are pure and port directly.
+
+**How to verify on Linux.**
+- Install Claude Code with the native installer and run `claude` in a pane. The AI Agents list shows it, and `/proc/<pid>/comm` says the version.
+- Run `npx @openai/codex` (or an npm-installed gemini/qwen) and it shows up too.
+- Run `q translate` and it doesn't. Run `q chat` and it does.
+- Exit the agent back to the shell and the pane leaves the list.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

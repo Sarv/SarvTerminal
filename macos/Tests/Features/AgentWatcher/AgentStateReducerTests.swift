@@ -244,18 +244,18 @@ struct AgentStateReducerTests {
     }
 
     @Test func shellInTheForegroundEndsTheAgent() {
-        let (exited, _) = run([(0, .foreground("claude")), (5, .title("~/p")), (9, .foreground("zsh"))])
+        let (exited, _) = run([(0, .foreground(.agent(.claude))), (5, .title("~/p")), (9, .foreground(.shell))])
         #expect(exited.state == .noAgent)
 
         // While the agent's title still carries its glyph, a shell child is the
         // agent running a command, not the agent leaving.
-        let (running, _) = run([(0, .title("✳ Claude Code")), (5, .foreground("bash"))])
+        let (running, _) = run([(0, .title("✳ Claude Code")), (5, .foreground(.shell))])
         #expect(running.state == .idle)
     }
 
     @Test func agentProcessInTheForegroundMarksAnIdleAgent() {
-        #expect(run([(0, .foreground("claude"))]).0.state == .idle)
-        #expect(run([(0, .foreground("ssh"))]).0.state == .noAgent)
+        #expect(run([(0, .foreground(.agent(.claude)))]).0.state == .idle)
+        #expect(run([(0, .foreground(.other))]).0.state == .noAgent)
     }
 
     // MARK: tab aggregation

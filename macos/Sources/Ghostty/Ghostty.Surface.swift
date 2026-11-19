@@ -150,8 +150,13 @@ extension Ghostty {
             var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
             let length = proc_name(Int32(pid), &buffer, UInt32(buffer.count))
             guard length > 0 else { return nil }
-            let name = String(cString: buffer)
-            return name.isEmpty ? nil : name
+            let execName = String(cString: buffer)
+            guard !execName.isEmpty else { return nil }
+            // Only versioned executables pay for the argv read.
+            guard RunningProcessReader.isVersionNumber(execName) else { return execName }
+            return RunningProcessReader.launchName(
+                execName: execName,
+                argv0: RunningProcessReader.arguments(pid: pid)?.first)
         }
 
         /// The PTY device name for this surface.

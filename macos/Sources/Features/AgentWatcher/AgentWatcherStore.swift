@@ -4,7 +4,8 @@ import Combine
 /// One pane's reading on a watcher tick, gathered at the edge so the store's
 /// tick logic stays free of AppKit.
 struct AgentPaneSample: Equatable {
-    var foreground: String?
+    /// Nil when the foreground process can't be read.
+    var foreground: AgentForeground?
     /// The active screen area's text, read only for panes that need it.
     var screenTail: String?
     /// The pane's tab is on screen in a window while the app is active.
@@ -62,6 +63,8 @@ final class AgentWatcherStore: ObservableObject {
     private lazy var socket = AgentStatusSocket { [weak self] line in self?.receive(line) }
     /// Agents whose hook setup was offered this session.
     private var offeredHookSetups: Set<String> = []
+    /// Each pane's foreground classification, re-read only when its process changes.
+    private var foregrounds = AgentForegroundCache()
 
     init(clock: @escaping () -> Date, doneHold: @escaping () -> TimeInterval = { AgentDoneHold.current.seconds }) {
         self.clock = clock
@@ -211,14 +214,23 @@ final class AgentWatcherStore: ObservableObject {
                 let visible = windowVisible ? model.visiblePaneIDs(of: tab) : []
                 for surface in tab.surfaceTree.root?.leaves() ?? [] {
                     samples[surface.id] = AgentPaneSample(
-                        foreground: surface.surfaceModel?.foregroundProcessName,
+                        foreground: foreground(of: surface),
                         screenTail: needsScreenSample(surface.id) ? surface.liveActiveText() : nil,
                         onScreen: visible.contains(surface.id))
                 }
             }
         }
+        foregrounds.prune(keeping: Set(samples.keys))
         tick(samples)
-        offerHookSetup(runningProcesses: samples.values.compactMap(\.foreground))
+        offerHookSetup(runningProcesses: samples.values.compactMap { $0.foreground?.agentProgram })
+    }
+
+    private func foreground(of surface: Ghostty.SurfaceView) -> AgentForeground? {
+        guard let model = surface.surfaceModel, let pid = model.foregroundPID,
+              let name = model.foregroundProcessName else { return nil }
+        return foregrounds.foreground(pane: surface.id, pid: pid, processName: name) {
+            RunningProcessReader.job(leaderPID: $0)
+        }
     }
 
     /// Feeds one line from the status socket to its pane. Lines naming no

@@ -65,7 +65,7 @@ struct AgentClaudeReplayTests {
                 pending = pending.dropFirst()
             }
             clock.now = Date(timeIntervalSince1970: tickAt)
-            let foreground = tickAt > exitedAt ? "zsh" : "claude"
+            let foreground: AgentForeground = tickAt > exitedAt ? .shell : .agent(.claude)
             store.tick([pane: AgentPaneSample(foreground: foreground, screenTail: nil, onScreen: false)])
             record()
             tickAt += AgentWatcherStore.tickInterval

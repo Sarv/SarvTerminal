@@ -21,7 +21,7 @@ struct AgentWatcherStoreTests {
     }
 
     private func sample(
-        foreground: String? = "claude", screenTail: String? = nil, onScreen: Bool = false
+        foreground: AgentForeground? = .agent(.claude), screenTail: String? = nil, onScreen: Bool = false
     ) -> AgentPaneSample {
         AgentPaneSample(foreground: foreground, screenTail: screenTail, onScreen: onScreen)
     }
@@ -103,7 +103,7 @@ struct AgentWatcherStoreTests {
 
     @Test func aShellWithNoAgentStoresNothing() {
         let store = makeStore()
-        store.tick([pane: sample(foreground: "zsh")])
+        store.tick([pane: sample(foreground: .shell)])
         #expect(store.panes.isEmpty)
         #expect(!store.needsScreenSample(pane))
     }

@@ -406,3 +406,26 @@ struct InheritedAgentEnvironmentTests {
         #expect(decoded == .init(commandLine: "npm run dev"))
     }
 }
+
+struct ProcessLaunchNameTests {
+    @Test func versionedExecutableUsesTheNameItWasLaunchedAs() {
+        #expect(RunningProcessReader.launchName(execName: "2.1.328", argv0: "claude") == "claude")
+        #expect(RunningProcessReader.launchName(execName: "2.1.328", argv0: "/Users/me/.local/bin/claude") == "claude")
+    }
+
+    @Test func ordinaryExecutableKeepsItsName() {
+        #expect(RunningProcessReader.launchName(execName: "zsh", argv0: "-zsh") == "zsh")
+        #expect(RunningProcessReader.launchName(execName: "node", argv0: "codex") == "node")
+    }
+
+    @Test func versionedExecutableWithoutArgvKeepsItsName() {
+        #expect(RunningProcessReader.launchName(execName: "2.1.328", argv0: nil) == "2.1.328")
+        #expect(RunningProcessReader.launchName(execName: "2.1.328", argv0: "") == "2.1.328")
+    }
+
+    @Test func recognisesVersionNumbers() {
+        #expect(RunningProcessReader.isVersionNumber("2.1.328"))
+        #expect(!RunningProcessReader.isVersionNumber("python3.11"))
+        #expect(!RunningProcessReader.isVersionNumber(""))
+    }
+}

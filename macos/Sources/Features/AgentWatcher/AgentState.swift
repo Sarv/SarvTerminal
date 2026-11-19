@@ -55,8 +55,8 @@ enum AgentEvent: Equatable {
     case programStatus(AgentProgramStatus)
     /// The last lines of the pane's active screen area.
     case screenSample(String)
-    /// The foreground process name, or nil when it can't be read.
-    case foreground(String?)
+    /// What runs in the foreground, or nil when it can't be read.
+    case foreground(AgentForeground?)
     /// The pane's tab is on screen while the app is active. A done pane
     /// turns idle only once it has been done for `doneHold` seconds.
     case viewed(doneHold: TimeInterval)
