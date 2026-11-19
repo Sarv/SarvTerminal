@@ -2527,6 +2527,31 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 - Cancel ends the run without an error popup.
 - Unit tests: `SSHPromptTests` (parsing, `-J`, credentials, args, failure reason).
 
+## 59. Tunnels go through the host's jump host and say when they're up
+
+**Symptom.** A port-forward rule on a host with a ProxyJump never worked: the tunnel connected straight to the target, which only the bastion can reach. There was no success feedback, and a failure showed only after ssh exited, as raw stderr.
+
+**Root cause & reasoning.** The tunnel built its own ssh args and never passed `-J`. It also forced `StrictHostKeyChecking=accept-new` and a one-password askpass, which can't answer a jump hop (section 58). Its stderr was read only at exit, so the app couldn't tell "logged in and listening" from "still connecting".
+
+**Platform-agnostic logic.**
+1. Args: `-N -o ExitOnForwardFailure=yes -o LogLevel=VERBOSE -o ServerAliveInterval=30 -o ServerAliveCountMax=3`, the shared background args (section 58: port, `-J`, timeout, host-key policy, own key), `-A` if agent forwarding is on, then the forward and `user@host`:
+   - Local: `-L bind:listen:dest:destPort`
+   - Remote: `-R bind:listen:dest:destPort`
+   - SOCKS: `-D bind:listen`
+2. Run with the prompt broker (hint "Needed to start the tunnel."). Keep the broker until the tunnel exits.
+3. Read stderr live and keep a 16 KB tail. At `LogLevel=VERBOSE`, ssh prints a line starting `Authenticated to ` once login succeeds, and sets up the forwards right after. A busy port then makes it exit (`ExitOnForwardFailure`). So after the first "Authenticated to", wait 0.6s. If ssh is still running and wasn't stopped by the user, the tunnel is up: show "Tunnel Running" with the route, "through user@host via <jump>", and a copy box holding `bind:listen` (Local/SOCKS). For Remote, say the server forwards the port to this Mac.
+4. On exit: a manual stop, status 0, or a cancelled prompt is not an error. Otherwise the reason is:
+   - for "Address already in use": "Port N is already in use on this Mac. Stop whatever uses it, or pick another port." (on the server, for Remote);
+   - else the section-58 failure reason.
+   If the tunnel had been announced as up, it dropped: send a notification. If it never came up: send a notification AND show "Couldn't Start Tunnel" with Try Again (which starts it again) and Close.
+
+**macOS → Linux equivalents.** Run it with `GSubprocess` (stderr pipe) and read it with `g_input_stream_read_bytes_async` in a loop, appending to the tail on the main loop. The settle delay is `g_timeout_add(600, …)`, checking the subprocess is still alive (`g_subprocess_get_if_exited` is false). Use `g_subprocess_wait_async` for the exit. Popups are `AdwAlertDialog`; the copy row is as in section 57. The pure plan (`PortForwardPlan`: args, auth detection, failure text, messages) ports one-to-one.
+
+**How to verify on Linux.** Through the test sshd, add a Local rule on a host whose ProxyJump is `test@127.0.0.1:2222` (target `test@localhost:2222`): listen 18599 → `127.0.0.1:2222`.
+- Start: trust and password dialogs as needed, then "Tunnel Running" with `127.0.0.1:18599`. `nc 127.0.0.1 18599` prints the `SSH-2.0-OpenSSH` banner.
+- Start a second rule on the same port: "Port 18599 is already in use on this Mac" with Try Again.
+- Stop: no error. Unit tests: `PortForwardPlanTests`.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

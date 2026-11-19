@@ -14,20 +14,34 @@ final class PortForwardManager: ObservableObject {
     /// Last error per rule (cleared when it starts cleanly).
     @Published private(set) var errors: [UUID: String] = [:]
 
-    /// A live tunnel: the ssh process + the askpass temp file to clean up, and
-    /// whether the user asked it to stop (so we don't flag a manual stop as an error).
+    /// A live tunnel: the ssh process, the broker answering its prompts, what
+    /// it printed so far, and whether the user asked it to stop (a manual stop
+    /// isn't an error) or it was already reported as up.
     private final class Tunnel {
         let process: Process
-        let askpassFile: String?
+        let forward: PortForward
+        let host: SavedHost
+        let broker: SSHPromptBroker?
         /// Human-readable label for notifications (rule name + host).
         let label: String
+        var stderr = ""
         var manualStop = false
-        init(process: Process, askpassFile: String?, label: String) {
+        /// ssh printed "Authenticated to …" (forwards are being set up).
+        var loggedIn = false
+        /// Stayed up past the settle delay and the user was told.
+        var announced = false
+        init(process: Process, forward: PortForward, host: SavedHost, broker: SSHPromptBroker?, label: String) {
             self.process = process
-            self.askpassFile = askpassFile
+            self.forward = forward
+            self.host = host
+            self.broker = broker
             self.label = label
         }
     }
+
+    /// stderr kept per tunnel: enough for the failure line, bounded for a
+    /// tunnel that runs for days.
+    private static let stderrLimit = 16_384
 
     private var tunnels: [UUID: Tunnel] = [:]
 
@@ -52,40 +66,83 @@ final class PortForwardManager: ObservableObject {
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = sshArguments(for: forward, host: host)
-        // No controlling TTY → ssh uses SSH_ASKPASS for the password (if any).
+        proc.arguments = PortForwardPlan.arguments(for: forward, host: host)
+        // No controlling TTY: every prompt (host keys, passwords, for the
+        // target and each jump host) goes to the broker via SSH_ASKPASS.
         proc.standardInput = FileHandle.nullDevice
+        proc.standardOutput = FileHandle.nullDevice
         let errPipe = Pipe()
         proc.standardError = errPipe
-        proc.standardOutput = FileHandle.nullDevice
 
-        var askpassFile: String?
-        if host.authMethod == .password || host.authMethod == .ask, !host.password.isEmpty {
-            let env = SSHAskpass.env(forPassword: host.password)
-            askpassFile = env["SARV_ASKPASS_FILE"]
-            proc.environment = ProcessInfo.processInfo.environment.merging(env) { _, new in new }
+        let broker = SSHPromptBroker(
+            credentials: SSHJump.credentials(for: host, savedHosts: SavedHostsStore.shared.hosts),
+            passwordHint: "Needed to start the tunnel.")
+        if let broker {
+            proc.environment = ProcessInfo.processInfo.environment.merging(broker.environment) { _, new in new }
         }
 
         let label = forward.name.isEmpty
             ? "\(forward.listenPort) → \(host.displayLabel):\(forward.destinationPort)"
             : "\(forward.name) (\(host.displayLabel))"
-        let tunnel = Tunnel(process: proc, askpassFile: askpassFile, label: label)
-        proc.terminationHandler = { [weak self] p in
-            let errText = (try? errPipe.fileHandleForReading.readToEnd())
-                .flatMap { $0.flatMap { String(data: $0, encoding: .utf8) } } ?? ""
-            Task { @MainActor in self?.tunnelDidExit(forward.id, status: p.terminationStatus, stderr: errText) }
+        let tunnel = Tunnel(process: proc, forward: forward, host: host, broker: broker, label: label)
+        let id = forward.id
+        // Read stderr live: "Authenticated to …" is how we know the tunnel is up.
+        // DispatchQueue.main keeps chunks and the exit in arrival order.
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            let text = String(bytes: handle.availableData, encoding: .utf8) ?? ""
+            guard !text.isEmpty else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.tunnelPrinted(id, text) } }
+        }
+        proc.terminationHandler = { process in
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            let rest = (try? errPipe.fileHandleForReading.readToEnd()).flatMap { $0 }
+                .flatMap { String(bytes: $0, encoding: .utf8) } ?? ""
+            let status = process.terminationStatus
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.tunnelPrinted(id, rest)
+                    self.tunnelDidExit(id, status: status)
+                }
+            }
         }
 
         do {
             try proc.run()
         } catch {
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            broker?.stop()
             errors[forward.id] = "Couldn't launch ssh: \(error.localizedDescription)"
-            cleanup(askpassFile)
             SarvNotifications.shared.notify(.tunnelFailed(label: label, reason: error.localizedDescription))
             return
         }
         tunnels[forward.id] = tunnel
         running.insert(forward.id)
+    }
+
+    /// Collect ssh's output; once it logged in, wait a moment (a busy port
+    /// makes it exit right after) and then tell the user the tunnel is up.
+    private func tunnelPrinted(_ id: UUID, _ text: String) {
+        guard let tunnel = tunnels[id], !text.isEmpty else { return }
+        tunnel.stderr = String((tunnel.stderr + text).suffix(Self.stderrLimit))
+        guard !tunnel.loggedIn, PortForwardPlan.hasAuthenticated(tunnel.stderr) else { return }
+        tunnel.loggedIn = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + PortForwardPlan.settleDelay) {
+            MainActor.assumeIsolated {
+                guard self.tunnels[id] === tunnel, tunnel.process.isRunning, !tunnel.manualStop else { return }
+                self.announceRunning(tunnel)
+            }
+        }
+    }
+
+    private func announceRunning(_ tunnel: Tunnel) {
+        tunnel.announced = true
+        let message = PortForwardPlan.successMessage(for: tunnel.forward, host: tunnel.host)
+        Task {
+            _ = await SarvAlert.present(
+                title: "Tunnel Running", message: message,
+                buttons: [SarvAlert.Button("OK", isDefault: true)],
+                copyableText: PortForwardPlan.localAddress(for: tunnel.forward))
+        }
     }
 
     // MARK: - Stop
@@ -103,66 +160,31 @@ final class PortForwardManager: ObservableObject {
 
     // MARK: - Exit handling
 
-    private func tunnelDidExit(_ id: UUID, status: Int32, stderr: String) {
-        let tunnel = tunnels[id]
+    private func tunnelDidExit(_ id: UUID, status: Int32) {
+        guard let tunnel = tunnels[id] else { return }
         running.remove(id)
         tunnels[id] = nil
-        cleanup(tunnel?.askpassFile)
-        // A clean manual stop (or status 0) isn't an error; a non-zero exit while
-        // we expected it up means the tunnel dropped or failed to bind.
-        if tunnel?.manualStop != true, status != 0 {
-            let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            errors[id] = msg.isEmpty ? "Tunnel exited unexpectedly (code \(status))." : msg
-            let label = tunnel?.label ?? "Tunnel"
-            if msg.isEmpty {
-                SarvNotifications.shared.notify(.tunnelDropped(label: label))
-            } else {
-                SarvNotifications.shared.notify(.tunnelFailed(label: label, reason: msg))
-            }
-        }
+        tunnel.broker?.stop()
+        // A manual stop, a clean exit, or the user cancelling a prompt isn't an error.
+        guard !tunnel.manualStop, status != 0, tunnel.broker?.userCancelled != true else { return }
+        let reason = PortForwardPlan.failureReason(stderr: tunnel.stderr, status: status, forward: tunnel.forward)
+        errors[id] = reason
+        // Logged in and later exited: it dropped. Never came up: it failed to start.
+        let wasUp = tunnel.announced
+        SarvNotifications.shared.notify(wasUp
+            ? .tunnelDropped(label: tunnel.label)
+            : .tunnelFailed(label: tunnel.label, reason: reason))
+        if !wasUp { offerRetry(tunnel, reason: reason) }
     }
 
-    private func cleanup(_ askpassFile: String?) {
-        guard let askpassFile else { return }
-        try? FileManager.default.removeItem(atPath: askpassFile)
-    }
-
-    // MARK: - Command construction
-
-    /// Build the `ssh` argument vector for a tunnel. We assemble it from the
-    /// host's connection fields directly (rather than `host.sshCommand`) so the
-    /// host's OWN forwards / initial command don't leak into the tunnel.
-    private func sshArguments(for forward: PortForward, host: SavedHost) -> [String] {
-        var args = [
-            "-N",                                       // no remote command — tunnel only
-            "-o", "ExitOnForwardFailure=yes",           // fail fast if the port is busy
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "NumberOfPasswordPrompts=1",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
-        ]
-        if host.port != 22 { args += ["-p", "\(host.port)"] }
-        if !host.identityFile.isEmpty {
-            args += ["-i", expandTilde(host.identityFile), "-o", "IdentitiesOnly=yes"]
+    private func offerRetry(_ tunnel: Tunnel, reason: String) {
+        Task {
+            let result = await SarvAlert.present(
+                title: "Couldn't Start Tunnel",
+                message: "\(tunnel.label)\n\n\(reason)",
+                buttons: [SarvAlert.Button("Try Again", isDefault: true),
+                          SarvAlert.Button("Close", isCancel: true)])
+            if result.buttonIndex == 0 { start(tunnel.forward) }
         }
-        if host.forwardAgent { args.append("-A") }
-
-        switch forward.kind {
-        case .local:
-            args += ["-L", "\(forward.bindAddress):\(forward.listenPort):\(forward.destinationHost):\(forward.destinationPort)"]
-        case .remote:
-            args += ["-R", "\(forward.bindAddress):\(forward.listenPort):\(forward.destinationHost):\(forward.destinationPort)"]
-        case .dynamic:
-            args += ["-D", "\(forward.bindAddress):\(forward.listenPort)"]
-        }
-
-        let target = host.username.isEmpty ? host.hostname : "\(host.username)@\(host.hostname)"
-        args.append(target)
-        return args
-    }
-
-    private func expandTilde(_ path: String) -> String {
-        guard path.hasPrefix("~") else { return path }
-        return NSHomeDirectory() + path.dropFirst()
     }
 }
