@@ -68,6 +68,8 @@ final class SSHConnectionModel: ObservableObject {
     var passwordFilePath: String?
     /// Answers a jump-host connect's prompts (hop host keys / passwords) while it logs in.
     var promptBroker: SSHPromptBroker?
+    /// File ssh creates once it has logged in (`SSHSessionMarker`).
+    var sessionMarkerPath: String?
 
     func addLog(_ symbol: String, _ color: Color, _ text: String) {
         logEntries.append(SSHLogEntry(symbol: symbol, color: color, text: text))

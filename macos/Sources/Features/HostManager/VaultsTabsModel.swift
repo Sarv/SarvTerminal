@@ -913,8 +913,10 @@ final class VaultsTabsModel: ObservableObject {
 
     private func makeSSHSurface(app: ghostty_app_t, command: String, password: String?, host: SavedHost?,
                                 termOverride: String = "", banner: [String] = [])
-        -> (surface: Ghostty.SurfaceView, passwordFile: String?, broker: SSHPromptBroker?) {
-        var full = wrapSSHCommand(command, termOverride: termOverride)
+        -> SSHLaunch {
+        let sessionMarker = SSHSessionMarker.makePath()
+        var full = wrapSSHCommand(SSHSessionMarker.command(command, markerPath: sessionMarker),
+                                  termOverride: termOverride)
         var passwordFile: String?
         var env: [String: String] = [:]
         let broker = host.flatMap { loginBroker(for: $0, password: password) }
@@ -942,7 +944,16 @@ final class VaultsTabsModel: ObservableObject {
         }
         var cfg = Ghostty.SurfaceConfiguration()
         cfg.command = full
-        return (Ghostty.SurfaceView(app, baseConfig: cfg), passwordFile, broker)
+        return SSHLaunch(surface: Ghostty.SurfaceView(app, baseConfig: cfg), passwordFile: passwordFile,
+                         broker: broker, sessionMarker: sessionMarker)
+    }
+
+    /// A spawned ssh surface and the login helpers that live until it connects.
+    private struct SSHLaunch {
+        let surface: Ghostty.SurfaceView
+        let passwordFile: String?
+        let broker: SSHPromptBroker?
+        let sessionMarker: String
     }
 
     /// Behind a jump host ssh asks more than one password and host key (one per
@@ -960,10 +971,12 @@ final class VaultsTabsModel: ObservableObject {
     }
 
     /// Drop what only the login needed: the askpass password file (ssh keeps
-    /// its unlinked fd) and the prompt broker.
+    /// its unlinked fd), the logged-in marker and the prompt broker.
     private func releaseLoginHelpers(_ model: SSHConnectionModel) {
         deleteTempFile(model.passwordFilePath)
         model.passwordFilePath = nil
+        deleteTempFile(model.sessionMarkerPath)
+        model.sessionMarkerPath = nil
         if let broker = model.promptBroker { MainActor.assumeIsolated { broker.stop() } }
         model.promptBroker = nil
     }
@@ -1069,6 +1082,7 @@ final class VaultsTabsModel: ObservableObject {
         }
         model.passwordFilePath = made.passwordFile
         model.promptBroker = made.broker
+        model.sessionMarkerPath = made.sessionMarker
         model.silent = true            // attempting with a known password — no field while connecting
         model.stage = .connecting
         conn.controller.stop()
@@ -1266,6 +1280,7 @@ final class VaultsTabsModel: ObservableObject {
         let boundSurface: Ghostty.SurfaceView
         var passwordFile: String?
         var broker: SSHPromptBroker?
+        var sessionMarker: String?
         if needsPassword {
             // Keep the placeholder surface; the popup collects the password.
             boundSurface = surface
@@ -1276,6 +1291,7 @@ final class VaultsTabsModel: ObservableObject {
             boundSurface = made.surface
             passwordFile = made.passwordFile
             broker = made.broker
+            sessionMarker = made.sessionMarker
             applyHostTheme(host, to: made.surface)
             if let newTree = try? tab.surfaceTree.replacing(node: node, with: .leaf(view: made.surface)) {
                 tab.surfaceTree = newTree
@@ -1286,6 +1302,7 @@ final class VaultsTabsModel: ObservableObject {
         if !needsPassword {
             model.passwordFilePath = passwordFile
             model.promptBroker = broker
+            model.sessionMarkerPath = sessionMarker
         }
         let controller = SSHConnectionController(model: model, surfaceView: boundSurface, tabsModel: self)
         connections[boundSurface.id] = ActiveConnection(model: model, controller: controller, command: command)

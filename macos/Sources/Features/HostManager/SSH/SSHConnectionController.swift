@@ -247,6 +247,11 @@ final class SSHConnectionController {
                 startTime = Date()
                 return
             }
+            // ssh created the marker: it has logged in, whatever the prompt looks like.
+            if let marker = model.sessionMarkerPath, FileManager.default.fileExists(atPath: marker) {
+                markConnected()
+                return
+            }
             let elapsed = Date().timeIntervalSince(startTime)
             if elapsed > handshakeGrace { noteAuthenticating() }
 

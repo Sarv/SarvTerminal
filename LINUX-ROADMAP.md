@@ -2595,6 +2595,27 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 - Run `q translate` and it doesn't. Run `q chat` and it does.
 - Exit the agent back to the shell and the pane leaves the list.
 
+## 62. An SSH connect is "connected" once ssh has logged in, whatever the prompt looks like
+
+**Symptom.** Users whose login shell is zsh with a theme (oh-my-zsh `➜  ~`, a right-side prompt such as a clock) or with no `.zshrc` (zsh's new-user menu) got "Timed out waiting for the session", even though the login worked. Bash users were fine (issue #26).
+
+**Root cause & reasoning.** The connect watcher decided "logged in" by reading the screen and checking that the last line ended in `$ # % ❯ >`. Any other prompt never matched, so the watcher waited until its timeout. A screen guess can't know every prompt, so the signal now comes from ssh itself: OpenSSH runs `LocalCommand` on the local machine right after authentication succeeds and before the remote shell starts. Ours creates an empty marker file, and the watcher checks for it.
+
+**Platform-agnostic logic.**
+1. Before spawning, make a fresh marker path in the temp dir: `sarv-ssh-<uuid>.ready`. Nothing is created yet.
+2. Only for a command starting with `ssh `, insert `-o PermitLocalCommand=yes -o 'LocalCommand=/usr/bin/touch <quoted path>'` right after `ssh`. The path is shell-quoted (ssh runs the value with the user's `$SHELL -c`) and every `%` is doubled (ssh expands `%`-tokens in LocalCommand).
+3. Each connect tick, after the failure checks and while no login prompt is being answered: if the marker file exists, mark connected. The old prompt-suffix check stays as a fallback.
+4. Delete the marker and forget its path whenever the login helpers are released (connected, reconnect, teardown).
+5. Behind a jump host, `-o` options apply only to the final hop, which is the login that matters. A failed login (wrong user, refused port) never creates the file, so failures are still reported from the screen as before.
+6. Caveat: a user's own `LocalCommand` in `~/.ssh/config` is overridden for app-started connects.
+
+**macOS → Linux equivalents.** `NSTemporaryDirectory()` → `g_get_tmp_dir()` / `$TMPDIR`. `FileManager.fileExists` → `access(path, F_OK)` or `g_file_test`. `/usr/bin/touch` exists on Linux too (or use `/bin/touch` / `: >`). The command rewrite (`SSHSessionMarker.command`) is pure and ports directly; reuse the existing shell-quote helper.
+
+**How to verify on Linux.**
+- Set a test server user's shell to zsh with `PROMPT='➜  %~ '` and `RPROMPT='%*'`. Connecting from the app shows connected, with no timeout.
+- The same through a jump host.
+- Wrong user or a closed port still shows the error and no marker file is left in the temp dir.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
