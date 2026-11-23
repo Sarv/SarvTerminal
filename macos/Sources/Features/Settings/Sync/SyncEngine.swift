@@ -38,9 +38,9 @@ enum SyncEngine {
             case .passwordMismatchRemote:
                 return "Your master password doesn't match the existing synced data. Use the original password, or reset the remote."
             case .localDataLocked:
-                return "Sarv Terminal couldn't read its encryption key from the Keychain, so nothing was changed. Allow Keychain access when asked, then try again."
+                return "Some saved data on this Mac couldn't be opened, so nothing was changed. Fix that first (Retry or Start Fresh in the alert shown at launch), then try again."
             case .localDataUnreadable:
-                return "Local hosts couldn't be read, so sync was paused to protect your backup. Restart the app; if it persists your hosts file may be corrupt."
+                return "Some saved data on this Mac couldn't be read, so sync was paused to protect your backup. Fix that first (the alert shown at launch), then sync again."
             case .suspiciousEmptyPush:
                 return "Sync paused: everything is empty locally but your backup has data. If you really cleared everything, press “Sync ↑” to confirm."
             case .remoteIncomplete:
@@ -122,10 +122,7 @@ enum SyncEngine {
     static func push(masterPassword: String, force: Bool = false) async throws -> SyncManifest {
         // Step 1 — local-state guards. Never let a bad local state wipe the backup.
         if !force {
-            if SavedHostsStore.shared.loadFailed || HostGroupsStore.shared.loadFailed
-                || PortForwardStore.shared.loadFailed {
-                throw EngineError.localDataUnreadable
-            }
+            if localDataUnreadable { throw EngineError.localDataUnreadable }
             let hostCount = SavedHostsStore.shared.hosts.count
             let groupCount = HostGroupsStore.shared.groups.count
             let everythingEmpty = hostCount == 0 && groupCount == 0
@@ -270,9 +267,22 @@ enum SyncEngine {
         let hosts: SyncHostsPayload?
     }
 
+    /// Any local store that failed to load. Pushing would upload the empty
+    /// in-memory copy over the backup.
+    private static var localDataUnreadable: Bool {
+        EncryptedStore.hasLockedData || HostGroupsStore.shared.loadFailed
+    }
+
+    /// Pulled data can only be saved when the key works and no file is locked:
+    /// `EncryptedStore.write` refuses locked files, so a pull would apply in
+    /// memory only and be lost at the next launch.
+    private static var localDataWritable: Bool {
+        LocalDataCrypto.isKeyAvailable && !EncryptedStore.hasLockedData
+    }
+
     /// Download, decrypt, and merge into local state.
     static func pull(masterPassword: String) async throws {
-        guard LocalDataCrypto.isKeyAvailable else { throw EngineError.localDataLocked }
+        guard localDataWritable else { throw EngineError.localDataLocked }
         let provider = try makeProvider()
         // Same guard as push — refuse to operate against a public repo.
         try await provider.testConnection()
@@ -310,13 +320,17 @@ enum SyncEngine {
     /// restored data is then pushed as a new latest version, so other Macs
     /// pick it up and the history keeps moving forward.
     static func restore(version: Int, masterPassword: String) async throws {
-        guard LocalDataCrypto.isKeyAvailable else { throw EngineError.localDataLocked }
+        guard localDataWritable else { throw EngineError.localDataLocked }
         guard let provider = try makeProvider() as? FolderSyncProvider else { throw EngineError.historyUnavailable }
         try await provider.testConnection()
         if let remote = try await readManifest(provider), remote.version > settings.lastSyncedVersion {
             throw EngineError.remoteHasUnpulledData
         }
-        try await push(masterPassword: masterPassword)
+        // Keep the current state as a version so the restore can be undone.
+        // An empty state (e.g. right after starting fresh) has nothing to keep.
+        do {
+            try await push(masterPassword: masterPassword)
+        } catch EngineError.suspiciousEmptyPush {}
 
         let directory = FolderSyncProvider.historyDirectory(version: version)
         guard let manifestData = try await provider.readFile(directory + SyncManifest.manifestFile) else {

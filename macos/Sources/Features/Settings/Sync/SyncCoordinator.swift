@@ -72,6 +72,8 @@ final class SyncCoordinator {
             }.store(in: &cancellables)
 
         Task {
+            // Back up the local data key at launch, not only when a sync runs.
+            if SyncSettings.shared.canSync { _ = try? await masterPassword() }
             await pullIfRemoteNewer()
             await pushIfChangedSinceLastSync()
         }
@@ -88,14 +90,23 @@ final class SyncCoordinator {
 
     /// Remember the master password for the session so auto-sync doesn't prompt
     /// repeatedly. Called by the Settings UI after the user sets/uses it.
-    func cacheMasterPassword(_ password: String) { cachedMasterPassword = password }
+    func cacheMasterPassword(_ password: String) {
+        cachedMasterPassword = password
+        backUpLocalKey(with: password)
+    }
+
+    /// Keep a copy of the local data key sealed with the master password, so
+    /// local data can be opened again if this Mac ever loses the key.
+    private func backUpLocalKey(with password: String) {
+        Task.detached(priority: .utility) { LocalKeyBackup.ensure(password: password) }
+    }
 
     private func masterPassword() async throws -> String {
         if let cached = cachedMasterPassword { return cached }
         let pw = try await Task.detached(priority: .userInitiated) {
             try SyncKeychain.retrieveMasterPassword(prompt: "Unlock sync encryption")
         }.value
-        cachedMasterPassword = pw
+        cacheMasterPassword(pw)
         return pw
     }
 
@@ -174,6 +185,15 @@ final class SyncCoordinator {
     }
 
     // MARK: - Pull
+
+    /// Pull the latest synced state now, whatever this Mac last synced. Used to
+    /// recover local data that can't be opened. Errors go to the caller.
+    func pullLatest() async throws {
+        guard SyncSettings.shared.canSync else { throw SyncEngine.EngineError.notConfigured }
+        await MainActor.run { SyncSettings.shared.beginSyncing() }
+        defer { Task { @MainActor in SyncSettings.shared.endSyncing() } }
+        try await SyncEngine.pull(masterPassword: try await masterPassword())
+    }
 
     /// Pull only when the remote manifest is strictly newer than what we last
     /// synced — so we never clobber our own just-pushed state.

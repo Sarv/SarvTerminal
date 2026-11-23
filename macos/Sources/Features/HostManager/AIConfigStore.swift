@@ -31,7 +31,7 @@ struct AIConfig: Codable, Equatable {
 /// Owns the persisted AI config. Storage: `~/.config/sarvterminal/ai.json`
 /// (AES-GCM encrypted). Singleton so the command-finished hook and the settings
 /// pane share one source of truth.
-final class AIConfigStore: ObservableObject {
+final class AIConfigStore: ObservableObject, EncryptedReloadable {
     static let shared = AIConfigStore()
 
     /// The whole config. Mutations from the settings UI persist (debounced onto
@@ -42,20 +42,29 @@ final class AIConfigStore: ObservableObject {
 
     private let fileURL: URL
     private let queue = DispatchQueue(label: "AIConfigStore.io", qos: .utility)
+    private(set) var loadFailed = false
 
     private init() {
         fileURL = AppPaths.configDir.appendingPathComponent("ai.json")
+        let loaded = Self.load(from: fileURL)
+        config = loaded.config ?? AIConfig()
+        loadFailed = loaded.failed
+        if loaded.migrated { persist() }
+    }
 
-        // Encrypted at rest; legacy plaintext (unlikely — new feature) migrated once.
-        let decoder = JSONDecoder()
-        switch EncryptedStore.read(AIConfig.self, from: fileURL, decoder: decoder) {
-        case .none, .failed:
-            config = AIConfig()
-        case .loaded(let decoded):
-            config = decoded
-        case .migrated(let decoded):
-            config = decoded
-            persist()
+    func reload() {
+        let loaded = Self.load(from: fileURL)
+        loadFailed = loaded.failed
+        if let decoded = loaded.config { config = decoded }
+    }
+
+    /// Encrypted at rest; legacy plaintext (unlikely — new feature) migrated once.
+    private static func load(from url: URL) -> (config: AIConfig?, failed: Bool, migrated: Bool) {
+        switch EncryptedStore.read(AIConfig.self, from: url, decoder: JSONDecoder()) {
+        case .none: return (nil, false, false)
+        case .failed: return (nil, true, false)
+        case .loaded(let decoded): return (decoded, false, false)
+        case .migrated(let decoded): return (decoded, false, true)
         }
     }
 

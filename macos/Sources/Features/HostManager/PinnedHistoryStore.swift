@@ -5,7 +5,7 @@ import Combine
 /// at the top of the command sidebar's History tab and are exempt from the
 /// recent-history cap (so they're never rolled off automatically). Stored
 /// encrypted at rest, like the other local stores.
-final class PinnedHistoryStore: ObservableObject {
+final class PinnedHistoryStore: ObservableObject, EncryptedReloadable {
     static let shared = PinnedHistoryStore()
 
     /// Newest-pinned first.
@@ -13,6 +13,7 @@ final class PinnedHistoryStore: ObservableObject {
 
     private let fileURL: URL
     private let queue = DispatchQueue(label: "PinnedHistoryStore.io", qos: .utility)
+    private(set) var loadFailed = false
 
     private init() {
         fileURL = AppPaths.configDir.appendingPathComponent("pinned-history.json")
@@ -30,10 +31,13 @@ final class PinnedHistoryStore: ObservableObject {
         persist()
     }
 
+    func reload() { load() }
+
     private func load() {
         switch EncryptedStore.read([String].self, from: fileURL, decoder: JSONDecoder()) {
-        case .loaded(let v), .migrated(let v): pinned = v
-        case .none, .failed: pinned = []
+        case .loaded(let v), .migrated(let v): pinned = v; loadFailed = false
+        case .none: pinned = []; loadFailed = false
+        case .failed: pinned = []; loadFailed = true
         }
     }
 

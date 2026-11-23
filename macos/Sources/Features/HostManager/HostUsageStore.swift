@@ -44,13 +44,14 @@ enum HostRecency {
 ///
 /// Deliberately kept out of the host records and out of sync: connecting to
 /// a host is not an edit, and must never create a backup version.
-final class HostUsageStore: ObservableObject {
+final class HostUsageStore: ObservableObject, EncryptedReloadable {
     static let shared = HostUsageStore()
 
     @Published private(set) var usage: [UUID: HostUsage] = [:]
 
     private let fileURL: URL
     private let queue = DispatchQueue(label: "HostUsageStore.io", qos: .utility)
+    private(set) var loadFailed = false
 
     private init() {
         fileURL = AppPaths.configDir.appendingPathComponent("host-usage.json")
@@ -66,10 +67,13 @@ final class HostUsageStore: ObservableObject {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         switch EncryptedStore.read([UUID: HostUsage].self, from: fileURL, decoder: decoder) {
-        case .loaded(let decoded), .migrated(let decoded): usage = decoded
-        case .none, .failed: usage = [:]
+        case .loaded(let decoded), .migrated(let decoded): usage = decoded; loadFailed = false
+        case .none: usage = [:]; loadFailed = false
+        case .failed: usage = [:]; loadFailed = true
         }
     }
+
+    func reload() { load() }
 
     private func persist() {
         let snapshot = usage

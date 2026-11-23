@@ -2616,6 +2616,58 @@ On Linux the failure mode differs: `kill()` on a pid that was never spawned, or 
 - The same through a jump host.
 - Wrong user or a closed port still shows the error and no marker file is left in the temp dir.
 
+## 63. The local data key is never replaced, unlock failures say why, and the master password can recover it
+
+**Symptom.** After an update, a user got "Couldn't Unlock Your Saved Data" on every launch. Retry did nothing and macOS never asked for a password. Hosts, snippets and port forwards looked empty.
+
+**Root cause & reasoning.** Local data files (`hosts.json`, `snippets.json`, ...) are AES-GCM sealed with a data key. The data key is stored in the Keychain, wrapped to a Secure Enclave key. Up to v1.12.0, `kcRead` returned nil on any Keychain failure, which looked like "first run": the app made a new key, and `keychainWrite` did `SecItemDelete` + `SecItemAdd`, destroying the real key. Later versions still deleted on write, and a half-missing pair (one item gone) still took the create path. From then on the new key read fine with no prompt but opened nothing, so Retry just reproduced the failure. The fix has three parts:
+- The key is never deleted.
+- A new key is made only when no encrypted file exists.
+- Every load failure is classified, and the files it touches can't be overwritten.
+A backup of the key, sealed with the Sync master password, makes a lost key recoverable.
+
+**Platform-agnostic logic.**
+1. **Key plan** (pure, `LocalDataCrypto.plan`). Inputs: each stored item is found / missing / unavailable(status), plus whether any encrypted file exists. Rules:
+   - Both items found: use them.
+   - Any item unavailable: locked(status). Never create a key.
+   - Missing with no encrypted file: create a new key.
+   - Missing with encrypted files: lost. Never create a key.
+2. **Never delete key items.** Before writing an item, rename the existing one to `<account>.replaced-<UTC yyyyMMdd-HHmmss>`. "Start fresh" renames the items to `.retired-<stamp>`.
+3. **Failure classes** (`LocalKeyFailure`, `LocalDataFailure`):
+   - Keychain status maps to keychainLocked / accessDenied / keychainError.
+   - The other failures are keyLost, enclaveUnusable, decrypt (wrong key), decode (written by a newer version) and unreadableFile.
+   - The remedy picks the most serious failure: unlockKeychain > allowAccess > retry > update > unrecoverable.
+4. **Write guard.** A file that failed to load is recorded, and writes to it throw until it loads or is gone. Sync refuses to push while anything is locked, and refuses to pull or restore while local files aren't writable.
+5. **Prompt.** List only the stores that failed, and offer the buttons for the remedy:
+   - unlockKeychain: Retry, which first unlocks the keychain.
+   - unrecoverable: [Use Master Password if a backup exists] [Restore from Sync if Sync is set up], Start Fresh, Later.
+   - The details lines ("file: reason") can be copied.
+   - Start Fresh moves files aside as `<name>.unreadable-<stamp>.json.bak`. Nothing is deleted.
+6. **Key backup.** File: `<configDir>/local-key-backup.json`, mode 0600, `{version:1, entries:[{id, created, salt, iterations, sealedKey}]}`.
+   - `id` is the first 16 bytes of SHA-256(key), in hex.
+   - `sealedKey` is AES-GCM(key) under PBKDF2-SHA256(master password, salt, 310000).
+   - Entries are newest first, one per key; the same id replaces its old entry.
+   - The backup is written when the master password is set or read, and at launch if Sync is on. It's skipped while any file is locked, so a wrong key is never backed up.
+7. **Recovery.**
+   1. Open every entry with the password; none opens means wrong password.
+   2. Pick the candidate key that opens the most locked blobs (all blobs if none are locked).
+   3. Store it as this Mac's key (step 2's rename keeps the current one).
+   4. Re-seal files that open only with the replaced key.
+   5. Clear the failures and reload the stores.
+
+**macOS → Linux equivalents.**
+- Keychain generic password → libsecret (`secret_password_store/lookup`, schema attributes service+account). There is no rename in libsecret, so emulate it: store under the new account, then clear the old one only after the new write succeeded. Secret Service errors map to the failure classes: locked collection → keychainLocked, user dismissed the prompt → accessDenied.
+- Secure Enclave wrapping has no Linux equivalent. Use the raw-key path (`rawPlan`, same rules).
+- `SecKeychainUnlock` → `secret_service_unlock_sync`.
+- CryptoKit AES-GCM / SHA-256 / PBKDF2 → the libsodium or OpenSSL equivalents. The PBKDF2-SHA256 and AES-GCM combined format must stay byte-identical so a backup works across platforms.
+- `SarvAlert` → `AdwAlertDialog`, using a password entry for the master password prompt.
+
+**How to verify on Linux.**
+- Delete one of the two key items while encrypted files exist. Launch: the prompt says the data can't be opened, and no new key is created (the item list is unchanged).
+- Corrupt `snippets.json`, then add a snippet. The write is refused and the file is unchanged.
+- With Sync on, delete the key items, launch, and choose Use Master Password. Everything reopens. Files written under the interim key reopen too.
+- A wrong password asks again. A backup that lacks the key says so and offers Restore from Sync / Start Fresh.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**
