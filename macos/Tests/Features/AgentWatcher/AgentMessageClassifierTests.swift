@@ -42,6 +42,27 @@ struct AgentMessageClassifierTests {
         #expect(!AgentMessageClassifier.showsPrompt("> \n  ? for shortcuts"))
     }
 
+    @Test func backgroundWorkIsReadFromTheFooterOnly() {
+        let transcript = "⏺ Committed.\n✻ Baked for 25s · done 2:29 PM · 4 shells, 1 monitor still running\n"
+        let box = "────────────\n› push it\n────────────\n"
+        #expect(AgentMessageClassifier.showsBackgroundWork(
+            transcript + box + "▸▸ auto mode on · 4 shells, 1 monitor · ← 1 agent · ↓ to manage"))
+        #expect(AgentMessageClassifier.showsBackgroundWork(box + "  1 background task · ? for shortcuts"))
+        // The agent hint stays after the subagent finished: not running work.
+        #expect(!AgentMessageClassifier.showsBackgroundWork(
+            "✻ Churned for 1m 7s · done 2:38 PM\n" + box + "▸▸ auto mode on (shift+tab to cycle) · ← 1 agent"))
+        // While the turn waits on a subagent, the status line above the box says so.
+        #expect(AgentMessageClassifier.showsBackgroundWork(
+            "✻ Waiting for 1 background agent to finish\n\n" + box + "▸▸ auto mode on · ← 1 agent"))
+        // An old waiting line further up the transcript doesn't count.
+        #expect(!AgentMessageClassifier.showsBackgroundWork(
+            "✻ Waiting for 1 background agent to finish\n⏺ It finished.\n" + box + "  ← 1 agent"))
+        // The same words above the box or typed into it don't count.
+        #expect(!AgentMessageClassifier.showsBackgroundWork(transcript + box + "▸▸ auto mode on · ? for shortcuts"))
+        #expect(!AgentMessageClassifier.showsBackgroundWork("────\n› start 2 shells\n────\n  ? for shortcuts"))
+        #expect(!AgentMessageClassifier.showsBackgroundWork("no box here · 2 shells"))
+    }
+
     @Test func aCodexMenuIsAPrompt() {
         #expect(AgentMessageClassifier.showsPrompt("Allow command?\n› 1. Yes\n  2. No\n"))
     }

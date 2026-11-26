@@ -216,6 +216,50 @@ struct AgentStateReducerTests {
 
     // MARK: program status (OSC 7501)
 
+    private let backgroundTail = "⏺ Done.\n────\n› \n────\n▸▸ auto mode on · 4 shells, 1 monitor · ← 1 agent"
+    private let quietTail = "⏺ Done.\n────\n› \n────\n▸▸ auto mode on · ? for shortcuts"
+
+    @Test func backgroundShellsAfterTheTurnKeepItWorking() {
+        let (pane, effects) = run([
+            (0, .progress(.active)), (5, .progress(.cleared)),
+            (7, .screenSample(backgroundTail)), (40, .screenSample(backgroundTail)), (41, .tick),
+            (60, .screenSample(backgroundTail)), (75, .tick),
+        ])
+        #expect(pane.state == .working)
+        #expect(pane.backgroundWork)
+        #expect(effects.isEmpty)
+    }
+
+    @Test func backgroundWorkEndingMakesItDone() {
+        let (pane, _) = run([
+            (0, .progress(.active)), (5, .progress(.cleared)),
+            (7, .screenSample(backgroundTail)), (30, .screenSample(quietTail)),
+        ])
+        #expect(pane.state == .done)
+        #expect(!pane.backgroundWork)
+    }
+
+    @Test func aNewTurnTakesOverFromBackgroundWork() {
+        let (pane, _) = run([
+            (0, .progress(.active)), (5, .progress(.cleared)),
+            (7, .screenSample(backgroundTail)), (20, .progress(.active)),
+        ])
+        #expect(pane.state == .working)
+        #expect(!pane.backgroundWork)
+        // A normal turn still expires and finishes as before.
+        let (finished, _) = run([(25, .progress(.cleared))], from: pane)
+        #expect(finished.state == .done)
+    }
+
+    @Test func aPromptBeatsBackgroundWork() {
+        let (pane, effects) = run([
+            (0, .progress(.active)), (5, .progress(.cleared)),
+            (7, .screenSample(permissionTail + "\n────\n› \n────\n  2 shells")),
+        ])
+        #expect(pane.state == .needsYou)
+        #expect(effects == [.notify])
+    }
+
     @Test func programStatusSetsStateDirectly() {
         let (blocked, effects) = run([(0, .programStatus(.blocked))])
         #expect(blocked.state == .needsYou)

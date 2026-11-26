@@ -84,6 +84,16 @@ struct AgentWatcherStoreTests {
         #expect(received == [AgentWatcherEffect(surfaceID: pane, effect: .notify)])
     }
 
+    @Test func backgroundWorkKeepsTheScreenRead() {
+        let store = makeStore()
+        store.send(.progress(.active), to: pane)
+        #expect(!store.needsScreenSample(pane))
+        store.send(.progress(.cleared), to: pane)
+        store.tick([pane: sample(screenTail: "────\n› \n────\n  1 shell · ← 1 agent")])
+        #expect(store.state(of: pane) == .working)
+        #expect(store.needsScreenSample(pane))
+    }
+
     @Test func aNotifiedPromptIsNotReadFromTheScreen() {
         let store = makeStore()
         store.send(.progress(.active), to: pane)

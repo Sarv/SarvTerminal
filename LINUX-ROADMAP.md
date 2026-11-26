@@ -2668,6 +2668,30 @@ A backup of the key, sealed with the Sync master password, makes a lost key reco
 - With Sync on, delete the key items, launch, and choose Use Master Password. Everything reopens. Files written under the interim key reopen too.
 - A wrong password asks again. A backup that lacks the key says so and offers Restore from Sync / Start Fresh.
 
+## 64. A Claude Code tab stays "working" while background shells or subagents run
+
+**Symptom.** Claude Code ended its turn while background shells, a monitor or a subagent were still running, and the watcher showed "Done". Claude wakes up by itself when that work finishes, so the tab was not finished. A first fix that counted `← 1 agent` in the footer then left tabs stuck on "Working": that hint stays after the subagent finished.
+
+**Root cause & reasoning.** The watcher reads turn signals (OSC 9;4 progress, spinner titles). They stop when the turn ends, even though background work continues. Only the screen shows that work. Two parts of it are live: the footer under the input box (`4 shells, 1 monitor`, `1 background task`, which disappear when the work ends), and the status line just above the box while the turn waits on subagents (`✻ Waiting for 1 background agent to finish`). The footer's `← N agent` is a navigation hint, not a running count, so it is ignored.
+
+**Platform-agnostic logic.**
+1. `showsBackgroundWork(tail)` (pure):
+   - Find the last line made only of box-drawing characters (`─━═╭╮╰╯┌┐└┘`). That is the bottom of the input box. With no such line, the answer is no.
+   - Footer = the lines after it. If any matches `\b\d+\s+(shells?|monitors?|background\s+tasks?|bash(es)?)\b` (case-insensitive), yes.
+   - Otherwise the top of the box is the previous rule line. Take the last non-blank line above it (the status line). Yes if it matches `waiting\s+for\s+\d+\s+background\s+(agents?|tasks?)`.
+2. Reducer:
+   - A done pane whose screen shows background work, and no prompt, goes to working with `backgroundWork = true`.
+   - While `backgroundWork` is set, each screen sample refreshes the activity time, so the 20 s working expiry doesn't fire. A sample without background work moves the pane to done.
+   - A new turn (progress active, spinner title) clears the flag, and so does leaving working.
+   - A prompt on screen still wins (needs you).
+3. Store: sample the screen of done panes (as before) and also of working panes with `backgroundWork`, every 2 s tick.
+
+**macOS → Linux equivalents.** Pure Swift logic, no AppKit. The screen tail is the same active-area text the GTK watcher already reads for prompt detection. Port the regexes and the box-rule scan as they are.
+
+**How to verify on Linux.**
+- In Claude Code, run a `sleep 60` in the background and let the turn end. The tab stays Working, then turns Done when the shell exits.
+- Spawn a background subagent. While Claude shows "Waiting for 1 background agent to finish" the tab is Working. After the agent reports back and the turn ends, it is Done even though `← 1 agent` remains in the footer.
+
 ## Appendix A. Visual design reference
 
 This appendix documents the concrete visual specification of the macOS "Vaults" host-manager surfaces so a GTK/Adwaita implementation can match the look. Values are extracted verbatim from the SwiftUI source under `macos/Sources/Features/HostManager/`. Where a value is not present in source, it is marked **"not specified in source."**

@@ -94,11 +94,22 @@ enum AgentStateReducer {
 
     private static func screenSampled(_ pane: AgentPaneState, _ tail: String, now: Date) -> Result {
         let prompt = AgentMessageClassifier.showsPrompt(tail)
+        let background = !prompt && AgentMessageClassifier.showsBackgroundWork(tail)
         switch pane.state {
         case .done where prompt:
             var (next, effects) = enteredNeedsYou(pane, source: .screen, now: now)
             next.promptSeenOnScreen = true
             return (next, effects)
+        case .done where background:
+            var next = startedWorking(pane, now: now)
+            next.backgroundWork = true
+            return (next, [])
+        case .working where pane.backgroundWork:
+            // Background work finished without the agent taking a new turn.
+            guard background else { return (moved(pane, to: .done, now: now), []) }
+            var next = pane
+            next.lastActivityAt = now
+            return (next, [])
         case .needsYou where pane.needsYouSource == .screen:
             if prompt {
                 var next = pane
@@ -149,10 +160,13 @@ enum AgentStateReducer {
 
     // MARK: - Helpers
 
+    /// Progress and spinner titles call this too, so a real new turn drops
+    /// the background flag; the screen-sample path sets it again.
     private static func startedWorking(_ pane: AgentPaneState, now: Date) -> AgentPaneState {
         var next = moved(pane, to: .working, now: now)
         next.lastActivityAt = now
         next.progressCleared = false
+        next.backgroundWork = false
         return next
     }
 
@@ -173,6 +187,7 @@ enum AgentStateReducer {
         var next = pane
         next.state = state
         next.since = now
+        if state != .working { next.backgroundWork = false }
         if state != .needsYou {
             next.needsYouSource = nil
             next.promptSeenOnScreen = false

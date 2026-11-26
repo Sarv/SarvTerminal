@@ -84,6 +84,38 @@ enum AgentMessageClassifier {
     /// or asks for yes/no or y/n, allowing a closing bracket or full stop.
     private static let questionEnding = /(\?|\b(yes or no|yes\/no|y\/n))[\s.)\]]*$/.ignoresCase()
 
+    /// A live count of background work in an agent's footer: Claude Code's
+    /// `4 shells, 1 monitor` or `1 background task`. Not `← 1 agent`: that
+    /// hint stays after the subagent has finished.
+    private static let backgroundCount = /\b\d+\s+(shells?|monitors?|background\s+tasks?|bash(es)?)\b/
+        .ignoresCase()
+
+    /// Claude Code's status line while its turn waits on subagents:
+    /// `✻ Waiting for 1 background agent to finish`.
+    private static let waitingForBackground = /waiting\s+for\s+\d+\s+background\s+(agents?|tasks?)/
+        .ignoresCase()
+
+    /// A line of the input box's frame: box-drawing characters only.
+    private static func isBoxRule(_ line: Substring) -> Bool {
+        let chars = line.filter { !$0.isWhitespace }
+        return !chars.isEmpty && chars.allSatisfy { "─━═╭╮╰╯┌┐└┘".contains($0) }
+    }
+
+    /// Whether work still runs in the background after the agent's turn
+    /// ended: the footer (lines under the input box) counts running shells
+    /// or monitors, or the status line just above the box says the agent is
+    /// waiting on background agents. Older transcript lines and the typed
+    /// input never count.
+    static func showsBackgroundWork(_ screenTail: String) -> Bool {
+        let lines = screenTail.split(separator: "\n", omittingEmptySubsequences: false)
+        guard let bottom = lines.lastIndex(where: isBoxRule) else { return false }
+        if lines[(bottom + 1)...].contains(where: { $0.contains(backgroundCount) }) { return true }
+        let above = lines[..<bottom]
+        let top = above.lastIndex(where: isBoxRule) ?? bottom
+        let statusLine = lines[..<top].last { !$0.allSatisfy(\.isWhitespace) }
+        return statusLine?.contains(waitingForBackground) == true
+    }
+
     /// Whether the agent is waiting on the user in `screenTail`: a selection
     /// menu in the last lines, or a last message that asks a question.
     static func showsPrompt(_ screenTail: String) -> Bool {

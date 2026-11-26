@@ -86,6 +86,10 @@ struct AgentPaneState: Equatable {
     var needsYouSource: AgentNeedsYouSource?
     /// A screen-sourced prompt has been seen at least once this episode.
     var promptSeenOnScreen = false
+    /// Working only because the agent's footer shows background work (its
+    /// turn ended but shells or subagents still run). Kept alive by reading
+    /// the screen, not by progress or spinner titles.
+    var backgroundWork = false
 
     init(since: Date) {
         self.since = since

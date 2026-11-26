@@ -153,11 +153,13 @@ final class AgentWatcherStore: ObservableObject {
     }
 
     /// Whether a tick should read this pane's screen: only a finished pane,
-    /// or one waiting on a prompt the screen showed, can change from it.
+    /// one working on background tasks, or one waiting on a prompt the
+    /// screen showed, can change from it.
     func needsScreenSample(_ surfaceID: UUID) -> Bool {
         guard let pane = panes[surfaceID] else { return false }
         switch pane.state {
         case .done: return true
+        case .working: return pane.backgroundWork
         case .needsYou: return pane.needsYouSource == .screen
         default: return false
         }
